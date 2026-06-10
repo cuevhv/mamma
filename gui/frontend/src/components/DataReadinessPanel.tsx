@@ -14,7 +14,7 @@ import {
   ScrollText,
   X,
 } from 'lucide-react';
-import { domainFromAccountLabel, useCredentials } from './CredentialsContext';
+import { domainFromAccountLabel, useCredentials, verifyMpiCredentials } from './CredentialsContext';
 
 /*
  * Data readiness panel — companion to ExampleDataPanel on the Home page.
@@ -530,7 +530,15 @@ function AssetRow({
       )}
 
       {errored && (
-        <ErrorInline error={job!.error || 'Unknown error.'} />
+        <ErrorInline
+          error={job!.error || 'Unknown error.'}
+          siteUrl={
+            asset.source.kind === 'mpi'
+              ? asset.source.register_url.replace('register.php', '')
+              : undefined
+          }
+          siteLabel={asset.source.kind === 'mpi' ? asset.source.account_label : undefined}
+        />
       )}
 
       {isExpanded && asset.source.kind === 'mpi' && (
@@ -740,11 +748,29 @@ function ProgressInline({
   );
 }
 
-function ErrorInline({ error }: { error: string }) {
+function ErrorInline({
+  error, siteUrl, siteLabel,
+}: { error: string; siteUrl?: string; siteLabel?: string }) {
   return (
     <div className="mt-2 ml-6 flex items-start gap-2 text-[11px] text-foreground-muted">
       <AlertCircle className="w-3.5 h-3.5 text-status-failed flex-shrink-0 mt-0.5" />
-      <span className="break-words">{error}</span>
+      <span className="break-words">
+        {error}
+        {siteUrl && (
+          <>
+            {' '}
+            <a
+              href={siteUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary hover:underline inline-flex items-center gap-0.5 whitespace-nowrap"
+            >
+              Open the {siteLabel} website
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </>
+        )}
+      </span>
     </div>
   );
 }
@@ -756,10 +782,12 @@ function SignInForm({
   onCancel: () => void;
   onSubmit: (username: string, password: string) => Promise<void> | void;
 }) {
+  const ctx = useCredentials();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [show, setShow] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const canSubmit = username.trim().length > 0 && password.length > 0 && !submitting;
   return (
     <form
@@ -767,15 +795,29 @@ function SignInForm({
         e.preventDefault();
         if (!canSubmit) return;
         setSubmitting(true);
+        setError(null);
+        const user = username.trim();
         try {
-          await onSubmit(username.trim(), password);
-        } finally {
+          // Verify before downloading: a wrong-credential submit should
+          // fail fast here (login.php check) with a clear message instead of
+          // kicking off a download that fails. On success, store the creds
+          // in the shared context (so the top-of-Home badge reflects it and
+          // later downloads skip this form), then start the download.
+          const domain = domainFromAccountLabel(source.account_label);
+          const res = await verifyMpiCredentials(domain ?? 'mamma', user, password);
+          if (!res.valid) {
+            setError(res.detail);
+            return;
+          }
+          if (domain) ctx.signIn(domain, { username: user, password });
+          await onSubmit(user, password);
           // Best-effort wipe of the in-component copy of the password.
           // The browser may retain it in form-autofill caches, which is
           // out of our reach — the helper text on the form is explicit
           // about the backend not storing anything.
           setUsername('');
           setPassword('');
+        } finally {
           setSubmitting(false);
         }
       }}
@@ -845,6 +887,12 @@ function SignInForm({
           </button>
         </div>
       </div>
+      {error && (
+        <div className="mt-2 flex items-start gap-1.5 text-[11px] text-status-failed">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+          <span className="break-words">{error}</span>
+        </div>
+      )}
       <div className="mt-2 text-[10.5px] text-foreground-faint leading-relaxed">
         Sent once over HTTPS to <span className="font-mono">download.is.tue.mpg.de</span>.
         The backend uses them to compose a single POST request, then drops the

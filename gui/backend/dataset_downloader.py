@@ -39,7 +39,7 @@ from flask import Flask, jsonify, request
 # crucial bits — they ensure HTML "auth failed" pages are caught early
 # and credentials never appear in any error string returned to the user.
 from data_readiness import (
-    _ALLOWED_HOSTS, _MPI_DOWNLOAD_URL,
+    _ALLOWED_HOSTS, _MPI_DOWNLOAD_URL, _DOWNLOAD_LIMIT_MSG,
     _check_url, _is_html_error, _safe_error,
 )
 
@@ -665,7 +665,7 @@ def _download_one_mpi(sfile: str, dest_path: Path, form_template: bytes,
                         break
                     if first:
                         if _is_html_error(chunk):
-                            raise RuntimeError("Server returned an HTML error page (auth or file path may be wrong).")
+                            raise RuntimeError(_DOWNLOAD_LIMIT_MSG)
                         first = False
                     f.write(chunk)
                     downloaded += len(chunk)

@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Loader2,
   LogIn,
   LogOut,
   UserPlus,
@@ -14,6 +15,7 @@ import {
   DOMAIN_LABEL,
   REGISTER_URL,
   useCredentials,
+  verifyMpiCredentials,
 } from './CredentialsContext';
 
 /*
@@ -22,10 +24,11 @@ import {
  * gutter), but two interactive sub-cards instead of two pills.
  *
  *   - Signed-out sub-card: a tiny username/password form. On submit the
- *     credentials are written into CredentialsContext *only*; no network
- *     call goes out from this card. Validation is deferred to the first
- *     real download attempt against MPI (the backend's existing 401
- *     surface).
+ *     credentials are verified against the project site's login.php (via
+ *     the backend's /api/data/readiness/verify-mpi route) and are written
+ *     into CredentialsContext *only on a confirmed-valid response* — so the
+ *     "signed in" state reflects a real login, not just a filled form.
+ *     A rejected attempt shows an inline error and keeps the form open.
  *   - Signed-in sub-card: green-dot indicator, `Signed in as <user>`,
  *     and a Sign out button that wipes that domain's slot.
  *
@@ -224,20 +227,42 @@ function SignInBody({ domain }: { domain: CredentialDomain }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [show, setShow] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const label = DOMAIN_LABEL[domain];
-  const canSubmit = username.trim().length > 0 && password.length > 0;
+  const canSubmit =
+    username.trim().length > 0 && password.length > 0 && !verifying;
+
+  // Verify the credentials against the project site's login.php before
+  // flipping this domain to "signed in" — the backend reports a clean
+  // valid/invalid (login is not rate-limited, unlike the download server).
+  // Only on a confirmed-valid response do we hand the creds to the
+  // context — so "signed in" reflects a real login, not just a filled form.
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setVerifying(true);
+    setError(null);
+    const user = username.trim();
+    try {
+      const res = await verifyMpiCredentials(domain, user, password);
+      if (!res.valid) {
+        setError(res.detail);
+        return;
+      }
+      // Confirmed valid — only now persist into context, then wipe locals.
+      ctx.signIn(domain, { username: user, password });
+      setUsername('');
+      setPassword('');
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   return (
+    <>
     <form
-      onSubmit={e => {
-        e.preventDefault();
-        if (!canSubmit) return;
-        ctx.signIn(domain, { username: username.trim(), password });
-        // Wipe the local copies — the context now holds the only
-        // reference the app needs.
-        setUsername('');
-        setPassword('');
-      }}
+      onSubmit={submit}
       className="flex flex-col sm:flex-row gap-2"
     >
       <input
@@ -272,9 +297,19 @@ function SignInBody({ domain }: { domain: CredentialDomain }) {
         disabled={!canSubmit}
         className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11px] rounded bg-primary text-primary-foreground font-medium disabled:opacity-50 disabled:cursor-not-allowed shadow-sm shadow-black/30"
       >
-        <LogIn className="w-3 h-3" />
-        Sign in
+        {verifying ? (
+          <Loader2 className="w-3 h-3 animate-spin" />
+        ) : (
+          <LogIn className="w-3 h-3" />
+        )}
+        {verifying ? 'Verifying…' : 'Sign in'}
       </button>
     </form>
+    {error && (
+      <p className="mt-1.5 text-[11px] text-status-failed leading-relaxed">
+        {error}
+      </p>
+    )}
+    </>
   );
 }

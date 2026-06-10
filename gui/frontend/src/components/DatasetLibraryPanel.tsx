@@ -15,7 +15,7 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { useCredentials } from './CredentialsContext';
+import { DOMAIN_LABEL, REGISTER_URL, useCredentials, verifyMpiCredentials } from './CredentialsContext';
 
 /*
  * Dataset library — second card on Home, below the body-models / weights
@@ -254,6 +254,25 @@ export function DatasetLibraryPanel() {
     }
   };
 
+  // Inline-form path only: verify the typed credentials before kicking off
+  // a (multi-file) download, so a wrong password fails fast with a clear
+  // message instead of queuing a job that fails file-by-file. On success,
+  // store the creds in the shared context — the badge updates and later
+  // downloads reuse them without re-verifying. The already-signed-in path
+  // (onPrimary) calls `start` directly: those creds were already verified
+  // at SignInCenter, so re-checking them would waste a request.
+  const signInAndStart = async (username: string, password: string): Promise<boolean> => {
+    setStartError(null);
+    const res = await verifyMpiCredentials('mamma', username, password);
+    if (!res.valid) {
+      setStartError(res.detail);
+      return false;
+    }
+    ctx.signIn('mamma', { username, password });
+    await start(username, password);
+    return true;
+  };
+
   const cancel = async () => {
     if (!job) return;
     try {
@@ -387,7 +406,7 @@ export function DatasetLibraryPanel() {
                 sessionSignedIn={sessionSignedIn}
                 onOpenSignIn={onPrimary}
                 onCancelSignIn={() => { setSignInOpen(false); setStartError(null); }}
-                onSubmit={start}
+                onSubmit={signInAndStart}
                 startError={startError}
               />
             </>
@@ -413,7 +432,7 @@ function FamilyForm({
   sessionSignedIn: boolean;
   onOpenSignIn: () => void;
   onCancelSignIn: () => void;
-  onSubmit: (u: string, p: string) => Promise<void> | void;
+  onSubmit: (u: string, p: string) => Promise<boolean | void> | boolean | void;
   startError: string | null;
 }) {
   const toggleIn = (key: keyof Selection, id: string) => {
@@ -907,7 +926,7 @@ function SignInForm({
   accountLabel: string;
   registerUrl: string;
   onCancel: () => void;
-  onSubmit: (u: string, p: string) => Promise<void> | void;
+  onSubmit: (u: string, p: string) => Promise<boolean | void> | boolean | void;
   error: string | null;
 }) {
   const [username, setUsername] = useState('');
@@ -923,10 +942,14 @@ function SignInForm({
         if (!canSubmit) return;
         setSubmitting(true);
         try {
-          await onSubmit(username.trim(), password);
+          // Keep the typed credentials on a failed verify (onSubmit returns
+          // false) so the user can fix them; only wipe on success.
+          const ok = await onSubmit(username.trim(), password);
+          if (ok !== false) {
+            setUsername('');
+            setPassword('');
+          }
         } finally {
-          setUsername('');
-          setPassword('');
           setSubmitting(false);
         }
       }}
@@ -1141,7 +1164,19 @@ function ProgressPanel({
       {job.error && (
         <div className="flex items-start gap-2 text-[11px] text-foreground-muted bg-status-failed-bg/40 border border-status-failed/20 rounded p-2">
           <AlertCircle className="w-3.5 h-3.5 text-status-failed flex-shrink-0 mt-0.5" />
-          <span className="break-words">{job.error}</span>
+          <span className="break-words">
+            {job.error}
+            {' '}
+            <a
+              href={REGISTER_URL.mamma.replace('register.php', '')}
+              target="_blank"
+              rel="noreferrer"
+              className="text-primary hover:underline inline-flex items-center gap-0.5 whitespace-nowrap"
+            >
+              Open the {DOMAIN_LABEL.mamma} website
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          </span>
         </div>
       )}
     </div>

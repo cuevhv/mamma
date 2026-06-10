@@ -67,6 +67,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # body, so the destination must be trustworthy.
 _ALLOWED_HOSTS = frozenset({
     "download.is.tue.mpg.de",
+    "mamma.is.tue.mpg.de",
+    "smpl-x.is.tue.mpg.de",
     "dl.fbaipublicfiles.com",
     "github.com",
     "github-releases.githubusercontent.com",  # GH release redirect target
@@ -80,6 +82,24 @@ _ALLOWED_HOSTS = frozenset({
 })
 
 _MPI_DOWNLOAD_URL = "https://download.is.tue.mpg.de/download.php"
+
+# One friendly, consistent message for every "the download server won't
+# give us the file right now" situation. The server signals this several
+# ways (an HTML landing page (200), a 403, or a 429), but they all mean
+# the same thing to a user, so they share one message. Kept deliberately
+# vague on cause (we don't claim retrying makes it worse) and reassuring
+# about credentials (sign-in is verified separately against login.php).
+# Nudges the user to try the file directly on the project website: it's a
+# quick sanity check that the problem is the server limiting their IP, and
+# a browser download is a fallback if it happens to work there.
+_DOWNLOAD_LIMIT_MSG = (
+    "We couldn't fetch this file from the download server right now. It "
+    "looks like the server is temporarily limiting downloads from your IP. "
+    "This usually clears within about 24 hours, so please try again later. "
+    "As a double-check, try signing in on the project website and "
+    "downloading the file directly from the website. "
+    "If downloading still fails, the limit is on the server, not your account."
+)
 
 
 # ─── Asset descriptors ───────────────────────────────────────────────────
@@ -264,6 +284,21 @@ def _find_asset(asset_id: str) -> Optional[DataAsset]:
     return next((a for a in ASSETS if a.id == asset_id), None)
 
 
+def _smallest_mpi_asset(domain: str) -> Optional[DataAsset]:
+    """Return the smallest MpiSource asset whose source domain matches.
+
+    Used by the credential-verify route: probing the smallest file in a
+    domain keeps the check cheap (the worker only reads the first chunk
+    anyway, but a small file also minimises wasted server work)."""
+    candidates = [
+        a for a in ASSETS
+        if isinstance(a.source, MpiSource) and a.source.domain == domain
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda a: a.size_hint_mb or float("inf"))
+
+
 # ─── Job table ───────────────────────────────────────────────────────────
 
 # In-memory job table. Each entry holds progress + state for one download.
@@ -333,18 +368,14 @@ def _stream_to_disk(resp, dest_tmp: Path, job_id: str) -> None:
                 break
             if first:
                 if _is_html_error(chunk):
-                    # The MPI download endpoint returns its HTML landing
-                    # page (200 OK + text/html) for several distinct
-                    # error states: wrong sfile, ACL miss, soft rate
-                    # limit, or a stale session. Listing them all beats
-                    # guessing "auth failed" and frustrating users with
-                    # correct credentials.
-                    raise RuntimeError(
-                        "Server returned an HTML landing page instead of "
-                        "the file body. Common causes: the sfile is wrong, "
-                        "or the server is rate-limiting requests. Wait a "
-                        "minute and retry."
-                    )
+                    # The MPI download endpoint serves an HTML landing page
+                    # (200 OK + text/html) instead of the file when it's
+                    # limiting downloads from this IP — the same situation a
+                    # 403/429 signals on other requests. Surface the one
+                    # shared, friendly message so every failure path reads
+                    # the same. Sign-in credentials are verified separately
+                    # (login.php), so this is not a "wrong password" case.
+                    raise RuntimeError(_DOWNLOAD_LIMIT_MSG)
                 first = False
             f.write(chunk)
             downloaded += len(chunk)
@@ -396,37 +427,32 @@ def _safe_error(exc: BaseException) -> str:
         # is wrong" — point users at their credentials in that case only.
         if exc.code == 401:
             return (
-                "HTTP 401 Unauthorized — username or password is wrong. "
-                "Re-check the credentials you signed in with."
+                "Those credentials weren't accepted. Please double-check the "
+                "username (the email you registered with) and password."
             )
-        # 403 is ambiguous on this server: the same status comes back for
-        # invalid creds, missing per-file access, IP rate limiting, and
-        # the wrong wire format. Spell out the possibilities instead of
-        # forcing a guess.
-        if exc.code == 403:
-            return (
-                "HTTP 403 Forbidden — credentials may be wrong, or the server "
-                "may be rate-limiting you. Wait a minute and retry."
-            )
-        # 429 is the explicit rate-limit code. Some servers also send
-        # Retry-After; surface it when present.
-        if exc.code == 429:
-            retry_after = exc.headers.get("Retry-After") if exc.headers else None
-            if retry_after:
-                return f"HTTP 429 Too Many Requests — server asks you to retry after {retry_after}s."
-            return "HTTP 429 Too Many Requests — server is rate-limiting. Retry in a minute."
+        # 403 and 429 are both the download server limiting this IP — NOT
+        # an auth failure (a wrong password returns 401, above). Use the one
+        # shared, friendly message so every limit path reads the same.
+        if exc.code in (403, 429):
+            return _DOWNLOAD_LIMIT_MSG
         # 5xx covers server-side faults; never the user's problem.
         if 500 <= exc.code < 600:
             return (
-                f"HTTP {exc.code} server-side error — not a client problem. "
-                "Retry; if it persists, the MAMMA download server may be down."
+                "The download server hit a problem on its end. This isn't "
+                "something on your side — please try again in a little while."
             )
-        return f"Server returned HTTP {exc.code} {exc.reason or ''}.".rstrip()
+        return (
+            "The download server returned an unexpected response "
+            f"(HTTP {exc.code}). Please try again later."
+        )
     if isinstance(exc, urllib.error.URLError):
-        return "Network error: could not reach the download server."
+        return (
+            "We couldn't reach the download server. Please check your "
+            "internet connection and try again."
+        )
     if isinstance(exc, RuntimeError):
         return str(exc)
-    return f"{type(exc).__name__}: download failed."
+    return "The download didn't complete. Please try again."
 
 
 # ─── Workers ─────────────────────────────────────────────────────────────
@@ -651,6 +677,90 @@ def _run_mpi(asset: DataAsset, username: str, password: str, job_id: str) -> Non
         del form_body
 
 
+def _login_url_for(src: MpiSource) -> str:
+    """Derive a domain's website LOGIN url from its registration url.
+
+    Every MPI project site (mamma.is.tue.mpg.de, smpl-x.is.tue.mpg.de, …)
+    serves a ``login.php`` next to its ``register.php``. Deriving the login
+    url from the registry's ``register_url`` keeps this data-driven — no
+    second hard-coded host table to drift out of sync.
+    """
+    return src.register_url.replace("register.php", "login.php")
+
+
+def _verify_mpi_credentials(asset: DataAsset, username: str, password: str) -> dict:
+    """Verify MPI credentials against the project site's LOGIN endpoint.
+
+    This deliberately does NOT touch ``download.php``. That endpoint is the
+    rate-limited one: a wrong password there returns 401, but once an IP
+    trips the (~24-hour) download block every request returns an opaque 403
+    regardless of whether the credentials are valid — so it can neither
+    verify reliably nor be probed safely (verifying could itself get the
+    user blocked).
+
+    ``login.php`` is a plain, non-rate-limited auth check. Observed wire
+    behaviour (confirmed live 2026-06-10):
+
+      * correct credentials  -> 302 redirect away from the login page
+      * wrong credentials     -> 200 that re-renders the login form
+
+    So a 3xx is the unambiguous "valid" signal and a 200 is "wrong username
+    or password" — no rate-limit hedging needed, because logging in is not
+    rate-limited. Returns ``{"valid": bool, "detail": str}``. Credentials
+    live only in this frame's POST body.
+    """
+    src: MpiSource = asset.source  # type: ignore[assignment]
+    login_url = _login_url_for(src)
+    form_body = urllib.parse.urlencode(
+        {"username": username, "password": password, "commit": "Log in"}
+    ).encode("utf-8")
+    del username, password
+
+    # Don't follow the redirect — the 3xx itself is the success signal.
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+        _NoRedirect,
+    )
+    try:
+        _check_url(login_url)
+        # Prime a PHP session cookie (the login form sets PHPSESSID on GET;
+        # the POST is accepted within that session).
+        try:
+            opener.open(
+                urllib.request.Request(login_url, headers={"User-Agent": "Mozilla/5.0"}),
+                timeout=30,
+            ).read()
+        except Exception:  # noqa: BLE001 — priming is best-effort
+            pass
+        req = urllib.request.Request(
+            login_url, data=form_body, method="POST",
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+        )
+        try:
+            resp = opener.open(req, timeout=30)
+            code = resp.getcode()
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+        if 300 <= code < 400:
+            return {"valid": True, "detail": "Credentials accepted."}
+        site = src.register_url.replace("register.php", "")
+        return {"valid": False, "detail": (
+            "Those credentials weren't accepted. Please double-check the "
+            f"username (the email you registered with at {site}) and password."
+        )}
+    except Exception as exc:  # noqa: BLE001 — surface a safe message to the UI
+        return {"valid": False, "detail": _safe_error(exc)}
+    finally:
+        del form_body
+
+
 # ─── Flask wiring ────────────────────────────────────────────────────────
 
 def register_routes(app: Flask) -> None:
@@ -708,6 +818,24 @@ def register_routes(app: Flask) -> None:
         ).start()
         # Don't echo the username back. The frontend already has it.
         return jsonify({"job_id": job_id})
+
+    @app.post("/api/data/readiness/verify-mpi")
+    def _verify_mpi():
+        # Credential check for a sign-in domain (mamma/smplx): authenticate
+        # against the project site's login.php (NOT the rate-limited
+        # download.php). Any asset in the domain supplies the site url, so
+        # we reuse _smallest_mpi_asset. Creds live only in this frame.
+        body = request.get_json(silent=True) or {}
+        domain = str(body.get("domain") or "")
+        username = str(body.get("username") or "")
+        password = str(body.get("password") or "")
+        if not username or not password:
+            return jsonify({"error": "username and password are required"}), 400
+        asset = _smallest_mpi_asset(domain)
+        if asset is None:
+            return jsonify({"error": f"no MPI asset for domain '{domain}'"}), 404
+        result = _verify_mpi_credentials(asset, username, password)
+        return jsonify(result)
 
     @app.get("/api/data/readiness/job/<job_id>")
     def _job(job_id):

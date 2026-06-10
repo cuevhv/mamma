@@ -66,6 +66,51 @@ export function domainFromAccountLabel(label: string): CredentialDomain | null {
   return null;
 }
 
+export interface VerifyResult {
+  valid: boolean;
+  detail: string;
+}
+
+/**
+ * Verify MPI credentials for a domain against the backend before treating
+ * the user as signed in. The backend (`/api/data/readiness/verify-mpi`)
+ * authenticates against the project site's login.php — NOT the
+ * rate-limited download.php — so the result is unambiguous: `valid: true`
+ * means the login succeeded, `valid: false` means the username/password is
+ * wrong (the `detail` says which). Because logging in is not rate-limited,
+ * verifying can't trip the 24-hour download block. Single source of truth
+ * shared by the sign-in card and the inline download forms so all entry
+ * points apply the same check. Credentials are sent once over HTTPS and
+ * never persisted.
+ */
+export async function verifyMpiCredentials(
+  domain: CredentialDomain,
+  username: string,
+  password: string,
+): Promise<VerifyResult> {
+  try {
+    const r = await fetch('/api/data/readiness/verify-mpi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, username, password }),
+    });
+    const data = (await r.json().catch(() => ({}))) as {
+      valid?: boolean;
+      detail?: string;
+      error?: string;
+    };
+    if (!r.ok || !data.valid) {
+      return {
+        valid: false,
+        detail: data.detail || data.error || `Verification failed (HTTP ${r.status}).`,
+      };
+    }
+    return { valid: true, detail: data.detail || 'Credentials accepted.' };
+  } catch {
+    return { valid: false, detail: 'Could not reach the server to verify credentials.' };
+  }
+}
+
 export function CredentialsProvider({ children }: { children: React.ReactNode }) {
   const [creds, setCreds] = useState<{ mamma: Credential | null; smplx: Credential | null }>({
     mamma: null,
