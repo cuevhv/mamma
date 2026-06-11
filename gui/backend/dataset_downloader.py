@@ -13,9 +13,11 @@ Wraps the ``data/download_mamma_*.sh`` scripts behind a single GUI:
 The sequence lists shipped by the bash scripts are the canonical
 inventory; we parse them at runtime from ``data/download_mamma_*.sh`` so
 adding a new sequence in the shell script automatically surfaces in the
-widget. We do NOT shell out — the actual HTTPS POSTs are driven by
-``urllib.request`` here so credentials never appear in a process
-argument list (no leak via ``/proc/<pid>/cmdline``).
+widget. The actual downloads go through ``data_readiness._wget_post`` —
+download.php serves the file body to wget but not to urllib, so we shell
+out to wget; credentials are handed to it via a 0600 ``--post-file`` temp
+file and never appear on the command line (no leak via
+``/proc/<pid>/cmdline``).
 """
 from __future__ import annotations
 
@@ -25,9 +27,7 @@ import os
 import re
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import uuid
 from pathlib import Path
 from typing import Callable, Optional
@@ -40,7 +40,7 @@ from flask import Flask, jsonify, request
 # and credentials never appear in any error string returned to the user.
 from data_readiness import (
     _ALLOWED_HOSTS, _MPI_DOWNLOAD_URL, _DOWNLOAD_LIMIT_MSG,
-    _check_url, _is_html_error, _safe_error,
+    _check_url, _is_html_error, _safe_error, _wget_post,
 )
 
 logger = logging.getLogger(__name__)
@@ -647,29 +647,15 @@ def _download_one_mpi(sfile: str, dest_path: Path, form_template: bytes,
     url = f"{_MPI_DOWNLOAD_URL}?domain=mamma&resume=1&sfile={urllib.parse.quote(f'{_REMOTE_ROOT}/{sfile}', safe='/')}"
     try:
         _check_url(url)
-        req = urllib.request.Request(
-            url, data=form_template, method="POST",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        # wget, not urllib: download.php serves the file to wget but returns
+        # its HTML login page to urllib (see data_readiness._wget_post).
+        # current_total stays 0 — wget streams without a pre-known size here.
+        _update_job(job_id, current_label=label, current_bytes=0,
+                    current_total=0)
+        _wget_post(
+            url, form_template, tmp,
+            on_bytes=lambda n: _update_job(job_id, current_bytes=n),
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            total_hdr = resp.headers.get("Content-Length")
-            total = int(total_hdr) if total_hdr and total_hdr.isdigit() else 0
-            _update_job(job_id, current_label=label, current_bytes=0,
-                        current_total=total)
-            downloaded = 0
-            first = True
-            with open(tmp, "wb") as f:
-                while True:
-                    chunk = resp.read(64 * 1024)
-                    if not chunk:
-                        break
-                    if first:
-                        if _is_html_error(chunk):
-                            raise RuntimeError(_DOWNLOAD_LIMIT_MSG)
-                        first = False
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    _update_job(job_id, current_bytes=downloaded)
         os.replace(tmp, dest_path)
         return "ok"
     except Exception as exc:  # noqa: BLE001

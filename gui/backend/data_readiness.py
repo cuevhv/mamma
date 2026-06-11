@@ -3,14 +3,21 @@
 Three acquisition modes, picked per asset by its source descriptor:
 
   PublicSource — single HTTPS GET, no credentials.
-  MpiSource    — single HTTPS POST to download.is.tue.mpg.de with a
-                 username+password form body, mirroring the wire format
-                 used by data/download_mamma_*.sh. Credentials arrive in
-                 ONE request body from the browser, are used exactly once
-                 to compose the outbound POST, and are then dropped. They
-                 are never logged, never echoed in any response or error
-                 message, never written to disk, and never passed to a
-                 subprocess (so they cannot leak via /proc/<pid>/cmdline).
+  MpiSource    — a single ``wget`` POST to download.is.tue.mpg.de with a
+                 username+password form body, mirroring data/download_mamma_*.sh
+                 byte-for-byte. We shell out to ``wget`` (not urllib) on
+                 purpose: the download.php endpoint serves the file body to
+                 wget but returns its HTML login page to urllib requests —
+                 even ones that copy wget's header values — because it keys
+                 off lower-level request traits (header order, HTTP/keep-alive
+                 behaviour) that urllib cannot reproduce. The CLI scripts use
+                 wget for the same reason, so this keeps both paths identical.
+                 Credentials arrive in ONE request body from the browser and
+                 are handed to wget via ``--post-file`` pointing at a 0600
+                 temp file that is deleted immediately after; they are never
+                 placed on wget's command line (so they cannot leak via
+                 /proc/<pid>/cmdline), never logged, and never echoed in any
+                 response or error message.
   ManualSource — short documented steps the user has to follow themselves.
 
 Both background-downloading modes stream into ``<dest>.part`` and
@@ -32,6 +39,9 @@ import http.cookiejar
 import logging
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -561,30 +571,164 @@ def _run_public(asset: DataAsset, job_id: str) -> None:
         logger.warning("Public download failed: asset=%s (%s)", asset.id, type(exc).__name__)
 
 
-def _run_mpi(asset: DataAsset, username: str, password: str, job_id: str) -> None:
-    """One-shot MPI auth + download.
+def _wget_error_message(returncode: int, stderr: bytes) -> str:
+    """Map a failed wget run to a user-safe message (never echoes creds).
 
-    Wire format (matches data/download_mamma_*.sh, which is the canonical
-    reference; the server 500s on shapes that don't match):
+    wget prints the HTTP status it choked on as e.g. ``ERROR 403:
+    Forbidden.`` on stderr; parse that so 401 (bad creds) and 403/429
+    (server limiting the IP) read differently — same distinction the
+    urllib path drew via :func:`_safe_error`."""
+    text = stderr.decode("utf-8", "replace")
+    m = re.search(r"ERROR\s+(\d{3})", text)
+    if m:
+        code = int(m.group(1))
+        if code == 401:
+            return (
+                "Those credentials weren't accepted. Please double-check the "
+                "username (the email you registered with) and password."
+            )
+        if code in (403, 429):
+            return _DOWNLOAD_LIMIT_MSG
+        if 500 <= code < 600:
+            return (
+                "The download server hit a problem on its end. This isn't "
+                "something on your side — please try again in a little while."
+            )
+        return (
+            "The download server returned an unexpected response "
+            f"(HTTP {code}). Please try again later."
+        )
+    # wget exit code 4 == network failure (DNS, connection refused, …).
+    if returncode == 4:
+        return (
+            "We couldn't reach the download server. Please check your "
+            "internet connection and try again."
+        )
+    return "The download didn't complete. Please try again."
+
+
+def _wget_post(
+    request_url: str, form_body: bytes, dest_tmp: Path,
+    on_bytes: Optional[callable] = None,
+) -> None:
+    """POST ``form_body`` to ``request_url`` with wget, saving to ``dest_tmp``.
+
+    wget is the only client download.php reliably serves (see module
+    docstring), so both the data-readiness *and* the dataset downloaders
+    funnel through here. ``form_body`` (the URL-encoded
+    ``username=…&password=…``) is written to a 0600 temp file passed via
+    ``--post-file`` so the credentials never appear on wget's command line;
+    the temp file is removed in ``finally``. ``on_bytes`` (if given) is
+    called with the running byte count so each caller can map progress onto
+    its own job schema. Raises ``RuntimeError`` (user-safe) on any failure."""
+    wget = shutil.which("wget")
+    if wget is None:
+        raise RuntimeError(
+            "wget is required to download from the MPI server but wasn't "
+            "found on PATH. It ships with the conda env — install it with "
+            "`conda install -n mamma wget` and retry."
+        )
+
+    # Credentials -> 0600 temp file alongside the .part (same filesystem),
+    # removed as soon as the transfer ends.
+    fd, cred_name = tempfile.mkstemp(prefix="._mpi_post_", dir=str(dest_tmp.parent))
+    cred_path = Path(cred_name)
+    try:
+        # mkstemp already creates the file 0600 on POSIX; tighten explicitly
+        # too, but best-effort — os.fchmod is absent on Windows.
+        try:
+            os.fchmod(fd, 0o600)
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(fd, "wb") as cf:
+            cf.write(form_body)
+
+        # `-O` truncates any stale .part, so a previous HTML login page can't
+        # be appended to. No --no-check-certificate: download.is.tue.mpg.de
+        # presents a valid cert, and creds ride in the POST body.
+        cmd = [
+            wget,
+            "--post-file", str(cred_path),
+            "--tries=3", "--timeout=60", "-q",
+            "-O", str(dest_tmp),
+            request_url,
+        ]
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        # Poll the growing .part for a live progress estimate.
+        while proc.poll() is None:
+            if on_bytes is not None:
+                try:
+                    on_bytes(dest_tmp.stat().st_size)
+                except OSError:
+                    pass
+            time.sleep(0.5)
+        stderr = b""
+        if proc.stderr is not None:
+            try:
+                stderr = proc.stderr.read() or b""
+            finally:
+                proc.stderr.close()
+        if on_bytes is not None:
+            try:
+                on_bytes(dest_tmp.stat().st_size)
+            except OSError:
+                pass
+
+        if proc.returncode != 0:
+            raise RuntimeError(_wget_error_message(proc.returncode, stderr))
+
+        # wget exits 0 on a 200 even when the body is download.php's own HTML
+        # login page (credentials not accepted / server stonewalling). Sniff
+        # the first bytes and reject — mirrors the urllib path's check.
+        try:
+            with open(dest_tmp, "rb") as fh:
+                head = fh.read(256)
+        except OSError:
+            head = b""
+        if not head or _is_html_error(head):
+            raise RuntimeError(_DOWNLOAD_LIMIT_MSG)
+    finally:
+        cred_path.unlink(missing_ok=True)
+
+
+def _wget_to_disk(
+    request_url: str, form_body: bytes, dest_tmp: Path, job_id: str,
+    size_hint_mb: int = 0,
+) -> None:
+    """data-readiness adapter over :func:`_wget_post` — maps the running
+    byte count onto this panel's ``bytes_downloaded``/``bytes_total`` job
+    fields (the dataset downloader wraps the same core differently)."""
+    if size_hint_mb:
+        _update_job(job_id, bytes_total=size_hint_mb * 1024 * 1024)
+    _wget_post(
+        request_url, form_body, dest_tmp,
+        on_bytes=lambda n: _update_job(job_id, bytes_downloaded=n),
+    )
+
+
+def _run_mpi(asset: DataAsset, username: str, password: str, job_id: str) -> None:
+    """One-shot MPI auth + download, via wget.
+
+    download.php serves the file body to wget but returns its HTML login
+    page to urllib — even to urllib calls that copy wget's header values —
+    so we shell out to wget, the same client the canonical
+    data/download_mamma_*.sh scripts use. See module docstring.
+
+    Wire format (matches data/download_mamma_*.sh):
 
       URL : https://download.is.tue.mpg.de/download.php
               ?domain=<domain>&resume=1&sfile=<sfile>
       POST: username=<u>&password=<p>      ← creds only
 
-    Putting the *non-secret* request descriptors (sfile/domain/resume) in
-    the URL keeps the wire shape identical to the shell downloaders.
-    Credentials still go only in the POST body so they don't surface in
-    URL logs, /proc/<pid>/cmdline, browser history, or any HTTP referer
-    header that some downstream tool might emit.
-
-    Security contract (unchanged):
-      * `username` and `password` are local parameters only.
-      * They are used to build a single URL-encoded form body, sent in
-        one HTTPS POST to download.is.tue.mpg.de.
-      * They are then deleted from this frame; nothing else in this
-        module retains them.
-      * They are never written to disk, logged, echoed in any response,
-        or passed to a subprocess.
+    Security contract:
+      * `username`/`password` are local parameters, used once to build a
+        single URL-encoded form body.
+      * That body is written to a 0600 temp file handed to wget via
+        --post-file (never on argv → never in /proc/<pid>/cmdline), and the
+        temp file is deleted immediately after the transfer.
+      * Credentials are never logged or echoed in any response/error.
     """
     src: MpiSource = asset.source  # type: ignore[assignment]
     dest_path = (_REPO_ROOT / asset.rel_path).resolve()
@@ -624,25 +768,7 @@ def _run_mpi(asset: DataAsset, username: str, password: str, job_id: str) -> Non
         # assets it's data/. Mirrors the `mkdir -p` the shell downloaders do
         # and the dest.parent.mkdir() that _run_public/_run_gdrive already do.
         tmp.parent.mkdir(parents=True, exist_ok=True)
-        # Match wget's request fingerprint exactly. The MPI download.php
-        # endpoint serves the file body for wget but returns an HTML
-        # landing page for "vanilla" urllib calls — observed difference
-        # is the header set wget sends by default. Spoofing the
-        # User-Agent alone is not enough; the full quad below is what
-        # makes the server treat us as a download client.
-        req = urllib.request.Request(
-            request_url, data=form_body, method="POST",
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "Wget/1.21.4",
-                "Accept": "*/*",
-                "Accept-Encoding": "identity",
-                "Connection": "Keep-Alive",
-            },
-        )
-        # The body is sent on the wire and the response is streamed.
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            _stream_to_disk(resp, tmp, job_id)
+        _wget_to_disk(request_url, form_body, tmp, job_id, asset.size_hint_mb)
         if src.extract and zip_path is not None:
             _atomic_install_file(tmp, zip_path)
             _update_job(job_id, state="extracting")
