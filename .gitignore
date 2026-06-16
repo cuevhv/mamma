@@ -21,6 +21,10 @@ outputs/
 var/
 logs/
 
+# Golden reference for scripts/regression_check.py is generated locally on
+# main (--make-golden); large numeric arrays, not committed.
+tests/golden/
+
 # landmarks/train.py consolidates all run artifacts (experiments, checkpoints,
 # wandb, Hydra run dir) under this single root at the repo root.
 landmark_outputs/
