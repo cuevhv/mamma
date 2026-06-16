@@ -112,7 +112,33 @@ per-crop host→device copy — the foundation for decode-on-GPU (Phase 2 / NVDE
 > Layering note: with A merged, `ViTDetDataset.__getitem__` (and its PR #2 blur)
 > is no longer used by `ma_2d` — a candidate for removal in a follow-up cleanup.
 
+## End-to-end: absolute "seconds saved" (all changes vs. `main`)
+
+All shipped changes (PR #2 + B1 + A + viz-default-off) live in `ma_2d`; the other
+four steps are unchanged, so **pipeline seconds-saved = `ma_2d` seconds-saved**.
+Measured per camera (`main` vs. the optimized branch), then scaled by camera
+count (`ma_2d` is per-camera-sequential → linear in cameras).
+
+| sequence (1 cam) | `main` | optimized | saved/cam | speedup |
+|---|---:|---:|---:|---:|
+| WestCoastSwing — 2 ppl, 225 f | 69.2 s | 23.0 s | **46 s** | **3.0×** |
+| MultiMama — **6 ppl, 743 f** | 298.1 s | 128.5 s | **170 s** | **2.3×** |
+
+Extrapolated to full multi-camera sequences (`ma_2d` step wall time):
+
+| sequence | cams | `main` `ma_2d` | optimized `ma_2d` | **saved** |
+|---|---:|---:|---:|---:|
+| WestCoastSwing (2 ppl, 225 f) | 6 | 6.9 min | 2.3 min | **~4.6 min** |
+| MultiMama (6 ppl, 743 f) | 32 | **~159 min** | **~68 min** | **~90 min** |
+
+Stress-axes covered: **more people** (2→6), **more frames** (225→743), **more
+cameras** (6→32). The gain grows with the workload, so the biggest absolute
+saving is on the largest capture: a 6-person, 32-camera, 743-frame sequence's
+`ma_2d` drops from ~2.6 h to ~1.1 h — **~90 minutes saved**, at GT-accuracy parity
+(+0.01 mm) and lower peak RAM. (Numbers are measured per camera on real masks;
+the full-sequence rows are the linear ×cameras extrapolation.)
+
 ## Pending / next metrics
-- Absolute MPJPE/PVE vs GT for main vs cv2-ROI on `mamma_eval_dance`.
-- Decode optimization (the new `ma_2d` bottleneck).
-- Memory behavior at scale (6 people × 32 views, `data/mamma_multi`).
+- Decode optimization / opt-in TensorRT (the new `ma_2d` bottleneck is the forward).
+- Minimal-code path to PR #48-style causal streaming (investigation).
+- Memory behavior at scale (full 32-cam run, `data/mamma_multi`).
