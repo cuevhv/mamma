@@ -387,7 +387,10 @@ def parser():
     args.add_argument('--mask_path', type=str, default=None, help='path to detectron2 mask model')
     args.add_argument('--video_fps', type=float, default=5.0, help='FPS for generated videos')
     args.add_argument('--cam_names', nargs='*', default=None, help='space-separated camera names (e.g., IOI_01 IOI_02)')
-    args.add_argument('--save_cam_output', action=argparse.BooleanOptionalAction, default=True, help='save per-camera viz frames + video (use --no-save_cam_output to disable)')
+    args.add_argument('--save_cam_output', action=argparse.BooleanOptionalAction, default=False,
+                      help='Debug only: write per-body viz frames + stitch a preview video. '
+                           'Off by default (these artifacts are not consumed downstream); '
+                           'pass --save_cam_output to enable for inspection.')
     args.add_argument('--downsampled-verts', dest='downsampled_verts',
                       default='assets/verts_512.pkl',
                       help='Path to verts_512.pkl. Previously hard-coded to '
