@@ -188,6 +188,15 @@ Guidance:
   codec our stack decodes fastest) is a possible future speedup. *(User will
   handle re-encoding; flagged here so we account for it.)*
 
+## Non-issues (verified — don't re-investigate)
+
+- **`ma_3d` scene videos are already skipped.** `run_ma_3d` prints "Scene video
+  overlay rendering has moved to run_ma_vis.py … Skipping scene videos" and
+  produces 0 `*_smplx_scene.mp4` regardless of `--skip_scene_videos` (now a
+  no-op). No redundant per-frame mesh rendering in `ma_3d` to remove; its wall
+  time is the optimization itself (~230 s on 6 cam / 225 f / 2 ppl).
+  *Verified by measurement, 2026-06-17.*
+
 ## Open questions
 
 - Q1 — What is the full `mamma_example` sequence length, and how do the metrics
