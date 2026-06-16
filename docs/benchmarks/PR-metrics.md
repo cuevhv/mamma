@@ -1,0 +1,81 @@
+# PR metrics ledger
+
+Every optimization PR is justified by **measured** before/after numbers — never
+estimates. This ledger is the running record of how each change moves the repo
+on speed, GPU memory/utilization, CPU RAM, and accuracy. Decisions are
+metrics-driven; a change that doesn't measurably help (or that costs more than
+it saves) is rejected and recorded as such.
+
+Reference target throughout: **[rerun-io/examples-monorepo#48][pr48]** (the
+efficient MAMMA rewrite — ~11.3× end-to-end, GPU-resident). We mine its ideas
+and check our numbers against its philosophy.
+
+[pr48]: https://github.com/rerun-io/examples-monorepo/pull/48
+
+## How metrics are produced (so they're reproducible, not hallucinated)
+
+- **Speed / GPU mem / CPU RAM:** `scripts/benchmark.py` wraps a step subprocess,
+  samples peak GPU memory (per-process `nvidia-smi`) and peak CPU RSS (`psutil`
+  process tree), times wall-clock → appends to `results.jsonl` + `README.md`.
+- **GPU utilization:** sampled with `nvidia-smi --query-gpu=utilization.gpu`.
+- **Self-consistency accuracy:** `scripts/regression_check.py` — drift of `ma_2d`
+  landmarks (px) and `ma_3d` joints/vertices (mm) vs a golden snapshot of `main`.
+  (Now wipes outputs each run so it truly recomputes — see observations B3.)
+- **Absolute accuracy (planned):** MPJPE/PVE vs ground truth on
+  `mamma_eval_dance` (`gt/` dir; `run_ma_3d` computes these when `use_gt`).
+- All numbers below are on the RTX 4090 / `mamma` env unless noted, and cite the
+  measurement so they can be re-run.
+
+## Ledger
+
+### PR #1 — Regression harness + benchmark infra + roadmap/observations
+Enabling infrastructure; **no pipeline behavior change.** Establishes the golden
+snapshot, the metrics tooling, and the validation gate. Without it none of the
+numbers below would be trustworthy.
+
+### (Rejected by metrics) — Batch the `ma_2d` forward
+Measured, then **dropped**: a clean example of a metrics-driven *no*.
+
+| metric (1 cam, 426 frames) | bs=1 (baseline) | bs=16 | verdict |
+|---|---:|---:|---|
+| wall time | 329 s | 324 s (−1.6 %, noise) | no gain |
+| peak GPU memory | ~7.6 GB | ~20 GB (**+12 GB**) | worse |
+| forward speedup from batching | — | 1.08× | negligible |
+
+Root cause: `ma_2d` was **CPU-bound** (GPU ~1 % util); the forward is ~2.5 % of
+the work, and even that barely batches. Batching cost memory for no speed → cut.
+
+### PR #2 — cv2-ROI anti-alias blur in `ViTDetDataset` (inference-only)
+Replace the per-crop full-frame `skimage` gaussian blur with `cv2.GaussianBlur`
+on the bbox ROI. This was the real `ma_2d` bottleneck (97 % of per-crop time).
+
+| metric | before (main/skimage) | after (cv2-ROI) | delta |
+|---|---:|---:|---|
+| blur op / crop (4K) | 341 ms | 3.8 ms | **89× faster** |
+| `ma_2d` wall (1 cam, 426 f) | 329 s | 78 s | **4.2× faster** |
+| `ma_2d` loop rate | 1.34 frame/s | 6.45 frame/s | **4.8×** |
+| peak GPU memory | ~7.6 GB | ~7.6 GB | unchanged |
+| peak CPU RSS | 6.26 GB | 6.26 GB | unchanged |
+| accuracy: `ma_3d` 3D drift vs main | — | mean ~0.1 mm, max ~1.8 mm | negligible |
+| **accuracy: vs GT — MPJPE** | **21.65 mm** | **21.67 mm** | **+0.02 mm** |
+| accuracy: vs GT — PA-MPJPE | 18.16 mm | 18.17 mm | +0.01 mm |
+| accuracy: vs GT — PVE | 20.30 mm | 20.31 mm | +0.01 mm |
+
+**Absolute accuracy is unchanged to 0.02 mm.** GT eval on
+`mamma_eval_dance/250225_WestCoastSwing_Basic_Whip_…` (6 cameras, 225 frames,
+2 people), `run_ma_3d` `use_gt` MPJPE/PVE vs the dataset `gt/`. Same `ma_cap`
+inputs + provided masks; only `ma_2d` differs (skimage vs cv2-ROI). So PR #2 is
+**4.8× faster `ma_2d` at zero accuracy cost** — a metrics-proven win.
+
+After this fix `ma_2d` is **video-decode-bound** (~65 % of the loop is 4K H.264
+decode) — the next lever (GPU/NVDEC decode, per PR #48). Patch-level fidelity vs
+the old blur: mean |Δ| 0.014 / 255 (visible-joint 2D drift mean 0.05 px).
+
+> Note: `run_ma_3d` hardcodes `use_gt=False` in its CLI entry (line 838); the GT
+> eval above flipped it temporarily. A `--use-gt` flag is a small follow-up (the
+> GT-accuracy harness task) so this is reproducible without editing code.
+
+## Pending / next metrics
+- Absolute MPJPE/PVE vs GT for main vs cv2-ROI on `mamma_eval_dance`.
+- Decode optimization (the new `ma_2d` bottleneck).
+- Memory behavior at scale (6 people × 32 views, `data/mamma_multi`).

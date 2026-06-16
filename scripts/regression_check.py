@@ -124,9 +124,14 @@ def _preflight(cfg: Path, capture: Path) -> None:
 
 def _run_pipeline(cfg: Path, capture: Path, out_dir: Path, out_tag: str) -> Report:
     """Run the full DAG into ``out_dir``/``out_tag`` and collect timing."""
+    # Steps self-skip when their output .npz already exists, and the runner's
+    # --force only clears DONE sentinels — so without a clean slate a check
+    # silently reuses stale outputs and reports zero drift. Wipe the tree to
+    # guarantee every step recomputes from scratch.
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     status_path = out_dir / f"status-{out_tag}.jsonl"
-    if status_path.exists():
-        status_path.unlink()
     cmd = [
         sys.executable, "-m", "inference", "run",
         "--cfg", str(cfg),
