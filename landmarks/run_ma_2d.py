@@ -548,14 +548,20 @@ def main(args, out_folder, masks_folder, img_folder=None):
     model.load_state_dict(torch.load(args.weights)['state_dict'])
     model.eval()
 
-    # Resolve relative to this script (landmarks/) so the detector config
-    # is found whether launched from the repo root or from cwd=landmarks/.
-    cfg_path = os.path.join(_LANDMARKS_DIR, "configs/cascade_mask_rcnn_vitdet_h_75ep.py")
-    detectron2_cfg = LazyConfig.load(str(cfg_path))
-    detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
-    for i in range(3):
-        detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
-    detector = DefaultPredictor_Lazy(detectron2_cfg)
+    # The detector only finds person boxes in standalone (no-mask) mode; in mask
+    # mode the boxes come from the segmentation masks, so the detector is never
+    # called. Skip building it then — loading cascade Mask-RCNN ViTDet-H is pure
+    # wasted startup (weights download + load) on every masked ma_2d run.
+    detector = None
+    if masks_folder is None:
+        # Resolve relative to this script (landmarks/) so the detector config
+        # is found whether launched from the repo root or from cwd=landmarks/.
+        cfg_path = os.path.join(_LANDMARKS_DIR, "configs/cascade_mask_rcnn_vitdet_h_75ep.py")
+        detectron2_cfg = LazyConfig.load(str(cfg_path))
+        detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
+        for i in range(3):
+            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
+        detector = DefaultPredictor_Lazy(detectron2_cfg)
 
     os.makedirs(out_folder, exist_ok=True)
 

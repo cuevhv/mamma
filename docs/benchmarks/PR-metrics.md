@@ -75,6 +75,20 @@ the old blur: mean |Δ| 0.014 / 255 (visible-joint 2D drift mean 0.05 px).
 > eval above flipped it temporarily. A `--use-gt` flag is a small follow-up (the
 > GT-accuracy harness task) so this is reproducible without editing code.
 
+### B1 — Skip the unused ViTDet detector build in mask mode
+`run_ma_2d.py::main` unconditionally built `DefaultPredictor_Lazy` (cascade
+Mask-RCNN ViTDet-H), but in mask mode the detector is never called (boxes come
+from the segmentation masks). Guarded the build behind `masks_folder is None`.
+
+| metric (1 cam, masked, startup-dominated) | before | after | delta |
+|---|---:|---:|---|
+| `ma_2d` process wall time | 13.96 s | 7.66 s | **−6.3 s** |
+| peak CPU RSS | 6.26 GB | 1.67 GB | **−4.6 GB** |
+| output | — | byte-identical | **0 drift** |
+
+Pure win, zero behavior change in mask mode (detector never ran). The freed RAM
+(and the detector's GPU memory) directly helps the memory-scale targets.
+
 ## Pending / next metrics
 - Absolute MPJPE/PVE vs GT for main vs cv2-ROI on `mamma_eval_dance`.
 - Decode optimization (the new `ma_2d` bottleneck).
