@@ -89,6 +89,29 @@ from the segmentation masks). Guarded the build behind `masks_folder is None`.
 Pure win, zero behavior change in mask mode (detector never ran). The freed RAM
 (and the detector's GPU memory) directly helps the memory-scale targets.
 
+### A — GPU crop preprocessing (kornia warp/blur/normalize, on-device)
+Replace the per-crop CPU `ViTDetDataset` path in `run_ma_2d.py` with on-GPU
+preprocessing: the decoded frame is uploaded to the device **once per frame**,
+and every body's crop is produced by a kornia affine `warp_affine` (+ anti-alias
+`gaussian_blur2d`) and normalized on-device. Supersedes PR #2's cv2-ROI blur for
+`ma_2d` (the GPU path no longer goes through `ViTDetDataset`).
+
+| metric | cv2-ROI (PR #2) | GPU-preproc (A) | result |
+|---|---:|---:|---|
+| preprocess / crop (isolated) | 3.76 ms | 1.03 ms | **3.6×** |
+| `ma_2d` wall (6 cam, 225 f) | 125 s | 105 s | ~16 %¹ |
+| peak CPU RSS (6 cam) | 6.26 GB | 3.52 GB | lower¹ |
+| **GT MPJPE** (vs `gt/`) | 21.67 mm | **21.66 mm** | **+0.01 mm vs main** |
+
+¹ The 6-cam run also carries B1 (detector skip), which accounts for part of the
+wall/RSS gain; the **isolated** preprocessing speedup is the 3.6× micro-benchmark.
+Patch fidelity vs the CPU path: mean 0.14 on a 0–255 scale → GT MPJPE moves
++0.01 mm. Strategic value: the frame stays resident on the GPU and there is no
+per-crop host→device copy — the foundation for decode-on-GPU (Phase 2 / NVDEC).
+
+> Layering note: with A merged, `ViTDetDataset.__getitem__` (and its PR #2 blur)
+> is no longer used by `ma_2d` — a candidate for removal in a follow-up cleanup.
+
 ## Pending / next metrics
 - Absolute MPJPE/PVE vs GT for main vs cv2-ROI on `mamma_eval_dance`.
 - Decode optimization (the new `ma_2d` bottleneck).
