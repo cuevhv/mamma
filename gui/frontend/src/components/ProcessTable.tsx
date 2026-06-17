@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, AlertTriangle, Clock, ListChecks } from 'lucide-react';
 import { StatusBadge, statusKind, StatusKind, statusStyle, Dot } from './shared/StatusBadge';
 import { stepLabel } from './shared/stepLabels';
 import { formatTaskId } from './shared/formatTaskId';
@@ -177,6 +177,17 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
   const [capturePath, setCapturePath] = useState<string>('');
   const [search, setSearch] = useState('');
   const [latestOnly, setLatestOnly] = useState(false);
+  // Status ⇄ Timing view. 'status' shows the badge grid; 'timing' swaps every
+  // step cell for its execution time (heat-tinted, slowest = most saturated)
+  // and the rollup column for the per-sequence total. Persisted so the choice
+  // sticks across visits.
+  const [view, setView] = useState<'status' | 'timing'>(() => {
+    try { return localStorage.getItem('mamma.taskTableView') === 'timing' ? 'timing' : 'status'; }
+    catch { return 'status'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('mamma.taskTableView', view); } catch { /* ignore */ }
+  }, [view]);
 
   // Modal state for "peek at task config / preset" actions. Set by the
   // task-id and preset chip click handlers; cleared on close.
@@ -338,6 +349,39 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
         </label>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Status ⇄ Timing view toggle. Segmented control; the active
+              segment is filled. Keeps both views uncluttered — see one signal
+              per cell at a time instead of stacking status + duration. */}
+          <div
+            className="inline-flex items-center rounded-md border border-border bg-surface-2 p-0.5"
+            role="radiogroup"
+            aria-label="Table view"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={view === 'status'}
+              onClick={() => setView('status')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                view === 'status' ? 'bg-primary text-primary-foreground' : 'text-foreground-muted hover:text-foreground'
+              }`}
+              title="Show step statuses"
+            >
+              <ListChecks className="w-3.5 h-3.5" /> Status
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={view === 'timing'}
+              onClick={() => setView('timing')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                view === 'timing' ? 'bg-primary text-primary-foreground' : 'text-foreground-muted hover:text-foreground'
+              }`}
+              title="Show per-step execution times"
+            >
+              <Clock className="w-3.5 h-3.5" /> Timing
+            </button>
+          </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-subtle pointer-events-none" />
             <input
@@ -392,7 +436,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                     <div className="text-foreground-faint text-[10px] font-mono mt-0.5 tracking-wide">{step}</div>
                   </th>
                 ))}
-                <Th>Status</Th>
+                <Th>{view === 'timing' ? 'Total' : 'Status'}</Th>
                 {showActions && <Th>Actions</Th>}
               </tr>
             </thead>
@@ -400,6 +444,11 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
               {filtered.map(({ row, status }, idx) => {
                 const rowKey = `${row.taskId}::${row.seqName}`;
                 const stripeBg = idx % 2 === 0 ? 'bg-surface-1' : 'bg-surface-1/60';
+                // Slowest step in this row — the heat-tint denominator, so the
+                // bottleneck is the most saturated cell. Only needed in timing view.
+                const rowMax = view === 'timing'
+                  ? Math.max(0, ...steps.map(s => cellDurationSecs(row.cells[s]) ?? 0))
+                  : 0;
                 return (
                   <tr key={rowKey} className={`group border-b border-border-subtle/60 ${stripeBg} hover:bg-surface-3/40 transition-colors`}>
                     <td className={`sticky left-0 ${stripeBg} group-hover:bg-surface-3/40 px-4 py-3 whitespace-nowrap z-10 transition-colors`}>
@@ -476,28 +525,42 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                         : clickable
                           ? 'mamma-cell-clickable'
                           : 'cursor-default';
+                      const secs = cell ? cellDurationSecs(cell) : null;
+                      const isRunning = cell ? statusKind(cell.status) === 'Running' : false;
+                      // Heat tint scales with this cell's share of the row max
+                      // (slowest step). Suppressed under the selection ring so
+                      // it doesn't fight the highlight.
+                      const ratio = view === 'timing' && secs != null && rowMax > 0 ? secs / rowMax : 0;
+                      const tint = ratio > 0 && !isSelected
+                        ? { backgroundColor: `rgba(245, 158, 11, ${(0.06 + 0.22 * ratio).toFixed(3)})` }
+                        : undefined;
                       return (
                         <td
                           key={step}
                           className={`${baseCls} ${stateCls}`}
+                          style={tint}
                           onClick={() => clickable && onCellClick?.(row, step, cell)}
                           title={clickable ? `Open logs and outputs for ${step} on ${row.seqName} (${formatTaskId(row.taskId)})` : undefined}
                         >
-                          {cell ? (
-                            <div className="flex flex-col items-start gap-1">
-                              <StatusBadge status={cell.status} compact />
-                              {(() => {
-                                const secs = cellDurationSecs(cell);
-                                return secs != null ? (
-                                  <span
-                                    className="text-[10px] leading-none text-foreground-faint tabular-nums"
-                                    title="Step execution time"
-                                  >
-                                    {formatDurationSecs(secs)}
-                                  </span>
-                                ) : null;
-                              })()}
-                            </div>
+                          {view === 'timing' ? (
+                            secs != null ? (
+                              <span
+                                className="inline-flex items-center gap-1 text-xs tabular-nums text-foreground"
+                                title="Step execution time"
+                              >
+                                {formatDurationSecs(secs)}
+                                {isRunning && <span className="text-amber-500 animate-pulse" title="running">⟳</span>}
+                              </span>
+                            ) : (
+                              <span
+                                className="text-xs text-foreground-faint"
+                                title={cell ? 'No timing recorded (cached or legacy run)' : 'Step not selected for this task'}
+                              >
+                                —
+                              </span>
+                            )
+                          ) : cell ? (
+                            <StatusBadge status={cell.status} compact />
                           ) : (
                             <span
                               className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border border-border-subtle text-foreground-faint italic whitespace-nowrap"
@@ -510,20 +573,21 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                       );
                     })}
                     <td className="px-4 py-3">
-                      <div className="flex flex-col items-start gap-1">
+                      {view === 'timing' ? (() => {
+                        const secs = rowDurationSecs(row.cells);
+                        return secs != null && secs > 0 ? (
+                          <span
+                            className="text-sm tabular-nums text-foreground font-medium"
+                            title="Total execution time for this sequence (sum of its steps)"
+                          >
+                            {formatDurationSecs(secs)}
+                          </span>
+                        ) : (
+                          <span className="text-sm text-foreground-faint">—</span>
+                        );
+                      })() : (
                         <RowStatusBadge status={status} queuePosition={row.queuePosition} />
-                        {(() => {
-                          const secs = rowDurationSecs(row.cells);
-                          return secs != null && secs > 0 ? (
-                            <span
-                              className="text-[10px] leading-none text-foreground-faint tabular-nums"
-                              title="Total execution time for this sequence (sum of its steps)"
-                            >
-                              Σ {formatDurationSecs(secs)}
-                            </span>
-                          ) : null;
-                        })()}
-                      </div>
+                      )}
                     </td>
                     {showActions && (
                       <td className="px-4 py-3 whitespace-nowrap">
