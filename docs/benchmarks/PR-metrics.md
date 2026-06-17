@@ -163,7 +163,16 @@ on **long / many-camera** sequences (on the small 6-cam/225-f run it's a wash:
 so the model is export-friendly — the usual TensorRT risk (ONNX conversion) did
 not bite here.
 
+**Engine caching (done).** The compiled engine is cached next to the weights
+(`.trt_cache/`, keyed by weights+shape+precision+GPU+TRT version). A 1-cam smoke
+went **32 s (build+cache) → 10 s (cached load)** — the ~2 s load replaces the
+rebuild, so TensorRT now helps short/repeated runs too, and any change to the key
+inputs auto-rebuilds. Loaded engine output is bit-identical to the freshly built
+one (Δ 0.0).
+
 ## Pending / next metrics
-- TensorRT engine **caching** to disk (skip the per-process rebuild) — would make
-  TensorRT a win on short runs too.
-- Memory behavior at scale (full 32-cam run, `data/mamma_multi`).
+- Memory behavior at scale (full 32-cam run, `data/mamma_multi`) — exercises the
+  SAM2 OOM-offload path and TensorRT where it wins.
+- Roadmap leftovers: PR #3 (sync-free `ma_3d` loop), PR #4 (512-vertex SMPL-X in
+  the fit), PR #5 (`ma_vis` parallel relog), and removing the now-unused
+  `ViTDetDataset`.

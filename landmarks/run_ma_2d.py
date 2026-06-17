@@ -561,16 +561,19 @@ def _build_cam_sources(args, img_folder=None):
     return sources
 
 
-def _build_tensorrt_forward(model, cfg, device, fp16=True):
+def _build_tensorrt_forward(model, cfg, device, fp16=True, weights_path=None):
     """Compile the landmark network to a TensorRT engine and return a callable
     with the same ``(img, mask) -> dict`` contract as the eager model.
 
-    NVIDIA-only opt-in fast path. Built once per process, so the (minutes-long)
-    engine build amortizes across every frame and camera — best for long /
-    many-camera sequences. The single forward call site is unchanged; this just
-    swaps what ``model`` points at, so there is no duplicated inference code.
+    NVIDIA-only opt-in fast path. The compiled engine is cached to disk (next to
+    the weights), keyed by weights + input shape + precision + GPU + TRT version,
+    so the first run pays the ~minute build and later runs load it in ~2 s; any
+    change to those inputs auto-rebuilds. The single forward call site is
+    unchanged — this just swaps what ``model`` points at, so there is no
+    duplicated inference code.
     """
     import torch_tensorrt
+    import hashlib
     keys = ("joints2d", "visibility", "contact", "floor_contact")
 
     class _Tuple(torch.nn.Module):  # ONNX/TRT export needs tuple (not dict) outputs
@@ -584,11 +587,40 @@ def _build_tensorrt_forward(model, cfg, device, fp16=True):
 
     h, w = int(cfg.data_cfg["image_size"][1]), int(cfg.data_cfg["image_size"][0])
     example = (torch.randn(1, 3, h, w, device=device), torch.rand(1, 1, h, w, device=device))
-    engine = torch_tensorrt.compile(
-        _Tuple(model).eval().to(device), ir="dynamo", arg_inputs=example,
-        enabled_precisions={torch.float16 if fp16 else torch.float32},
-        truncate_double=True, min_block_size=1,
-    )
+
+    cache_path = None
+    if weights_path:
+        st = os.stat(weights_path)
+        gpu = torch.cuda.get_device_name(device) if torch.cuda.is_available() else "cpu"
+        key = hashlib.md5(
+            f"{weights_path}|{st.st_size}|{int(st.st_mtime)}|{h}x{w}|"
+            f"{'fp16' if fp16 else 'fp32'}|{gpu}|trt{torch_tensorrt.__version__}".encode()
+        ).hexdigest()[:16]
+        cache_dir = os.path.join(os.path.dirname(os.path.abspath(weights_path)), ".trt_cache")
+        cache_path = os.path.join(cache_dir, f"ma2d_trt_{key}.ep")
+
+    engine = None
+    if cache_path and os.path.exists(cache_path):
+        try:
+            engine = torch.export.load(cache_path).module()
+            logger.info(f"ma_2d: loaded cached TensorRT engine {cache_path}")
+        except Exception as e:
+            logger.warning(f"ma_2d: cached engine load failed ({e}); rebuilding.")
+            engine = None
+
+    if engine is None:
+        engine = torch_tensorrt.compile(
+            _Tuple(model).eval().to(device), ir="dynamo", arg_inputs=example,
+            enabled_precisions={torch.float16 if fp16 else torch.float32},
+            truncate_double=True, min_block_size=1,
+        )
+        if cache_path:
+            try:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                torch_tensorrt.save(engine, cache_path, arg_inputs=example)
+                logger.info(f"ma_2d: cached TensorRT engine to {cache_path}")
+            except Exception as e:
+                logger.warning(f"ma_2d: could not cache TensorRT engine ({e}).")
 
     def forward(img, mask):
         return dict(zip(keys, engine(img, mask)))
@@ -628,7 +660,8 @@ def main(args, out_folder, masks_folder, img_folder=None):
     forward = model
     if getattr(args, "tensorrt", False):
         try:
-            forward = _build_tensorrt_forward(model, cfg, device, fp16=not args.tensorrt_fp32)
+            forward = _build_tensorrt_forward(model, cfg, device, fp16=not args.tensorrt_fp32,
+                                              weights_path=args.weights)
             logger.info(f"ma_2d: using TensorRT {'FP32' if args.tensorrt_fp32 else 'FP16'} forward backend.")
         except Exception as e:
             logger.warning(f"ma_2d: TensorRT compile failed ({e}); using PyTorch forward.")
