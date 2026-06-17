@@ -176,9 +176,28 @@ Measured on 6 cam / 60 f: **37 s → 18 s (2.06×)** at `--overlay-num-workers 4
 no EGL/renderer failure, same overlay outputs. Enabled in the example presets
 (script default stays 1 for hosts where parallel pyrender is finicky).
 
+## TensorRT at scale — measured (32-camera, 6-person, 743-frame)
+The headline scale validation: the full 32-camera MultiMama capture
+(6 people, 743 frames/cam) through `ma_2d --tensorrt`, run clean and uncontended
+on the RTX 4090. This is the real measurement behind `fast.yaml`.
+
+| 32-cam `ma_2d` (6 ppl, 743 f) | wall time | peak CPU RSS | backend |
+|---|---:|---:|---|
+| `main` (baseline) | ~159 min | — | eager |
+| optimized, no TRT | ~68 min | — | eager (GPU-preproc + cv2-ROI + B1) |
+| **optimized + `--tensorrt`** | **49 min 30 s** | 12.5 GB | TensorRT FP16, cached engine |
+
+So at full scale TensorRT lands **~110 min saved vs `main` (3.2×)** on `ma_2d`,
+with the FP16 engine **loaded from the disk cache** (no rebuild — the log confirms
+`loaded cached TensorRT engine` then `using TensorRT FP16 forward backend`). The
+49.5 min measured is slightly better than the ~51 min projection. Memory stayed
+bounded (12.5 GB peak RSS), so no SAM2 OOM-offload was needed for `ma_2d` at this
+scale. All 32 camera `.npz` produced.
+
 ## Pending / next metrics
-- Memory behavior at scale (full 32-cam run, `data/mamma_multi`) — exercises the
-  SAM2 OOM-offload path and TensorRT where it wins.
+- ~~Memory behavior at scale (full 32-cam run, `data/mamma_multi`)~~ — **done**
+  (above): TensorRT-at-scale measured, memory bounded, OOM-offload not triggered
+  for `ma_2d`.
 - Roadmap audit complete: PR #3 (syncs) and GPU-triangulation are non-issues; PR #4
   (512-vert) already done; PR #5 (parallel relog) done (above); `ViTDetDataset`
   removed. See `optimization-observations.md` for the verified non-issues.
