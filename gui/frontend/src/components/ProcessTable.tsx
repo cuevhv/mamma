@@ -10,6 +10,11 @@ export interface MatrixCell {
   pid?: string | null;
   outFile?: string | null;
   errFile?: string | null;
+  /** ISO-8601 UTC of the Running / terminal transition. Null for a
+   *  cached/skipped step or a legacy row without timing. Drives the per-step
+   *  duration shown under the status badge. */
+  startedAt?: string | null;
+  endedAt?: string | null;
 }
 
 export interface ProcessRow {
@@ -40,6 +45,43 @@ export interface ProcessRow {
 
 /** Canonical body-branch step ordering. Matches backend ALL_STEPS. */
 export const ALL_STEPS = ['ma_cap', 'ma_masks', 'ma_2d', 'ma_3d', 'ma_vis'];
+
+/** Execution time of one step, in seconds, derived from the Running/terminal
+ *  timestamps the runner stamps (measured outside the step subprocess, so it
+ *  costs the pipeline nothing). Returns null when the step never started
+ *  (cached/skipped, or a legacy row) so callers render "—" rather than 0. For
+ *  an in-progress step (started, not ended) it measures up to `nowMs`, giving a
+ *  live-ticking elapsed that advances on each poll. */
+export function cellDurationSecs(cell?: MatrixCell, nowMs?: number): number | null {
+  if (!cell?.startedAt) return null;
+  const start = Date.parse(cell.startedAt);
+  if (Number.isNaN(start)) return null;
+  const end = cell.endedAt ? Date.parse(cell.endedAt) : (nowMs ?? Date.now());
+  if (Number.isNaN(end)) return null;
+  return Math.max(0, (end - start) / 1000);
+}
+
+/** Sum of all timed steps in a sequence row → that sequence's total execution
+ *  time. Steps run sequentially in the DAG, so the sum is the wall time. Null
+ *  when no step in the row has timing yet. */
+export function rowDurationSecs(cells: ProcessRow['cells'], nowMs?: number): number | null {
+  let total = 0, any = false;
+  for (const k of Object.keys(cells)) {
+    const d = cellDurationSecs(cells[k], nowMs);
+    if (d != null) { total += d; any = true; }
+  }
+  return any ? total : null;
+}
+
+/** Compact human duration: "8s", "2m 45s", "1h 03m". */
+export function formatDurationSecs(secs: number): string {
+  const s = Math.round(secs);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) { const r = s % 60; return r ? `${m}m ${r}s` : `${m}m`; }
+  const h = Math.floor(m / 60); const mm = m % 60;
+  return mm ? `${h}h ${String(mm).padStart(2, '0')}m` : `${h}h`;
+}
 
 /** Row-level rollup. Mixed = at least one Completed AND at least one Failed/Pending. */
 export type RowStatus = StatusKind | 'Mixed';
@@ -442,7 +484,20 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                           title={clickable ? `Open logs and outputs for ${step} on ${row.seqName} (${formatTaskId(row.taskId)})` : undefined}
                         >
                           {cell ? (
-                            <StatusBadge status={cell.status} compact />
+                            <div className="flex flex-col items-start gap-1">
+                              <StatusBadge status={cell.status} compact />
+                              {(() => {
+                                const secs = cellDurationSecs(cell);
+                                return secs != null ? (
+                                  <span
+                                    className="text-[10px] leading-none text-foreground-faint tabular-nums"
+                                    title="Step execution time"
+                                  >
+                                    {formatDurationSecs(secs)}
+                                  </span>
+                                ) : null;
+                              })()}
+                            </div>
                           ) : (
                             <span
                               className="inline-flex items-center px-2 py-0.5 rounded-full text-xs border border-border-subtle text-foreground-faint italic whitespace-nowrap"
@@ -455,7 +510,20 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                       );
                     })}
                     <td className="px-4 py-3">
-                      <RowStatusBadge status={status} queuePosition={row.queuePosition} />
+                      <div className="flex flex-col items-start gap-1">
+                        <RowStatusBadge status={status} queuePosition={row.queuePosition} />
+                        {(() => {
+                          const secs = rowDurationSecs(row.cells);
+                          return secs != null && secs > 0 ? (
+                            <span
+                              className="text-[10px] leading-none text-foreground-faint tabular-nums"
+                              title="Total execution time for this sequence (sum of its steps)"
+                            >
+                              Σ {formatDurationSecs(secs)}
+                            </span>
+                          ) : null;
+                        })()}
+                      </div>
                     </td>
                     {showActions && (
                       <td className="px-4 py-3 whitespace-nowrap">
@@ -662,6 +730,8 @@ export function buildProcessRows<T extends {
   pid?: string | null;
   outFile?: string | null;
   errFile?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
 }>(records: T[]): { rows: ProcessRow[]; stepsInUse: Set<string> } {
   const byKey = new Map<string, ProcessRow>();
   const stepsInUse = new Set<string>();
@@ -687,6 +757,8 @@ export function buildProcessRows<T extends {
       pid: r.pid ?? null,
       outFile: r.outFile ?? null,
       errFile: r.errFile ?? null,
+      startedAt: r.startedAt ?? null,
+      endedAt: r.endedAt ?? null,
     };
     stepsInUse.add(r.processType);
   }
