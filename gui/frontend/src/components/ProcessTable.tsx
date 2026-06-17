@@ -531,14 +531,19 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                       // (slowest step). Suppressed under the selection ring so
                       // it doesn't fight the highlight.
                       const ratio = view === 'timing' && secs != null && rowMax > 0 ? secs / rowMax : 0;
-                      const tint = ratio > 0 && !isSelected
-                        ? { backgroundColor: `rgba(245, 158, 11, ${(0.06 + 0.22 * ratio).toFixed(3)})` }
+                      // Always pass an explicit backgroundColor key (undefined
+                      // when there's no tint) so React clears the inline color
+                      // on the Timing→Status switch. Passing the whole style as
+                      // undefined leaves the stale color until the cell next
+                      // re-renders for another reason (e.g. hover).
+                      const tintColor = ratio > 0 && !isSelected
+                        ? `rgba(245, 158, 11, ${(0.06 + 0.22 * ratio).toFixed(3)})`
                         : undefined;
                       return (
                         <td
                           key={step}
                           className={`${baseCls} ${stateCls}`}
-                          style={tint}
+                          style={{ backgroundColor: tintColor }}
                           onClick={() => clickable && onCellClick?.(row, step, cell)}
                           title={clickable ? `Open logs and outputs for ${step} on ${row.seqName} (${formatTaskId(row.taskId)})` : undefined}
                         >
