@@ -170,9 +170,15 @@ rebuild, so TensorRT now helps short/repeated runs too, and any change to the ke
 inputs auto-rebuilds. Loaded engine output is bit-identical to the freshly built
 one (Δ 0.0).
 
+## ma_vis — parallel overlay rendering (preset opt-in)
+The per-camera overlay render defaulted to serial (`--overlay-num-workers 1`).
+Measured on 6 cam / 60 f: **37 s → 18 s (2.06×)** at `--overlay-num-workers 4`,
+no EGL/renderer failure, same overlay outputs. Enabled in the example presets
+(script default stays 1 for hosts where parallel pyrender is finicky).
+
 ## Pending / next metrics
 - Memory behavior at scale (full 32-cam run, `data/mamma_multi`) — exercises the
   SAM2 OOM-offload path and TensorRT where it wins.
-- Roadmap leftovers: PR #3 (sync-free `ma_3d` loop), PR #4 (512-vertex SMPL-X in
-  the fit), PR #5 (`ma_vis` parallel relog), and removing the now-unused
-  `ViTDetDataset`.
+- Roadmap audit complete: PR #3 (syncs) and GPU-triangulation are non-issues; PR #4
+  (512-vert) already done; PR #5 (parallel relog) done (above); `ViTDetDataset`
+  removed. See `optimization-observations.md` for the verified non-issues.

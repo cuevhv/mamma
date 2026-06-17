@@ -213,6 +213,11 @@ Guidance:
   (set `--overlay-num-workers` in the preset and validate) rather than as a blind
   default change. *Audited 2026-06-17.*
 - **`ViTDetDataset` dead code: removed** (commit, superseded by GPU preprocessing).
+- **GPU triangulation (PR #48 idea): not worth it here.** `triangulation_functions.py:57`
+  deliberately does CPU SVD (*"do svd in cpu because it's faster"*), and triangulation
+  is **one-time setup** (translation init), not in the ~9 s/iter ×25 optimize loop.
+  Moving it to GPU wouldn't touch `ma_3d`'s ~230 s — that time is the per-iteration
+  SMPL-X forward + SDF/intersection losses. *Verified 2026-06-17.*
 
 ## Open questions
 
