@@ -138,7 +138,32 @@ saving is on the largest capture: a 6-person, 32-camera, 743-frame sequence's
 (+0.01 mm) and lower peak RAM. (Numbers are measured per camera on real masks;
 the full-sequence rows are the linear ×cameras extrapolation.)
 
+## B — Opt-in TensorRT forward (`run_ma_2d --tensorrt`)
+After A, the GPU forward is `ma_2d`'s dominant cost. Compile MammaNet to a
+TensorRT engine (`torch_tensorrt`, lazy import, eager fallback) — one swappable
+call site, no duplicated inference code. Opt-in: `--tensorrt` (FP16) /
+`--tensorrt-fp32`; off by default so the repo stays portable (`torch-tensorrt`
+is not a core dependency — see `requirements/requirements-tensorrt.txt`).
+
+| forward (1 crop) | time | speedup | max \|Δ\| joints2d |
+|---|---:|---:|---:|
+| eager PyTorch | 10.58 ms | 1× | — |
+| **TRT FP16** | **1.98 ms** | **5.3×** | 0.0044 (norm) |
+| TRT FP32 | 5.28 ms | 2.0× | 0.0007 (norm) |
+
+| accuracy vs GT (6 cam, 225 f) | MPJPE | PA-MPJPE | PVE |
+|---|---:|---:|---:|
+| main | 21.65 mm | 18.16 | 20.30 |
+| **TRT FP16** | **21.63 mm** | 18.14 | 20.28 |
+
+FP16 holds GT accuracy (**−0.02 mm**, noise). End-to-end the engine build
+(~60–90 s, once per process) amortizes over all frames/cameras, so TensorRT wins
+on **long / many-camera** sequences (on the small 6-cam/225-f run it's a wash:
+103 s TRT vs 106 s eager). `torch.export` captured MammaNet cleanly (774 nodes),
+so the model is export-friendly — the usual TensorRT risk (ONNX conversion) did
+not bite here.
+
 ## Pending / next metrics
-- Decode optimization / opt-in TensorRT (the new `ma_2d` bottleneck is the forward).
-- Minimal-code path to PR #48-style causal streaming (investigation).
+- TensorRT engine **caching** to disk (skip the per-process rebuild) — would make
+  TensorRT a win on short runs too.
 - Memory behavior at scale (full 32-cam run, `data/mamma_multi`).

@@ -396,6 +396,13 @@ def parser():
                       help='Path to verts_512.pkl. Previously hard-coded to '
                            'assets/verts_512.pkl; the inference runner injects '
                            'this from MAMMA_DOWNSAMPLED_VERTS_PKL.')
+    args.add_argument('--tensorrt', action='store_true',
+                      help='Compile the landmark network to a TensorRT engine for a faster '
+                           'forward (~5x FP16). NVIDIA-only; falls back to PyTorch when '
+                           'torch-tensorrt is unavailable. Best for long / many-camera runs '
+                           '(the one-time engine build amortizes over all frames).')
+    args.add_argument('--tensorrt-fp32', dest='tensorrt_fp32', action='store_true',
+                      help='With --tensorrt, use FP32 (~2x, near-exact) instead of FP16 (~5x).')
     parsed = args.parse_args()
 
     # Post-parse mutex: exactly one input mode.
@@ -554,6 +561,41 @@ def _build_cam_sources(args, img_folder=None):
     return sources
 
 
+def _build_tensorrt_forward(model, cfg, device, fp16=True):
+    """Compile the landmark network to a TensorRT engine and return a callable
+    with the same ``(img, mask) -> dict`` contract as the eager model.
+
+    NVIDIA-only opt-in fast path. Built once per process, so the (minutes-long)
+    engine build amortizes across every frame and camera — best for long /
+    many-camera sequences. The single forward call site is unchanged; this just
+    swaps what ``model`` points at, so there is no duplicated inference code.
+    """
+    import torch_tensorrt
+    keys = ("joints2d", "visibility", "contact", "floor_contact")
+
+    class _Tuple(torch.nn.Module):  # ONNX/TRT export needs tuple (not dict) outputs
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, x, mask):
+            o = self.m(x, mask)
+            return tuple(o[k] for k in keys)
+
+    h, w = int(cfg.data_cfg["image_size"][1]), int(cfg.data_cfg["image_size"][0])
+    example = (torch.randn(1, 3, h, w, device=device), torch.rand(1, 1, h, w, device=device))
+    engine = torch_tensorrt.compile(
+        _Tuple(model).eval().to(device), ir="dynamo", arg_inputs=example,
+        enabled_precisions={torch.float16 if fp16 else torch.float32},
+        truncate_double=True, min_block_size=1,
+    )
+
+    def forward(img, mask):
+        return dict(zip(keys, engine(img, mask)))
+
+    return forward
+
+
 def main(args, out_folder, masks_folder, img_folder=None):
     OmegaConf.register_new_resolver("mult", lambda x,y: x*y)
     OmegaConf.register_new_resolver("if", lambda x, y, z: y if x else z)
@@ -580,6 +622,18 @@ def main(args, out_folder, masks_folder, img_folder=None):
     model.load_state_dict(torch.load(args.weights)['state_dict'])
     model.eval()
 
+    # Forward backend: eager PyTorch by default; opt-in TensorRT fast path that
+    # falls back to eager on any failure (non-NVIDIA host, missing torch-tensorrt,
+    # unsupported op) so the flag never breaks a run.
+    forward = model
+    if getattr(args, "tensorrt", False):
+        try:
+            forward = _build_tensorrt_forward(model, cfg, device, fp16=not args.tensorrt_fp32)
+            logger.info(f"ma_2d: using TensorRT {'FP32' if args.tensorrt_fp32 else 'FP16'} forward backend.")
+        except Exception as e:
+            logger.warning(f"ma_2d: TensorRT compile failed ({e}); using PyTorch forward.")
+            forward = model
+
     # The detector only finds person boxes in standalone (no-mask) mode; in mask
     # mode the boxes come from the segmentation masks, so the detector is never
     # called. Skip building it then — loading cascade Mask-RCNN ViTDet-H is pure
@@ -600,7 +654,7 @@ def main(args, out_folder, masks_folder, img_folder=None):
     sources = _build_cam_sources(args, img_folder=img_folder)
     logger.info(f"processing {len(sources)} cameras: {[s.cam_name for s in sources]}")
     for source in sources:
-        process_data(source, detector, device, model, cfg, out_folder,
+        process_data(source, detector, device, forward, cfg, out_folder,
                      args.save_cam_output, masks_folder,
                      downsampled_verts_pth=args.downsampled_verts)
 
