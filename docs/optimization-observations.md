@@ -197,6 +197,23 @@ Guidance:
   time is the optimization itself (~230 s on 6 cam / 225 f / 2 ppl).
   *Verified by measurement, 2026-06-17.*
 
+### Roadmap Phase-1 leftovers — audited, mostly non-issues
+- **PR #3 (sync-free `ma_3d` loop): not worth doing.** The only per-iteration host
+  syncs (`optimization.py:429,452`) are loss/error **logging** `.item()`s, and the
+  fit runs ~**25 iterations** (~9 s each). ~25 syncs of ~ms vs ~230 s of compute —
+  removing them saves nothing. `ma_3d`'s cost is the per-iteration compute.
+- **PR #4 (512-vertex SMPL-X in the fit): already implemented.** The SDF /
+  intersection loss already takes `bodies_sampled_verts` (the sampled 512-vert
+  mesh) for the expensive inter-person term (`losses/sdf.py:52,82`); the
+  `--downsampled-verts verts_512.pkl` is used by the fit, not just the metrics.
+- **PR #5 (parallel relog): half-done.** `--rerun-image-num-workers` already
+  defaults to `min(cameras, 4)` (parallel by default). Only `--overlay-num-workers`
+  defaults to **1** (serial pyrender) — a real win for many-camera overlays, but
+  parallel pyrender/EGL carries GPU-memory + context risk, so tune it per machine
+  (set `--overlay-num-workers` in the preset and validate) rather than as a blind
+  default change. *Audited 2026-06-17.*
+- **`ViTDetDataset` dead code: removed** (commit, superseded by GPU preprocessing).
+
 ## Open questions
 
 - Q1 — What is the full `mamma_example` sequence length, and how do the metrics
