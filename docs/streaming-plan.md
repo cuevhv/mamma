@@ -132,6 +132,28 @@ real; if small, the win is dominated by the *compute* optimizations
 land **inside the DAG** without a streaming rewrite. That decomposition is the
 honest test of "is streaming optimal, or just the compute tricks it also ships?".
 
+### Theory test — measured (eval seq, 6 cam / 225 f / 2 ppl)
+
+| overhead streaming removes | measured | note |
+|---|---|---|
+| mask PNG round-trip | ~5–9 s/cam | 450 PNGs/cam, only 4.6 MB but ~4.7 s just to *read* (file-open bound) |
+| redundant decode | ~5 s/cam | ma_masks + ma_2d + ma_vis each decode (~2 extra passes) |
+| per-step startup | ~30 s/seq | ~6 s × 5 steps, once |
+
+vs a pipeline dominated by **compute** (`ma_3d` ~230 s, `ma_2d` ~138 s/6 cam). So
+the *orchestration* overhead streaming eliminates is **~20–25 %** of wall time —
+real but not dominant. The bulk of PR #48's ~11× came from **compute** tricks
+(TensorRT, CUDA-graph fitter, GPU triangulation, batched SAM2), which are
+**orthogonal to streaming** and landable in the DAG — we already shipped TensorRT
+(5.3×) and GPU preprocessing there.
+
+**Conclusion of the test:** streaming is genuinely *optimal* on two axes the DAG
+can't match — **bounded memory at scale** (no whole-video OOM) and
+**realtime/online** emission. For pure **offline-batch throughput**, the
+streaming-specific win is the ~20–25 % orchestration overhead; the larger speedups
+are compute optimizations we can keep landing in the DAG more cheaply. So the
+theory holds *for scale/realtime*, and is *modest* for offline throughput.
+
 ## Recommendation
 
 - If the goal is **resource + I/O wins at scale** (bounded memory, GPU residency,
