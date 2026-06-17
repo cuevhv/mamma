@@ -154,6 +154,35 @@ streaming-specific win is the ~20–25 % orchestration overhead; the larger spee
 are compute optimizations we can keep landing in the DAG more cheaply. So the
 theory holds *for scale/realtime*, and is *modest* for offline throughput.
 
+## Is the gating refactor (import isolation) worth it? — investigated: **no**
+
+Renaming the clashing packages turns out to be far more than a mechanical rename:
+
+- **It touches training.** `landmarks/train.py` imports `from utils.util …` and
+  `from lib.models …`; ~7 files under `landmarks/`, ~6 under `segmentation/` (and
+  similar in `optimization/`) import the to-be-renamed packages. So the refactor
+  edits **training code** across three subtrees — exactly what we agreed to keep
+  hands off.
+- **String references break silently.** `segmentation/tests/...import_module("core.pipeline")`
+  and config refs like `utils.paths.string_path_to_windows` aren't caught by a
+  static "update the `from X import`" pass, so a rename risks silent breakage.
+- **It breaks the modular workflow** — running/developing a single step in its own
+  dir (the whole point of the subprocess layout).
+- **Payoff is modest.** Per the theory test, Level B's offline-throughput win is
+  ~20–25 %, and its genuinely-unique benefit (bounded memory at scale) is reachable
+  far more cheaply **per step** (e.g. the SAM2 `init_state` OOM→offload we already
+  shipped; an `ma_masks` chunking pass).
+
+**What stays safe:** checkpoint loading (`torch.load(...)['state_dict']` is tensor
+names, not pickled classes), and the GUI (it shells out to the step subprocesses,
+doesn't import them).
+
+**Verdict:** the import-isolation refactor is **not worth it** — high blast radius
+(training + string refs + 3 subtrees), real silent-breakage risk, and a modest /
+otherwise-reachable payoff. Get the memory-at-scale win with **targeted per-step
+bounds** instead, keep the DAG, and reserve a true rewrite for **Level A** only if
+realtime becomes a product requirement.
+
 ## Recommendation
 
 - If the goal is **resource + I/O wins at scale** (bounded memory, GPU residency,
