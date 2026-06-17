@@ -124,19 +124,27 @@ count (`ma_2d` is per-camera-sequential → linear in cameras).
 | WestCoastSwing — 2 ppl, 225 f | 69.2 s | 23.0 s | **46 s** | **3.0×** |
 | MultiMama — **6 ppl, 743 f** | 298.1 s | 128.5 s | **170 s** | **2.3×** |
 
-Extrapolated to full multi-camera sequences (`ma_2d` step wall time):
+Full multi-camera sequences (`ma_2d` step wall time). The **`+TensorRT`** cell for
+the 32-camera capture is a **measured full run**; the `main` / `optimized` columns
+are the linear ×cameras extrapolation of the measured per-camera times (`ma_2d` is
+strictly per-camera-sequential, so the extrapolation is exact in structure):
 
-| sequence | cams | `main` `ma_2d` | optimized `ma_2d` | **saved** |
-|---|---:|---:|---:|---:|
-| WestCoastSwing (2 ppl, 225 f) | 6 | 6.9 min | 2.3 min | **~4.6 min** |
-| MultiMama (6 ppl, 743 f) | 32 | **~159 min** | **~68 min** | **~90 min** |
+| sequence | cams | `main` `ma_2d` | optimized | **+TensorRT** | best speedup | **saved (best)** |
+|---|---:|---:|---:|---:|---:|---:|
+| WestCoastSwing (2 ppl, 225 f) | 6 | 6.9 min | 2.3 min | ~2.3 min¹ | 3.0× | **~4.6 min** |
+| MultiMama (6 ppl, 743 f) | 32 | **~159 min** | ~68 min | **49.5 min (meas.)** | **3.2×** | **~110 min** |
+
+¹ On the small 6-cam/225-f run TensorRT is a wash — the one-time engine load ≈ the
+forward time it saves; it wins on long / many-camera captures (above).
 
 Stress-axes covered: **more people** (2→6), **more frames** (225→743), **more
-cameras** (6→32). The gain grows with the workload, so the biggest absolute
-saving is on the largest capture: a 6-person, 32-camera, 743-frame sequence's
-`ma_2d` drops from ~2.6 h to ~1.1 h — **~90 minutes saved**, at GT-accuracy parity
-(+0.01 mm) and lower peak RAM. (Numbers are measured per camera on real masks;
-the full-sequence rows are the linear ×cameras extrapolation.)
+cameras** (6→32). The gain grows with the workload, so the biggest absolute saving
+is on the largest capture: the 6-person, 32-camera, 743-frame sequence's `ma_2d`
+drops from **~2.6 h (`main`) to a measured 49.5 min** with `--tensorrt` —
+**~110 minutes saved (3.2×)**, at GT-accuracy parity (TRT FP16 21.63 mm vs main
+21.65 mm MPJPE) and bounded memory (12.5 GB peak RSS, no OOM-offload). Without
+TensorRT the portable default still saves ~90 min (2.3×). The per-camera baselines
+are measured on real masks; only the 32-cam `+TensorRT` cell is a measured full run.
 
 ## B — Opt-in TensorRT forward (`run_ma_2d --tensorrt`)
 After A, the GPU forward is `ma_2d`'s dominant cost. Compile MammaNet to a
