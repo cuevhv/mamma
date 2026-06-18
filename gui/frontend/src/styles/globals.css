@@ -20,12 +20,13 @@
   --font-weight-semibold: 600;
   --radius: 0.625rem;
 
-  /* Surface elevation ladder. Each step is ~+0.025 L from the previous. */
-  --background: oklch(0.165 0.018 252);   /* page bg, deepest */
-  --surface-1: oklch(0.190 0.020 252);    /* cards */
-  --surface-2: oklch(0.215 0.022 252);    /* nested cards, popover surfaces */
-  --surface-3: oklch(0.245 0.024 252);    /* hover, selected rows */
-  --surface-4: oklch(0.285 0.026 252);    /* active controls, prominent inputs */
+  /* Surface elevation ladder. A wider page->card step (+0.045 L) makes cards read
+     against the page; nested steps stay gentle (~+0.03 L). */
+  --background: oklch(0.160 0.018 252);   /* page bg, deepest */
+  --surface-1: oklch(0.205 0.020 252);    /* cards */
+  --surface-2: oklch(0.235 0.022 252);    /* nested cards, popover surfaces */
+  --surface-3: oklch(0.265 0.024 252);    /* hover, selected rows */
+  --surface-4: oklch(0.300 0.026 252);    /* active controls, prominent inputs */
 
   /* Text — lightness ladder. */
   --foreground: oklch(0.965 0.005 252);          /* body text, primary */
@@ -33,10 +34,11 @@
   --foreground-subtle: oklch(0.705 0.013 252);   /* tertiary, captions */
   --foreground-faint: oklch(0.595 0.016 252);    /* hints, disabled */
 
-  /* Borders — derived from white at low alpha so they layer on any surface. */
-  --border-subtle: oklch(1 0 0 / 0.06);
-  --border:        oklch(1 0 0 / 0.10);
-  --border-strong: oklch(1 0 0 / 0.16);
+  /* Borders — derived from white at low alpha so they layer on any surface.
+     Bumped so card/section edges read against the deeper page. */
+  --border-subtle: oklch(1 0 0 / 0.09);
+  --border:        oklch(1 0 0 / 0.13);
+  --border-strong: oklch(1 0 0 / 0.18);
 
   /* Brand / interactive accent (cyan-blue). */
   --primary:               oklch(0.715 0.158 232);
