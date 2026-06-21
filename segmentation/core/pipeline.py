@@ -494,9 +494,13 @@ class SegmentMultipleFrames:
         """
         # Opt-in float16 frame storage (default off → byte-identical). Halves the
         # decoded-frame tensor (CPU or GPU) when enabled via sam.fp16_frames.
-        from core.predictor_factory import set_frame_storage_fp16
+        from core.predictor_factory import set_frame_storage_fp16, set_lazy_frame_loading
         _sam_cfg = self.assignment_config.get("sam") or self.assignment_config.get("sam2", {}) or {}
         set_frame_storage_fp16(bool(_sam_cfg.get("fp16_frames", False)))
+        # Opt-in lazy frame loading (default off → byte-identical): bounds host RAM
+        # to a small LRU window instead of holding all decoded frames. (issue #14)
+        set_lazy_frame_loading(bool(_sam_cfg.get("lazy_frame_loading", False)),
+                               int(_sam_cfg.get("lazy_frame_window", 8)))
 
         # Proactive CPU offload (issue #14): SAM loads the whole decoded video
         # into VRAM at init_state, so VRAM grows with frame count. We pass the
