@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, AlertTriangle, Clock, ListChecks } from 'lucide-react';
 import { StatusBadge, statusKind, StatusKind, statusStyle, Dot } from './shared/StatusBadge';
 import { stepLabel } from './shared/stepLabels';
 import { formatTaskId } from './shared/formatTaskId';
@@ -10,6 +10,11 @@ export interface MatrixCell {
   pid?: string | null;
   outFile?: string | null;
   errFile?: string | null;
+  /** ISO-8601 UTC of the Running / terminal transition. Null for a
+   *  cached/skipped step or a legacy row without timing. Drives the per-step
+   *  duration shown under the status badge. */
+  startedAt?: string | null;
+  endedAt?: string | null;
 }
 
 export interface ProcessRow {
@@ -40,6 +45,43 @@ export interface ProcessRow {
 
 /** Canonical body-branch step ordering. Matches backend ALL_STEPS. */
 export const ALL_STEPS = ['ma_cap', 'ma_masks', 'ma_2d', 'ma_3d', 'ma_vis'];
+
+/** Execution time of one step, in seconds, derived from the Running/terminal
+ *  timestamps the runner stamps (measured outside the step subprocess, so it
+ *  costs the pipeline nothing). Returns null when the step never started
+ *  (cached/skipped, or a legacy row) so callers render "—" rather than 0. For
+ *  an in-progress step (started, not ended) it measures up to `nowMs`, giving a
+ *  live-ticking elapsed that advances on each poll. */
+export function cellDurationSecs(cell?: MatrixCell, nowMs?: number): number | null {
+  if (!cell?.startedAt) return null;
+  const start = Date.parse(cell.startedAt);
+  if (Number.isNaN(start)) return null;
+  const end = cell.endedAt ? Date.parse(cell.endedAt) : (nowMs ?? Date.now());
+  if (Number.isNaN(end)) return null;
+  return Math.max(0, (end - start) / 1000);
+}
+
+/** Sum of all timed steps in a sequence row → that sequence's total execution
+ *  time. Steps run sequentially in the DAG, so the sum is the wall time. Null
+ *  when no step in the row has timing yet. */
+export function rowDurationSecs(cells: ProcessRow['cells'], nowMs?: number): number | null {
+  let total = 0, any = false;
+  for (const k of Object.keys(cells)) {
+    const d = cellDurationSecs(cells[k], nowMs);
+    if (d != null) { total += d; any = true; }
+  }
+  return any ? total : null;
+}
+
+/** Compact human duration: "8s", "2m 45s", "1h 03m". */
+export function formatDurationSecs(secs: number): string {
+  const s = Math.round(secs);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) { const r = s % 60; return r ? `${m}m ${r}s` : `${m}m`; }
+  const h = Math.floor(m / 60); const mm = m % 60;
+  return mm ? `${h}h ${String(mm).padStart(2, '0')}m` : `${h}h`;
+}
 
 /** Row-level rollup. Mixed = at least one Completed AND at least one Failed/Pending. */
 export type RowStatus = StatusKind | 'Mixed';
@@ -135,6 +177,17 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
   const [capturePath, setCapturePath] = useState<string>('');
   const [search, setSearch] = useState('');
   const [latestOnly, setLatestOnly] = useState(false);
+  // Status ⇄ Timing view. 'status' shows the badge grid; 'timing' swaps every
+  // step cell for its execution time (heat-tinted, slowest = most saturated)
+  // and the rollup column for the per-sequence total. Persisted so the choice
+  // sticks across visits.
+  const [view, setView] = useState<'status' | 'timing'>(() => {
+    try { return localStorage.getItem('mamma.taskTableView') === 'timing' ? 'timing' : 'status'; }
+    catch { return 'status'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('mamma.taskTableView', view); } catch { /* ignore */ }
+  }, [view]);
 
   // Modal state for "peek at task config / preset" actions. Set by the
   // task-id and preset chip click handlers; cleared on close.
@@ -296,6 +349,39 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
         </label>
 
         <div className="ml-auto flex items-center gap-2">
+          {/* Status ⇄ Timing view toggle. Segmented control; the active
+              segment is filled. Keeps both views uncluttered — see one signal
+              per cell at a time instead of stacking status + duration. */}
+          <div
+            className="inline-flex items-center rounded-md border border-border bg-surface-2 p-0.5"
+            role="radiogroup"
+            aria-label="Table view"
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={view === 'status'}
+              onClick={() => setView('status')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                view === 'status' ? 'bg-primary text-primary-foreground' : 'text-foreground-muted hover:text-foreground'
+              }`}
+              title="Show step statuses"
+            >
+              <ListChecks className="w-3.5 h-3.5" /> Status
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={view === 'timing'}
+              onClick={() => setView('timing')}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                view === 'timing' ? 'bg-primary text-primary-foreground' : 'text-foreground-muted hover:text-foreground'
+              }`}
+              title="Show per-step execution times"
+            >
+              <Clock className="w-3.5 h-3.5" /> Timing
+            </button>
+          </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-subtle pointer-events-none" />
             <input
@@ -350,7 +436,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                     <div className="text-foreground-faint text-[10px] font-mono mt-0.5 tracking-wide">{step}</div>
                   </th>
                 ))}
-                <Th>Status</Th>
+                <Th>{view === 'timing' ? 'Total' : 'Status'}</Th>
                 {showActions && <Th>Actions</Th>}
               </tr>
             </thead>
@@ -358,6 +444,11 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
               {filtered.map(({ row, status }, idx) => {
                 const rowKey = `${row.taskId}::${row.seqName}`;
                 const stripeBg = idx % 2 === 0 ? 'bg-surface-1' : 'bg-surface-1/60';
+                // Slowest step in this row — the heat-tint denominator, so the
+                // bottleneck is the most saturated cell. Only needed in timing view.
+                const rowMax = view === 'timing'
+                  ? Math.max(0, ...steps.map(s => cellDurationSecs(row.cells[s]) ?? 0))
+                  : 0;
                 return (
                   <tr key={rowKey} className={`group border-b border-border-subtle/60 ${stripeBg} hover:bg-surface-3/40 transition-colors`}>
                     <td className={`sticky left-0 ${stripeBg} group-hover:bg-surface-3/40 px-4 py-3 whitespace-nowrap z-10 transition-colors`}>
@@ -434,14 +525,46 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                         : clickable
                           ? 'mamma-cell-clickable'
                           : 'cursor-default';
+                      const secs = cell ? cellDurationSecs(cell) : null;
+                      const isRunning = cell ? statusKind(cell.status) === 'Running' : false;
+                      // Heat tint scales with this cell's share of the row max
+                      // (slowest step). Suppressed under the selection ring so
+                      // it doesn't fight the highlight.
+                      const ratio = view === 'timing' && secs != null && rowMax > 0 ? secs / rowMax : 0;
+                      // Always pass an explicit backgroundColor key (undefined
+                      // when there's no tint) so React clears the inline color
+                      // on the Timing→Status switch. Passing the whole style as
+                      // undefined leaves the stale color until the cell next
+                      // re-renders for another reason (e.g. hover).
+                      const tintColor = ratio > 0 && !isSelected
+                        ? `rgba(245, 158, 11, ${(0.06 + 0.22 * ratio).toFixed(3)})`
+                        : undefined;
                       return (
                         <td
                           key={step}
                           className={`${baseCls} ${stateCls}`}
+                          style={{ backgroundColor: tintColor }}
                           onClick={() => clickable && onCellClick?.(row, step, cell)}
                           title={clickable ? `Open logs and outputs for ${step} on ${row.seqName} (${formatTaskId(row.taskId)})` : undefined}
                         >
-                          {cell ? (
+                          {view === 'timing' ? (
+                            secs != null ? (
+                              <span
+                                className="inline-flex items-center gap-1 text-xs tabular-nums text-foreground"
+                                title="Step execution time"
+                              >
+                                {formatDurationSecs(secs)}
+                                {isRunning && <span className="text-amber-500 animate-pulse" title="running">⟳</span>}
+                              </span>
+                            ) : (
+                              <span
+                                className="text-xs text-foreground-faint"
+                                title={cell ? 'No timing recorded (cached or legacy run)' : 'Step not selected for this task'}
+                              >
+                                —
+                              </span>
+                            )
+                          ) : cell ? (
                             <StatusBadge status={cell.status} compact />
                           ) : (
                             <span
@@ -455,7 +578,21 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                       );
                     })}
                     <td className="px-4 py-3">
-                      <RowStatusBadge status={status} queuePosition={row.queuePosition} />
+                      {view === 'timing' ? (() => {
+                        const secs = rowDurationSecs(row.cells);
+                        return secs != null && secs > 0 ? (
+                          <span
+                            className="text-sm tabular-nums text-foreground font-medium"
+                            title="Total execution time for this sequence (sum of its steps)"
+                          >
+                            {formatDurationSecs(secs)}
+                          </span>
+                        ) : (
+                          <span className="text-sm text-foreground-faint">—</span>
+                        );
+                      })() : (
+                        <RowStatusBadge status={status} queuePosition={row.queuePosition} />
+                      )}
                     </td>
                     {showActions && (
                       <td className="px-4 py-3 whitespace-nowrap">
@@ -662,6 +799,8 @@ export function buildProcessRows<T extends {
   pid?: string | null;
   outFile?: string | null;
   errFile?: string | null;
+  startedAt?: string | null;
+  endedAt?: string | null;
 }>(records: T[]): { rows: ProcessRow[]; stepsInUse: Set<string> } {
   const byKey = new Map<string, ProcessRow>();
   const stepsInUse = new Set<string>();
@@ -687,6 +826,8 @@ export function buildProcessRows<T extends {
       pid: r.pid ?? null,
       outFile: r.outFile ?? null,
       errFile: r.errFile ?? null,
+      startedAt: r.startedAt ?? null,
+      endedAt: r.endedAt ?? null,
     };
     stepsInUse.add(r.processType);
   }

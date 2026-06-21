@@ -17,6 +17,11 @@ interface HistoryProcess {
   pid?: string | null;
   outFile?: string | null;
   errFile?: string | null;
+  /** ISO-8601 UTC instant the step transitioned to Running / to a terminal
+   *  state. Null when the step never ran (cached/skipped) or for legacy rows
+   *  recorded before the timing columns existed. */
+  startedAt?: string | null;
+  endedAt?: string | null;
 }
 interface HistorySequence { seqName: string; processes: HistoryProcess[]; }
 interface HistoryTask {
@@ -105,6 +110,8 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
           pid: p.pid,
           outFile: p.outFile,
           errFile: p.errFile,
+          startedAt: p.startedAt,
+          endedAt: p.endedAt,
         });
       }
       return { ...h, sequences: Object.entries(seqMap).map(([seqName, processes]) => ({ seqName, processes })) };
@@ -121,6 +128,7 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
       createdAt?: string;
       processType: string; processId: string; status: string;
       pid?: string | null; outFile?: string | null; errFile?: string | null;
+      startedAt?: string | null; endedAt?: string | null;
     }> = [];
     for (const run of allRuns) {
       for (const seq of run.sequences) {
@@ -139,6 +147,8 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
             pid: p.pid,
             outFile: p.outFile,
             errFile: p.errFile,
+            startedAt: p.startedAt,
+            endedAt: p.endedAt,
           });
         }
       }

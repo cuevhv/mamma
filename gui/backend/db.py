@@ -142,9 +142,21 @@ def initialize_database():
                 out_file TEXT,
                 err_file TEXT,
                 status TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                started_at TIMESTAMP,
+                ended_at TIMESTAMP
             );"""
         )
+        # Idempotent migration for installs whose processes table predates the
+        # execution-timing columns (added 2026-06-17). started_at is stamped on
+        # the Running transition, ended_at on a terminal one; per-step duration
+        # = ended_at - started_at, measured in the runner outside the step
+        # subprocess (zero pipeline overhead). Old rows keep NULLs (no timing).
+        proc_cols = {r["name"] for r in cur.execute("PRAGMA table_info(processes)").fetchall()}
+        if "started_at" not in proc_cols:
+            cur.execute("ALTER TABLE processes ADD COLUMN started_at TIMESTAMP")
+        if "ended_at" not in proc_cols:
+            cur.execute("ALTER TABLE processes ADD COLUMN ended_at TIMESTAMP")
         conn.commit()
         print(f"---> SQLite database initialized at {_db_path()}.")
 
@@ -544,22 +556,38 @@ def is_task_created_within_minute(task_id):
         return (datetime.now() - created_at) < timedelta(minutes=1)
 
 
+_TERMINAL_STATUSES = {"Done", "Completed", "Failed", "Cancelled"}
+
+
 def set_process_status(process_id, status, pid=None):
     """Update the status of a single process. The local runner calls this.
     `pid` is the OS PID of the engine subprocess; stored under the
-    legacy `cluster_job_id` column."""
+    legacy `cluster_job_id` column.
+
+    The same write also stamps execution-time markers so the GUI can show
+    per-step durations at no extra pipeline cost (this UPDATE already fires on
+    every transition): ``started_at`` on the ``Running`` transition (reset each
+    time, so a forced re-run doesn't inherit a stale start) and ``ended_at`` on
+    any terminal transition — including ``Failed``/``Cancelled``, so the UI can
+    show time-spent-before-failure. A skipped/cached step emits ``Done`` with no
+    preceding ``Running``, leaving ``started_at`` NULL (rendered as "cached",
+    never a negative duration)."""
+    sets = ["status = ?"]
+    params = [status]
+    if pid is not None:
+        sets.append("cluster_job_id = ?")
+        params.append(str(pid))
+    if status == "Running":
+        sets.append("started_at = CURRENT_TIMESTAMP")
+    elif status in _TERMINAL_STATUSES:
+        sets.append("ended_at = CURRENT_TIMESTAMP")
+    params.append(process_id)
     with create_connection() as conn:
         cur = conn.cursor()
-        if pid is not None:
-            cur.execute(
-                "UPDATE processes SET status = ?, cluster_job_id = ? WHERE process_id = ?",
-                (status, str(pid), process_id),
-            )
-        else:
-            cur.execute(
-                "UPDATE processes SET status = ? WHERE process_id = ?",
-                (status, process_id),
-            )
+        cur.execute(
+            f"UPDATE processes SET {', '.join(sets)} WHERE process_id = ?",
+            params,
+        )
         conn.commit()
         return cur.rowcount > 0
 
@@ -651,7 +679,8 @@ def get_all_active_tasks_with_processes():
         cur.execute(
             f"""SELECT p.process_id, p.task_id, c.capture_name, c.capture_json_path,
                        s.sequence_name, p.process,
-                       p.status, p.created_at, p.cluster_job_id, p.out_file,
+                       p.status, p.created_at, p.started_at, p.ended_at,
+                       p.cluster_job_id, p.out_file,
                        p.err_file, t.username
                 FROM processes p
                 JOIN tasks t ON p.task_id = t.task_id
@@ -682,6 +711,8 @@ def get_all_active_tasks_with_processes():
                     "processType": r["process"],
                     "status": r["status"],
                     "createdAt": _iso_utc(r["created_at"]),
+                    "startedAt": _iso_utc(r["started_at"]),
+                    "endedAt": _iso_utc(r["ended_at"]),
                     "pid": r["cluster_job_id"],
                     "outFile": r["out_file"],
                     "errFile": r["err_file"],
@@ -1354,7 +1385,7 @@ def get_all_tasks_with_processes():
         cur.execute(
             """SELECT p.process_id, p.task_id, c.capture_name, c.capture_json_path,
                       s.sequence_name, p.process, p.status,
-                      p.created_at, p.cluster_job_id, p.sif_file,
+                      p.created_at, p.started_at, p.ended_at, p.cluster_job_id, p.sif_file,
                       p.out_file, p.err_file,
                       t.username, t.created_at AS task_created_at, t.preset_path
                FROM processes p
@@ -1387,6 +1418,8 @@ def get_all_tasks_with_processes():
                     "pid": r["cluster_job_id"] or "",
                     "userId": r["username"],
                     "createdAt": _iso_utc(r["created_at"]),
+                    "startedAt": _iso_utc(r["started_at"]),
+                    "endedAt": _iso_utc(r["ended_at"]),
                     "imagePath": r["sif_file"] or "",
                     "outFile": r["out_file"] or "",
                     "errFile": r["err_file"] or "",
