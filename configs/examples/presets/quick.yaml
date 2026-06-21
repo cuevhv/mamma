@@ -52,5 +52,8 @@ ma_vis:
   - ma_3d
   script: run_ma_vis.py
   repo_path: visualization
-  flags: []
+  # Parallelize per-camera overlay rendering (measured ~2x on 6 cams). The script
+  # default is 1 (serial) to stay safe where parallel pyrender/EGL is finicky;
+  # lower this if a host struggles with concurrent offscreen rendering.
+  flags: ["--overlay-num-workers 4"]
   undistort: false

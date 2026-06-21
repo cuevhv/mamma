@@ -1,0 +1,74 @@
+# Fast preset — the full pipeline with the speed optimizations turned on.
+#
+# Use this for normal full-quality runs when you want it as fast as we can make
+# it. Identical outputs to `full.yaml` within validated tolerance (GT MPJPE
+# parity), just faster. The two flags below are the only opt-in speedups; the
+# rest are automatic code defaults (on-GPU crop preprocessing, the cv2-ROI
+# anti-alias blur, skipping the unused person detector in mask mode, and debug
+# viz off by default).
+#
+#   ma_2d  --tensorrt           ~5.3x faster landmark forward (FP16). NVIDIA-only;
+#                               needs requirements/requirements-tensorrt.txt, and
+#                               falls back to PyTorch automatically if absent. The
+#                               compiled engine is cached to disk after the first run.
+#   ma_vis --overlay-num-workers 4   ~2x faster overlay rendering (parallel pyrender).
+#
+# Measured vs the unoptimized `main` on a 6-person / 32-camera capture, ma_2d drops
+# from ~159 min to ~51 min. See docs/benchmarks/PR-metrics.md.
+global:
+  version: 1.0
+  username: ''
+  out_dir: output
+  jobs_log_dir: output/logs/jobs
+  bind: []
+  conda_env: mamma
+ma_cap:
+  engine: conda
+  enabled: true
+  dependencies: []
+  script: run_ma_cap.py
+  repo_path: capture
+  flags: []
+ma_masks:
+  engine: conda
+  enabled: true
+  dependencies:
+  - ma_cap
+  script: run_ma_masks.py
+  repo_path: segmentation
+  flags:
+  - --sam_version sam2
+  undistort: false
+ma_2d:
+  engine: conda
+  enabled: true
+  dependencies:
+  - ma_masks
+  script: run_ma_2d.py
+  repo_path: landmarks
+  config_path: configs/train/models_2d/config_mammanet_mask_512.yaml
+  weights: data/weights/ma_2d/mamma_mask_full_cvpr.ckpt
+  # TensorRT FP16 forward (~5.3x). Falls back to PyTorch if torch-tensorrt is absent.
+  flags: ["--tensorrt"]
+  undistort: false
+ma_3d:
+  engine: conda
+  enabled: true
+  dependencies:
+  - ma_2d
+  script: run_ma_3d.py
+  repo_path: optimization
+  config_file: config_files/contact_configs/config_real_gmf_small_vals_detr_exp_no_vtemplate.yaml
+  flags: []
+ma_vis:
+  engine: conda
+  enabled: true
+  dependencies:
+  - ma_2d
+  - ma_3d
+  script: run_ma_vis.py
+  repo_path: visualization
+  # Parallel per-camera overlay rendering (~2x). Lower if a host struggles with
+  # concurrent offscreen pyrender/EGL.
+  flags: ["--overlay-num-workers 4"]
+  undistort: false

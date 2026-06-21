@@ -768,6 +768,11 @@ def parser():
                            "optimized frame. Applied after --start_frame/--end_frame slicing.")
     args.add_argument('--skip_detection_analysis', action='store_true',
                       help="Skip post-run 2D detection analysis plots/CSVs.")
+    args.add_argument('--use-gt', dest='use_gt', action='store_true',
+                      help="Evaluate against ground truth: also compute MPJPE/PVE vs the "
+                           "SMPL-X poses in <ma_cap_dir>/<seq>/gt/global.npz (e.g. the "
+                           "mamma_eval_dance sequences). Off by default — normal captures have "
+                           "no GT, so the fit's prediction is the only output.")
     args.add_argument('--detection_analysis_top_k', type=int, default=30,
                       help="Top-K least confident frames to report in detection analysis.")
     # ── Per-installation paths (previously read from MAMMA_* env vars at
@@ -852,7 +857,7 @@ if __name__ == "__main__":
         out_fn=seq_name,
         downsampled_verts_mat_path=paths.downsampled_verts_pkl,
         out_path=args.out_path,
-        use_gt=False,
+        use_gt=args.use_gt,
         cam_name_prefix=args.cam_name_prefix,
         save_scene_videos=not args.skip_scene_videos,
         start_frame=args.start_frame,

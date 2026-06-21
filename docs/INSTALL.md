@@ -122,6 +122,19 @@ huggingface-cli login              # account must have approved access
 
 Then edit the preset to use SAM 3: change `ma_masks.flags` to `- --sam_version sam3_prompt`. Weights download on first run; no env var is needed.
 
+### TensorRT for `ma_2d` (optional, NVIDIA-only)
+
+The `ma_2d --tensorrt` flag (used by the `fast.yaml` preset) compiles the landmark
+network to a TensorRT FP16 engine for a ~5× faster forward. It's optional and
+NVIDIA-only — without it the flag falls back to plain PyTorch, so configs stay portable.
+
+```bash
+pip install -r requirements/requirements-tensorrt.txt
+```
+
+The compiled engine is cached to disk on first run (keyed by weights/shape/precision/GPU),
+so subsequent runs load it in ~2 s. See [`docs/CONFIGS.md`](CONFIGS.md#common-per-step-flags) for `--tensorrt` / `--tensorrt-fp32`.
+
 ### Backbones for training only (skip for inference)
 
 Skip this section unless you intend to retrain.

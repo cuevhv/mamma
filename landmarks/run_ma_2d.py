@@ -49,31 +49,61 @@ import numpy as np
 from pathlib import Path
 from utils.utils_detectron2 import DefaultPredictor_Lazy
 from detectron2.config import LazyConfig
-from lib.datasets.vitdet_dataset import ViTDetDataset
+from lib.datasets.vitdet_dataset import DEFAULT_MEAN, DEFAULT_STD
+from lib.datasets.utils_eval import gen_trans_from_patch_cv, expand_to_aspect_ratio
+from kornia.geometry.transform import warp_affine
+from kornia.filters import gaussian_blur2d
 from utils.video_utils import create_video_from_images
 from utils.post_video_from_imgs import process_sequence
-from typing import Any
 import argparse
 from collections.abc import Mapping
 from omegaconf import OmegaConf, DictConfig, ListConfig
 
-def recursive_to(x: Any, target: torch.device):
+
+def _gpu_make_batch(frame_t, mask, boxes, cfg, device, mean_t, std_t):
+    """Build the model-input batch on the GPU, replacing the per-crop CPU
+    ``ViTDetDataset`` path.
+
+    ``frame_t`` is the RGB frame already uploaded to the device once per frame
+    ((1, 3, H, W) float); ``mask`` is the raw 0/255 mask (mask mode) or None.
+    The math mirrors ``ViTDetDataset.__getitem__``: a single affine warp from the
+    bbox to the fixed network patch, with an anti-alias gaussian blur before the
+    downsampling. Warp/blur/normalize run as kornia/torch ops on-device, so the
+    frame stays resident and no per-crop CPU work or host->device copy is needed.
+    Returns the batch dict, or None when there is no valid box.
     """
-    Recursively transfer a batch of data to the target device
-    Args:
-        x (Any): Batch of data.
-        target (torch.device): Target device.
-    Returns:
-        Batch of data where all tensors are transfered to the target device.
-    """
-    if isinstance(x, dict):
-        return {k: recursive_to(v, target) for k, v in x.items()}
-    elif isinstance(x, torch.Tensor):
-        return x.to(target)
-    elif isinstance(x, list):
-        return [recursive_to(i, target) for i in x]
-    else:
-        return x
+    if len(boxes) == 0:
+        return None
+    bbox_shape = cfg.data_cfg["image_size"]
+    patch_w, patch_h = int(bbox_shape[0]), int(bbox_shape[1])
+    boxes = np.asarray(boxes, np.float32)
+    center = (boxes[:, 2:4] + boxes[:, 0:2]) / 2.0
+    scale = (boxes[:, 2:4] - boxes[:, 0:2]) / 200.0
+    bbox_size = expand_to_aspect_ratio(scale[0] * 200 * 1.2, target_aspect_ratio=bbox_shape)
+    trans = gen_trans_from_patch_cv(float(center[0, 0]), float(center[0, 1]),
+                                    bbox_size[0], bbox_size[1], patch_w, patch_h, 1.0, 0)
+    M = torch.from_numpy(np.asarray(trans, np.float32)).to(device)[None]
+
+    src = frame_t
+    downsampling_factor = (float(bbox_size.max()) / patch_w) / 2.0
+    if downsampling_factor > 1.1:
+        sigma = (downsampling_factor - 1) / 2
+        k = 2 * int(np.ceil(3 * sigma)) + 1
+        src = gaussian_blur2d(frame_t, (k, k), (sigma, sigma))
+    img = warp_affine(src, M, (patch_h, patch_w), mode="bilinear", padding_mode="zeros")
+    img = (img - mean_t) / std_t
+
+    mask_patch = None
+    if mask is not None:
+        mask_t = torch.from_numpy(mask).to(device).float()[None, None] / 255.0
+        mask_patch = warp_affine(mask_t, M, (patch_h, patch_w), mode="nearest", padding_mode="zeros")
+
+    return {
+        "img": img,
+        "mask": mask_patch,
+        "box_center": torch.from_numpy(np.ascontiguousarray(center[:1])).float(),
+        "box_size": torch.from_numpy(np.asarray(bbox_size, np.float32)[None]).float(),
+    }
 
 
 def process_data(frame_source, detector, device, model, cfg, out_folder, save_cam_output, masks_path=None,
@@ -128,20 +158,24 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
     contact_per_body = {pid: [] for pid in people_ids}
     floor_contact_per_body = {pid: [] for pid in people_ids}
     body_dirs = {pid: f"{out_folder}/{camera_id}/body_{pid:02d}" for pid in people_ids}
+    mean_t = torch.tensor(DEFAULT_MEAN, device=device).view(1, 3, 1, 1).float()
+    std_t = torch.tensor(DEFAULT_STD, device=device).view(1, 3, 1, 1).float()
 
     for frame_n in tqdm.tqdm(range(n_frames)):
-        # FrameSource gives RGB; cv2/downstream expects BGR. Single decode/frame.
-        frame_bgr = cv2.cvtColor(frame_source.read_rgb(frame_n), cv2.COLOR_RGB2BGR)
+        # Decode the frame once and upload it to the GPU once; every body warps
+        # its crop from this resident RGB tensor (the network's input order).
+        frame_rgb = frame_source.read_rgb(frame_n)
+        frame_t = torch.from_numpy(np.ascontiguousarray(frame_rgb)).to(device).permute(2, 0, 1).float()[None]
         for body_id in people_ids:
             folder_path = body_dirs[body_id]
             body_verts = verts_per_body[body_id]
             body_vis = vis_per_body[body_id]
             body_contact = contact_per_body[body_id]
             body_floor_contact = floor_contact_per_body[body_id]
-            # frame_bgr is read-only downstream (detector reads it; ViTDetDataset
-            # copies internally), so the bodies can share it without a copy.
-            img = frame_bgr
             if masks_path is None:
+                # Standalone (no-mask) mode: the detector finds the person box on
+                # a BGR frame; the crop itself is still warped on the GPU below.
+                img = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
                 det_out = detector(img)
                 det_instances = det_out['instances']
                 valid_idx = (det_instances.pred_classes==0) & (det_instances.scores > 0.5)
@@ -191,23 +225,18 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
                     boxes = np.array([[x1, y1, x2, y2]])
                     valid_scores = np.array([1.0])
 
-            dataset = ViTDetDataset(cfg, img, mask, boxes=boxes)
-            dataloader = torch.utils.data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
-
-            if len(dataset) == 0:
-                logger.warning(f"skipping because dataloader length: {len(dataset)}")
+            batch = _gpu_make_batch(frame_t, mask, boxes, cfg, device, mean_t, std_t)
+            if batch is None:
+                logger.warning(f"skipping body {body_id} at frame {frame_n}: no valid box")
                 body_verts.append(np.zeros((1, cfg.num_joints, 3)))
                 body_vis.append(np.zeros((1, cfg.num_joints)))
                 body_contact.append(np.zeros((1, cfg.num_joints)))
                 body_floor_contact.append(np.zeros((1, cfg.num_joints)))
                 continue
 
-            # one iteration
-            batch = next(iter(dataloader))
-            batch = recursive_to(batch, device)
-            img_crop = batch["img"].cpu() * dataset.std[None,:, None, None] + dataset.mean[None,:, None, None]
-            img_crop = (img_crop[0].numpy().transpose(1,2,0))[:,:,::-1].astype(np.uint8).copy()
-            mask_crop = batch["mask"][0].cpu().numpy().transpose(1,2,0).copy() if batch["mask"] is not None else None
+            img_crop = batch["img"].cpu() * DEFAULT_STD[None, :, None, None] + DEFAULT_MEAN[None, :, None, None]
+            img_crop = (img_crop[0].numpy().transpose(1, 2, 0))[:, :, ::-1].astype(np.uint8).copy()
+            mask_crop = batch["mask"][0].cpu().numpy().transpose(1, 2, 0).copy() if batch["mask"] is not None else None
 
             with torch.no_grad():
                 out = model(batch["img"], batch["mask"])
@@ -358,12 +387,22 @@ def parser():
     args.add_argument('--mask_path', type=str, default=None, help='path to detectron2 mask model')
     args.add_argument('--video_fps', type=float, default=5.0, help='FPS for generated videos')
     args.add_argument('--cam_names', nargs='*', default=None, help='space-separated camera names (e.g., IOI_01 IOI_02)')
-    args.add_argument('--save_cam_output', action=argparse.BooleanOptionalAction, default=True, help='save per-camera viz frames + video (use --no-save_cam_output to disable)')
+    args.add_argument('--save_cam_output', action=argparse.BooleanOptionalAction, default=False,
+                      help='Debug only: write per-body viz frames + stitch a preview video. '
+                           'Off by default (these artifacts are not consumed downstream); '
+                           'pass --save_cam_output to enable for inspection.')
     args.add_argument('--downsampled-verts', dest='downsampled_verts',
                       default='assets/verts_512.pkl',
                       help='Path to verts_512.pkl. Previously hard-coded to '
                            'assets/verts_512.pkl; the inference runner injects '
                            'this from MAMMA_DOWNSAMPLED_VERTS_PKL.')
+    args.add_argument('--tensorrt', action='store_true',
+                      help='Compile the landmark network to a TensorRT engine for a faster '
+                           'forward (~5x FP16). NVIDIA-only; falls back to PyTorch when '
+                           'torch-tensorrt is unavailable. Best for long / many-camera runs '
+                           '(the one-time engine build amortizes over all frames).')
+    args.add_argument('--tensorrt-fp32', dest='tensorrt_fp32', action='store_true',
+                      help='With --tensorrt, use FP32 (~2x, near-exact) instead of FP16 (~5x).')
     parsed = args.parse_args()
 
     # Post-parse mutex: exactly one input mode.
@@ -522,6 +561,73 @@ def _build_cam_sources(args, img_folder=None):
     return sources
 
 
+def _build_tensorrt_forward(model, cfg, device, fp16=True, weights_path=None):
+    """Compile the landmark network to a TensorRT engine and return a callable
+    with the same ``(img, mask) -> dict`` contract as the eager model.
+
+    NVIDIA-only opt-in fast path. The compiled engine is cached to disk (next to
+    the weights), keyed by weights + input shape + precision + GPU + TRT version,
+    so the first run pays the ~minute build and later runs load it in ~2 s; any
+    change to those inputs auto-rebuilds. The single forward call site is
+    unchanged — this just swaps what ``model`` points at, so there is no
+    duplicated inference code.
+    """
+    import torch_tensorrt
+    import hashlib
+    keys = ("joints2d", "visibility", "contact", "floor_contact")
+
+    class _Tuple(torch.nn.Module):  # ONNX/TRT export needs tuple (not dict) outputs
+        def __init__(self, m):
+            super().__init__()
+            self.m = m
+
+        def forward(self, x, mask):
+            o = self.m(x, mask)
+            return tuple(o[k] for k in keys)
+
+    h, w = int(cfg.data_cfg["image_size"][1]), int(cfg.data_cfg["image_size"][0])
+    example = (torch.randn(1, 3, h, w, device=device), torch.rand(1, 1, h, w, device=device))
+
+    cache_path = None
+    if weights_path:
+        st = os.stat(weights_path)
+        gpu = torch.cuda.get_device_name(device) if torch.cuda.is_available() else "cpu"
+        key = hashlib.md5(
+            f"{weights_path}|{st.st_size}|{int(st.st_mtime)}|{h}x{w}|"
+            f"{'fp16' if fp16 else 'fp32'}|{gpu}|trt{torch_tensorrt.__version__}".encode()
+        ).hexdigest()[:16]
+        cache_dir = os.path.join(os.path.dirname(os.path.abspath(weights_path)), ".trt_cache")
+        cache_path = os.path.join(cache_dir, f"ma2d_trt_{key}.ep")
+
+    engine = None
+    if cache_path and os.path.exists(cache_path):
+        try:
+            engine = torch.export.load(cache_path).module()
+            logger.info(f"ma_2d: loaded cached TensorRT engine {cache_path}")
+        except Exception as e:
+            logger.warning(f"ma_2d: cached engine load failed ({e}); rebuilding.")
+            engine = None
+
+    if engine is None:
+        engine = torch_tensorrt.compile(
+            _Tuple(model).eval().to(device), ir="dynamo", arg_inputs=example,
+            enabled_precisions={torch.float16 if fp16 else torch.float32},
+            truncate_double=True, min_block_size=1,
+        )
+        if cache_path:
+            try:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                torch_tensorrt.save(engine, cache_path, arg_inputs=example)
+                logger.info(f"ma_2d: cached TensorRT engine to {cache_path}")
+            except Exception as e:
+                logger.warning(f"ma_2d: could not cache TensorRT engine ({e}).")
+
+    def forward(img, mask):
+        return dict(zip(keys, engine(img, mask)))
+
+    return forward
+
+
 def main(args, out_folder, masks_folder, img_folder=None):
     OmegaConf.register_new_resolver("mult", lambda x,y: x*y)
     OmegaConf.register_new_resolver("if", lambda x, y, z: y if x else z)
@@ -548,21 +654,40 @@ def main(args, out_folder, masks_folder, img_folder=None):
     model.load_state_dict(torch.load(args.weights)['state_dict'])
     model.eval()
 
-    # Resolve relative to this script (landmarks/) so the detector config
-    # is found whether launched from the repo root or from cwd=landmarks/.
-    cfg_path = os.path.join(_LANDMARKS_DIR, "configs/cascade_mask_rcnn_vitdet_h_75ep.py")
-    detectron2_cfg = LazyConfig.load(str(cfg_path))
-    detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
-    for i in range(3):
-        detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
-    detector = DefaultPredictor_Lazy(detectron2_cfg)
+    # Forward backend: eager PyTorch by default; opt-in TensorRT fast path that
+    # falls back to eager on any failure (non-NVIDIA host, missing torch-tensorrt,
+    # unsupported op) so the flag never breaks a run.
+    forward = model
+    if getattr(args, "tensorrt", False):
+        try:
+            forward = _build_tensorrt_forward(model, cfg, device, fp16=not args.tensorrt_fp32,
+                                              weights_path=args.weights)
+            logger.info(f"ma_2d: using TensorRT {'FP32' if args.tensorrt_fp32 else 'FP16'} forward backend.")
+        except Exception as e:
+            logger.warning(f"ma_2d: TensorRT compile failed ({e}); using PyTorch forward.")
+            forward = model
+
+    # The detector only finds person boxes in standalone (no-mask) mode; in mask
+    # mode the boxes come from the segmentation masks, so the detector is never
+    # called. Skip building it then — loading cascade Mask-RCNN ViTDet-H is pure
+    # wasted startup (weights download + load) on every masked ma_2d run.
+    detector = None
+    if masks_folder is None:
+        # Resolve relative to this script (landmarks/) so the detector config
+        # is found whether launched from the repo root or from cwd=landmarks/.
+        cfg_path = os.path.join(_LANDMARKS_DIR, "configs/cascade_mask_rcnn_vitdet_h_75ep.py")
+        detectron2_cfg = LazyConfig.load(str(cfg_path))
+        detectron2_cfg.train.init_checkpoint = "https://dl.fbaipublicfiles.com/detectron2/ViTDet/COCO/cascade_mask_rcnn_vitdet_h/f328730692/model_final_f05665.pkl"
+        for i in range(3):
+            detectron2_cfg.model.roi_heads.box_predictors[i].test_score_thresh = 0.25
+        detector = DefaultPredictor_Lazy(detectron2_cfg)
 
     os.makedirs(out_folder, exist_ok=True)
 
     sources = _build_cam_sources(args, img_folder=img_folder)
     logger.info(f"processing {len(sources)} cameras: {[s.cam_name for s in sources]}")
     for source in sources:
-        process_data(source, detector, device, model, cfg, out_folder,
+        process_data(source, detector, device, forward, cfg, out_folder,
                      args.save_cam_output, masks_folder,
                      downsampled_verts_pth=args.downsampled_verts)
 

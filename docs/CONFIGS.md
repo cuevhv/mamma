@@ -92,7 +92,17 @@ Source: [`segmentation/run_ma_masks.py`](../segmentation/run_ma_masks.py).
 
 Source: [`landmarks/run_ma_2d.py`](../landmarks/run_ma_2d.py).
 
-- `--no-save_cam_output` — skip per-camera viz frames + video (faster).
+- `--tensorrt` — compile the landmark network to a TensorRT engine for a faster
+  forward (~5× FP16). **Opt-in, NVIDIA-only**; falls back to plain PyTorch when
+  `torch-tensorrt` is unavailable, so configs stay portable. The compiled engine is
+  cached to disk (keyed by weights/shape/precision/GPU), so after the first run it
+  loads in ~2 s — it pays off most on long / many-camera sequences. Needs the
+  optional dep in [`requirements/requirements-tensorrt.txt`](../requirements/requirements-tensorrt.txt).
+- `--tensorrt-fp32` — with `--tensorrt`, use the near-exact FP32 engine (~2×) instead
+  of FP16 (~5×).
+- `--save_cam_output` — write per-body debug viz frames + a preview video. **Off by
+  default** (these artifacts aren't consumed downstream); pass it to enable inspection.
+  `--no-save_cam_output` is the explicit off.
 - `--video_fps F` — FPS for generated viz videos (default 5).
 - `--undistort` — undistort frames before landmark inference.
 
@@ -107,11 +117,18 @@ Source: [`optimization/run_ma_3d.py`](../optimization/run_ma_3d.py).
 - `--skip_detection_analysis` — skip post-run 2D-detection plots + CSVs.
 - `--detection_analysis_top_k K` — top-K least-confident frames to report
   (default 30).
+- `--use-gt` — evaluation only: also compute MPJPE/PVE/PA-MPJPE against the
+  ground-truth SMPL-X poses in `<ma_cap_dir>/<seq>/gt/global.npz` (e.g. the
+  `mamma_eval_dance` sequences). **Off by default** — normal in-the-wild captures
+  have no GT.
 
 #### `ma_vis`
 
 Source: [`visualization/cli.py`](../visualization/cli.py).
 
+- `--overlay-num-workers N` — parallelize per-camera overlay rendering (measured
+  ~2× at `N=4` on 6 cameras). Default `1` (serial) to stay safe where concurrent
+  offscreen pyrender/EGL is finicky; the example presets ship `4`.
 - `--up-axis x|y|z` — world up axis (default `z`).
 - `--fps N` — Rerun timeline + overlay video FPS (default 30).
 - `--cam-names-overlay <list>` — restrict overlay rendering to a camera subset.
