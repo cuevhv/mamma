@@ -188,6 +188,14 @@ sam:
   offload_state_min_frames: 1500    # frame count above which "auto" enables offload_state_to_cpu
   fp16_frames: false                # store decoded frames as float16 (halves frame RAM/VRAM). Opt-in: alters overlay pixels by ≤1 LSB
 
+  # Lazy frame loading: keep only an LRU window of decoded frames in RAM instead
+  # of all N, so host RAM is O(window) not O(num_frames) — the way to bound host
+  # RAM on arbitrarily long clips (offload bounds VRAM, not host). Byte-identical
+  # (same per-frame processing); costs re-reading each frame from disk once per
+  # pass. Off by default. (issue #14)
+  lazy_frame_loading: false
+  lazy_frame_window: 8              # frames kept resident when lazy_frame_loading is on
+
 # ─── Export ───────────────────────────────────────────────────────────────────
 # After mask generation, optionally convert image sequences to MP4 videos
 # and clean up the source images to save disk space.

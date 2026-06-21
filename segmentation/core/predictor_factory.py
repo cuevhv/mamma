@@ -58,6 +58,71 @@ def set_frame_storage_fp16(enabled: bool):
     _frame_store_fp16 = bool(enabled)
 
 
+# Lazy frame loading: when enabled, the patched loaders return a
+# _LazyEvictingFrameLoader instead of materializing all N decoded frames at once.
+# SAM accesses frames sequentially (one per propagation step; memory-attention
+# uses cached encoded features, not raw images), so an LRU window of a few frames
+# never thrashes — host RAM becomes O(window) instead of O(num_frames). Outputs
+# are byte-identical (same per-frame processing); the cost is re-reading each
+# frame from disk once per pass. Opt-in via ``sam.lazy_frame_loading``. (issue #14)
+_lazy_frame_loading = False
+_lazy_window = 8
+
+
+def set_lazy_frame_loading(enabled: bool, window: int = 8):
+    """Enable/disable lazy (LRU-windowed) decoded-frame loading."""
+    global _lazy_frame_loading, _lazy_window
+    _lazy_frame_loading = bool(enabled)
+    _lazy_window = max(1, int(window))
+
+
+class _LazyEvictingFrameLoader:
+    """List-like view over decoded frames that keeps only an LRU window in RAM.
+
+    Matches the eager path's per-frame processing exactly — cast to ``store_dtype``,
+    move to ``compute_device`` when not offloading, then ``(img - mean) / std`` —
+    so ``self[i]`` equals the eager ``images[i]`` bit-for-bit. Exposes the same
+    interface SAM uses: ``len()``, ``[idx]`` -> (3,H,W) tensor, ``video_height``/
+    ``video_width``.
+    """
+
+    def __init__(self, img_paths, load_fn, image_size, img_mean, img_std,
+                 compute_device, offload_video_to_cpu, window):
+        from collections import OrderedDict
+        self._paths = img_paths
+        self._load = load_fn
+        self._size = image_size
+        self._offload = offload_video_to_cpu
+        self._device = compute_device
+        # mean/std live where the arithmetic happens (device unless offloading),
+        # mirroring the eager loader.
+        self._mean = img_mean if offload_video_to_cpu else img_mean.to(compute_device)
+        self._std = img_std if offload_video_to_cpu else img_std.to(compute_device)
+        self._window = max(1, int(window))
+        self._cache = OrderedDict()
+        self.video_height = None
+        self.video_width = None
+        self[0]  # prime dims (and cache frame 0)
+
+    def __len__(self):
+        return len(self._paths)
+
+    def __getitem__(self, idx):
+        cached = self._cache.get(idx)
+        if cached is not None:
+            self._cache.move_to_end(idx)
+            return cached
+        img, self.video_height, self.video_width = self._load(self._paths[idx], self._size)
+        img = img.to(self._mean.dtype)
+        if not self._offload:
+            img = img.to(self._device)
+        img = (img - self._mean) / self._std
+        self._cache[idx] = img
+        while len(self._cache) > self._window:
+            self._cache.popitem(last=False)  # evict least-recently-used
+        return img
+
+
 def _patch_sam2_png_support():
     """
     Monkey-patch sam2.utils.misc to support PNG images and robust frame sorting.
@@ -136,6 +201,13 @@ def _patch_sam2_png_support():
         store_dtype = torch.float16 if _frame_store_fp16 else torch.float32
         img_mean = torch.tensor(img_mean, dtype=store_dtype)[:, None, None]
         img_std = torch.tensor(img_std, dtype=store_dtype)[:, None, None]
+
+        if _lazy_frame_loading:
+            lf = _LazyEvictingFrameLoader(
+                img_paths, _load_img_as_tensor, image_size,
+                img_mean, img_std, compute_device, offload_video_to_cpu, _lazy_window,
+            )
+            return lf, lf.video_height, lf.video_width
 
         if async_loading_frames:
             lazy_images = sam2_misc.AsyncVideoFrameLoader(
@@ -236,6 +308,13 @@ def _patch_sam3_png_support():
         store_dtype = torch.float16 if _frame_store_fp16 else torch.float32
         img_mean = torch.tensor(img_mean, dtype=store_dtype)[:, None, None]
         img_std = torch.tensor(img_std, dtype=store_dtype)[:, None, None]
+
+        if _lazy_frame_loading:
+            lf = _LazyEvictingFrameLoader(
+                img_paths, _load_img_as_tensor, image_size,
+                img_mean, img_std, compute_device, offload_video_to_cpu, _lazy_window,
+            )
+            return lf, lf.video_height, lf.video_width
 
         if async_loading_frames:
             lazy_images = sam3_misc.AsyncVideoFrameLoader(

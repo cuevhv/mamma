@@ -131,6 +131,14 @@ sam:
   offload_state_min_frames: 1500    # frame count above which "auto" enables offload_state_to_cpu
   fp16_frames: false                # store decoded frames as float16 (halves frame RAM/VRAM). Opt-in: alters overlay pixels by ≤1 LSB
 
+  # Lazy frame loading: keep only an LRU window of decoded frames in RAM instead
+  # of all N, so host RAM is O(window) not O(num_frames) (bounds host RAM on long
+  # clips; offload only bounds VRAM). Byte-identical; costs disk re-reads. Off by
+  # default. Applies to sam3 (tracker) / sam3_prompt_light; sam3_prompt's session
+  # API manages its own frames. (issue #14)
+  lazy_frame_loading: false
+  lazy_frame_window: 8
+
   # sam3_prompt ONLY: bound SAM3's session output cache (cached_frame_outputs).
   # That cache stores every frame's masks and is never pruned during propagation,
   # so sam3_prompt VRAM grows ~5x faster than the sam3 tracker path and OOMs on
