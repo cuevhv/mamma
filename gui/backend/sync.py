@@ -445,17 +445,26 @@ def _pick_video_thumbnail_source(
     if not os.path.isdir(seq_dir):
         return None
     # First videos* dir in priority order, then first .mp4 alphabetically.
+    # Use os.scandir: entry.is_file() reads the cached dirent type (no extra
+    # stat() per file like os.path.isfile would), so this stays cheap even on a
+    # cold inode cache. We still pick the alphabetically-first .mp4 for a
+    # deterministic source, but without N stat() syscalls.
     for sub in _VIDEO_DIR_PRIORITY:
         cand_dir = os.path.join(seq_dir, sub)
         if not os.path.isdir(cand_dir):
             continue
-        mp4s = sorted(
-            f for f in _safe_listdir(cand_dir)
-            if f.lower().endswith(".mp4")
-            and os.path.isfile(os.path.join(cand_dir, f))
-        )
-        if mp4s:
-            return os.path.join(cand_dir, mp4s[0])
+        first = None
+        try:
+            with os.scandir(cand_dir) as it:
+                for entry in it:
+                    name = entry.name
+                    if name.lower().endswith(".mp4") and (first is None or name < first):
+                        if entry.is_file():
+                            first = name
+        except OSError:
+            continue
+        if first:
+            return os.path.join(cand_dir, first)
     return None
 
 
@@ -534,27 +543,30 @@ def find_video_thumbnail(
 ) -> str | None:
     """Lazy on-disk thumbnail for a video-shipped capture.
 
-    Returns the cached JPEG path when present *and* newer than the source
-    video; otherwise extracts a fresh middle frame. Returns None if no
-    source video resolves or extraction fails — caller falls back to the
-    "no preview" placeholder."""
-    src = _pick_video_thumbnail_source(capture_content, capture_root_abs)
-    if not src:
-        return None
+    Returns the cached JPEG when present, else extracts a fresh middle frame.
+
+    Cache-first by design: resolving the source video
+    (``_pick_video_thumbnail_source``) does a cold filesystem stat-sweep of the
+    dataset's videos dir, which costs seconds on large datasets when the OS inode
+    cache is cold — and this runs for every present example capture on every
+    ``/api/captures`` request. So we check the cached JPEG (keyed by
+    ``capture_name``, in the small cache dir) *before* touching the dataset at
+    all. Source videos are immutable once downloaded, so a present cache entry is
+    valid; we no longer re-stat the source for a freshness check on the hot path.
+    (Delete the cached JPEG to force a refresh.)"""
     # Sanitize: capture_name comes from a Path stem we control, but defend
     # against any future caller passing user-supplied text.
     safe_name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in capture_name)
     if not safe_name:
         return None
     dest = os.path.join(cache_dir, f"{safe_name}.jpg")
-    try:
-        if os.path.isfile(dest):
-            src_m = os.path.getmtime(src)
-            dst_m = os.path.getmtime(dest)
-            if dst_m >= src_m:
-                return dest  # cache hit, fresh
-    except OSError:
-        pass
+    if os.path.isfile(dest):
+        return dest  # cache hit — return without probing the dataset
+    # Cache miss: now resolve the source (cheap scandir, see
+    # _pick_video_thumbnail_source) and extract.
+    src = _pick_video_thumbnail_source(capture_content, capture_root_abs)
+    if not src:
+        return None
     try:
         os.makedirs(cache_dir, exist_ok=True)
     except OSError:
