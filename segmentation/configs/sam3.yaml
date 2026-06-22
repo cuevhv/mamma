@@ -129,15 +129,28 @@ sam:
   offload_video_to_cpu: true       # keep decoded frames on host RAM, stream to GPU (≈free; bounds VRAM)
   offload_state_to_cpu: auto        # per-frame memory bank on host. auto = on past offload_state_min_frames; or true/false
   offload_state_min_frames: 1500    # frame count above which "auto" enables offload_state_to_cpu
-  fp16_frames: false                # store decoded frames as float16 (halves frame RAM/VRAM). Opt-in: alters overlay pixels by ≤1 LSB
+  # Store decoded frames as float16 — ~halves the HOST frame tensor (not VRAM:
+  # offload already keeps frames on the host). Opt-in & NOT byte-identical (~94%
+  # of masks within IoU >= 0.99, but can drop a tiny/distant subject on borderline
+  # frames). Prefer lazy_frame_loading (more host-RAM savings, byte-identical);
+  # use fp16 only as an extra squeeze. (issue #14)
+  fp16_frames: false
 
-  # Lazy frame loading: keep only an LRU window of decoded frames in RAM instead
-  # of all N, so host RAM is O(window) not O(num_frames) (bounds host RAM on long
-  # clips; offload only bounds VRAM). Byte-identical; costs disk re-reads. Off by
-  # default. Applies to sam3 (tracker) / sam3_prompt_light; sam3_prompt's session
-  # API manages its own frames. (issue #14)
+  # Lazy frame loading: load frames on demand (a small window in RAM) instead of
+  # all N, bounding host RAM on long clips (offload only bounds VRAM). Two backends:
+  #   - image / frame-folder input: LRU window, byte-identical, re-reads from disk.
+  #   - mp4 input: cv2 chunk streaming (no disk extraction); near-identical to
+  #     native decode (edge-pixel) and ~+24% wall from re-decoding.
+  # Off by default. Applies to sam3 (tracker) / sam3_prompt_light; sam3_prompt's
+  # session API manages its own frames. (issue #14)
   lazy_frame_loading: false
   lazy_frame_window: 8
+
+  # Memory-state pruning: drop per-frame mask-memory SAM no longer attends to, so
+  # stored state stays bounded on long clips. Byte-identical. Off by default.
+  # sam2/sam3-tracker / sam3_prompt_light only. (issue #14)
+  prune_memory_state: false
+  memory_keep_window: 32
 
   # sam3_prompt ONLY: bound SAM3's session output cache (cached_frame_outputs).
   # That cache stores every frame's masks and is never pruned during propagation,

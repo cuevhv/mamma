@@ -58,17 +58,20 @@ def set_frame_storage_fp16(enabled: bool):
     _frame_store_fp16 = bool(enabled)
 
 
-# Lazy frame loading: when enabled, the patched loaders return a
-# _LazyEvictingFrameLoader instead of materializing all N decoded frames at once.
-# SAM accesses frames sequentially (one per propagation step; memory-attention
-# uses cached encoded features, not raw images), so an LRU window of a few frames
-# never thrashes — host RAM becomes O(window) instead of O(num_frames). Outputs
-# are byte-identical (same per-frame processing); the cost is re-reading each
-# frame from disk once per pass. Opt-in via ``sam.lazy_frame_loading``. (issue #14)
+# Lazy frame loading: load frames on demand (a small window in RAM) instead of
+# materializing all N decoded frames at once, so host RAM is O(window) not
+# O(num_frames) — the way to bound host RAM on long clips (offload bounds VRAM,
+# not host). SAM accesses frames in monotonic sweeps (one per propagation step;
+# memory-attention uses cached encoded features, not raw images), so a small
+# window never thrashes. Two backends, both keyed off ``sam.lazy_frame_loading``:
+#   - image / JPG-folder input -> _LazyEvictingFrameLoader (LRU window).
+#     Byte-identical; cost is re-reading each frame from disk once per pass.
+#   - native mp4 input -> _VideoStreamFrameLoader (cv2 chunk streaming). No disk
+#     extraction; near-identical to the stock decord decode (edge-pixel rounding,
+#     ~0.99 IoU) and ~+24% wall from re-decoding on revisit. Opt-in. (issue #14)
 _lazy_frame_loading = False
 _lazy_window = 8
-
-
+_lazy_video_chunk = 64        # frames decoded per cv2 seek on the native-mp4 path
 def set_lazy_frame_loading(enabled: bool, window: int = 8):
     """Enable/disable lazy (LRU-windowed) decoded-frame loading."""
     global _lazy_frame_loading, _lazy_window
@@ -121,6 +124,133 @@ class _LazyEvictingFrameLoader:
         while len(self._cache) > self._window:
             self._cache.popitem(last=False)  # evict least-recently-used
         return img
+
+
+class _VideoStreamFrameLoader:
+    """Bounded-RAM frame view that streams directly from the mp4 (no disk extraction).
+
+    SAM2's stock ``load_video_frames_from_video_file`` decodes *every* frame into one
+    tensor (O(num_frames) host RAM — ~47 GB on a 3.7k-frame 1024px clip). This keeps
+    only a ``chunk``-sized buffer, decoded on demand with ``cv2.VideoCapture``:
+    sequential reads are cheap and chunk-start seeks are frame-accurate (verified).
+    SAM walks frames in monotonic sweeps (forward anchor->end, then reverse
+    anchor->0), so each chunk is decoded once per sweep and host RAM stays O(chunk).
+    Per-frame processing matches the eager path (resize, /255, ``(img-mean)/std``);
+    pixels are near-identical to native decode (cv2 vs decord differ by at most
+    edge-pixel rounding). cv2 is used rather than decord because decord's reader
+    corrupts the heap after a few dozen random reads. (issue #14)
+    """
+
+    def __init__(self, video_path, image_size, img_mean, img_std,
+                 compute_device, offload_video_to_cpu, chunk):
+        import cv2
+        import threading
+        # The mask/overlay export reads frames from a ThreadPoolExecutor, so __getitem__
+        # is called concurrently. cv2.VideoCapture is a single shared decoder and is NOT
+        # thread-safe (concurrent reads segfault), so serialize access with a lock. The
+        # export walks frames roughly in order, so the chunk buffer still hits and the
+        # serialization cost is negligible. (issue #14)
+        self._lock = threading.Lock()
+        self._path = video_path
+        self._size = image_size
+        self._cap = cv2.VideoCapture(video_path)
+        self.video_height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.video_width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self._n = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._offload = offload_video_to_cpu
+        self._device = compute_device
+        self._mean = img_mean if offload_video_to_cpu else img_mean.to(compute_device)
+        self._std = img_std if offload_video_to_cpu else img_std.to(compute_device)
+        self._chunk = max(1, int(chunk))
+        self._buf = {}
+        self._buf_chunk = -1
+        self._pos = 0  # next frame index the capture will read
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, idx):
+        with self._lock:
+            c = idx // self._chunk
+            if c != self._buf_chunk:
+                self._load_chunk(c)
+            return self._buf[idx]
+
+    def _load_chunk(self, c):
+        import cv2
+        import torch
+        start = c * self._chunk
+        end = min(start + self._chunk, self._n)
+        if self._pos != start:  # avoid a seek when we're already streaming in order
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+            self._pos = start
+        frames = []
+        for _ in range(start, end):
+            ok, bgr = self._cap.read()
+            if not ok:
+                raise RuntimeError(f"cv2 failed to read frame {self._pos} of '{self._path}'.")
+            self._pos += 1
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            rgb = cv2.resize(rgb, (self._size, self._size))
+            frames.append(torch.from_numpy(rgb))
+        batch = torch.stack(frames).permute(0, 3, 1, 2).float() / 255.0
+        if not self._offload:
+            batch = batch.to(self._device)
+        batch = (batch - self._mean) / self._std
+        self._buf = {start + i: batch[i] for i in range(end - start)}
+        self._buf_chunk = c
+
+
+def _install_video_lazy_patch(misc_module):
+    """Swap a SAM misc module's ``load_video_frames_from_video_file`` for the
+    bounded-RAM cv2 streaming loader when ``_lazy_frame_loading`` is on.
+
+    Stock loaders (identical in sam2.utils.misc and sam3.model.utils.sam2_utils)
+    materialize *all* decoded frames at once, so full-clip mp4 input blows up host
+    RAM (~47 GB on a 3.7k-frame clip). ``_VideoStreamFrameLoader`` streams a chunk
+    at a time — same O(window) host RAM as the JPG path, no disk extraction. The
+    caller (``load_video_frames``) passes the model's own img_mean/img_std, so the
+    same patch works for both sam2 and sam3 despite their different normalizations.
+    (issue #14)
+    """
+    import torch
+    if getattr(misc_module, "_mamma_video_lazy_patched", False):
+        return
+    _orig = misc_module.load_video_frames_from_video_file
+
+    def patched_load_video_frames_from_video_file(
+        video_path, image_size, offload_video_to_cpu,
+        img_mean=(0.485, 0.456, 0.406), img_std=(0.229, 0.224, 0.225),
+        compute_device=torch.device("cuda"),
+    ):
+        if _lazy_frame_loading and isinstance(video_path, str):
+            mean = torch.tensor(img_mean, dtype=torch.float32)[:, None, None]
+            std = torch.tensor(img_std, dtype=torch.float32)[:, None, None]
+            loader = _VideoStreamFrameLoader(
+                video_path, image_size, mean, std, compute_device,
+                offload_video_to_cpu, _lazy_video_chunk,
+            )
+            return loader, loader.video_height, loader.video_width
+        return _orig(video_path, image_size, offload_video_to_cpu, img_mean, img_std, compute_device)
+
+    misc_module.load_video_frames_from_video_file = patched_load_video_frames_from_video_file
+    misc_module._mamma_video_lazy_patched = True
+
+
+def _patch_sam2_video_lazy():
+    """Install the bounded-RAM video loader on SAM2's frame loader."""
+    from sam2.utils import misc as sam2_misc
+    _install_video_lazy_patch(sam2_misc)
+
+
+def _patch_sam3_video_lazy():
+    """Install the bounded-RAM video loader on the SAM3 tracker's frame loader."""
+    try:
+        from sam3.model.utils import sam2_utils as sam3_misc
+    except Exception:
+        return
+    if hasattr(sam3_misc, "load_video_frames_from_video_file"):
+        _install_video_lazy_patch(sam3_misc)
 
 
 def _patch_sam2_png_support():
@@ -835,6 +965,7 @@ def build_video_predictor(sam_version: str, config: str | None, checkpoint: str 
     """
     if sam_version == "sam2":
         _patch_sam2_png_support()
+        _patch_sam2_video_lazy()
         from sam2.build_sam import build_sam2_video_predictor  # type: ignore
         return build_sam2_video_predictor(config, checkpoint, device=device)
 
@@ -843,6 +974,7 @@ def build_video_predictor(sam_version: str, config: str | None, checkpoint: str 
         # with YOLO; sam3_prompt_light text-detects "person" via the model's own
         # detector (keep_detector=True) — no YOLO, no 16x multiplex predictor.
         _patch_sam3_png_support()
+        _patch_sam3_video_lazy()
         from sam3.model_builder import build_sam3_video_model  # type: ignore
         sam3_model = build_sam3_video_model()
         return _Sam3VideoAdapter(sam3_model, keep_detector=(sam_version == "sam3_prompt_light"))
