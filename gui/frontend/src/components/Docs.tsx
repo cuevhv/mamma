@@ -254,8 +254,10 @@ python -m inference run \\
             <ul className="space-y-3">
               <Bullet label="Preset" color="primary">
                 Capture-independent template. Says which steps run, which engine, which flags, which weights.
-                Two shipped: <InlineCode>presets/full.yaml</InlineCode> (all cameras, all sequences) and{' '}
-                <InlineCode>presets/quick.yaml</InlineCode> (a 30-frame slice for fast smoke).
+                Shipped: <InlineCode>presets/full.yaml</InlineCode> (all frames, memory-efficient),{' '}
+                <InlineCode>presets/quick.yaml</InlineCode> (~2 s smoke slice),{' '}
+                <InlineCode>presets/debug.yaml</InlineCode> (overlays + visualizations on), and{' '}
+                <InlineCode>presets/full_tensorrt.yaml</InlineCode> (full + TensorRT 2D, NVIDIA-only).
               </Bullet>
               <Bullet label="Capture" color="completed">
                 JSON manifest: <InlineCode>capture_root</InlineCode>, <InlineCode>calib</InlineCode>,{' '}

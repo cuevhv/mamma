@@ -1,15 +1,17 @@
-# full — production preset: ALL frames, memory-efficient, runs on any machine.
-# ma_masks skips overlay rendering (overlays are viz-only, not consumed by ma_2d/ma_3d)
-# and bounds host RAM via lazy frame loading, so long videos run without OOM. For extra
-# 2D speed on an NVIDIA host with torch-tensorrt installed, use full_tensorrt.
+# debug — inspection preset: a ~2 s frame slice with all visualizations ON.
+# Unlike quick/full it KEEPS overlay images + the collage and adds crop-summary /
+# t-SNE / cross-camera debug PNGs, and uses exact (non-lazy) frame decoding. Use it
+# to eyeball masks/overlays on a short clip; use quick/full for actual runs.
 global:
   version: 1.0
-  description: 'All frames, memory-efficient, runs on any machine (overlays off + lazy frame loading).'
+  description: 'Short slice with all overlays + visualizations on, for inspecting masks.'
   username: ''
   out_dir: output
   jobs_log_dir: output/logs/jobs
   bind: []
   conda_env: mamma
+  start_frame: 60
+  end_frame: 120
 ma_cap:
   engine: conda
   enabled: true
@@ -24,10 +26,10 @@ ma_masks:
   - ma_cap
   script: run_ma_masks.py
   repo_path: segmentation
+  # Overlays + collage kept (no --skip_masked_outputs); extra debug visualizations on.
   flags:
   - --sam_version sam2
-  - --skip_masked_outputs
-  - --lazy-frames
+  - --debug_crop_summary
   undistort: false
 ma_2d:
   engine: conda
@@ -57,8 +59,5 @@ ma_vis:
   - ma_3d
   script: run_ma_vis.py
   repo_path: visualization
-  # Parallelize per-camera overlay rendering (measured ~2x on 6 cams). The script
-  # default is 1 (serial) to stay safe where parallel pyrender/EGL is finicky;
-  # lower this if a host struggles with concurrent offscreen rendering.
   flags: ["--overlay-num-workers 4"]
   undistort: false

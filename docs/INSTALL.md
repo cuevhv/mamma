@@ -124,7 +124,7 @@ Then edit the preset to use SAM 3: change `ma_masks.flags` to `- --sam_version s
 
 ### TensorRT for `ma_2d` (optional, NVIDIA-only)
 
-The `ma_2d --tensorrt` flag (used by the `fast.yaml` preset) compiles the landmark
+The `ma_2d --tensorrt` flag (used by the `full_tensorrt.yaml` preset) compiles the landmark
 network to a TensorRT FP16 engine for a ~5× faster forward. It's optional and
 NVIDIA-only — without it the flag falls back to plain PyTorch, so configs stay portable.
 

@@ -1,10 +1,11 @@
-# full — production preset: ALL frames, memory-efficient, runs on any machine.
-# ma_masks skips overlay rendering (overlays are viz-only, not consumed by ma_2d/ma_3d)
-# and bounds host RAM via lazy frame loading, so long videos run without OOM. For extra
-# 2D speed on an NVIDIA host with torch-tensorrt installed, use full_tensorrt.
+# full_tensorrt — same as `full` (all frames, memory-efficient) PLUS a TensorRT-
+# compiled 2D landmark network for extra speed. Requires an NVIDIA GPU and
+# torch-tensorrt; if either is missing, ma_2d falls back to eager (same result, no
+# speedup). The one-time engine build amortizes over all frames, so this is for long /
+# many-camera runs. Use plain `full` on non-NVIDIA hosts or without torch-tensorrt.
 global:
   version: 1.0
-  description: 'All frames, memory-efficient, runs on any machine (overlays off + lazy frame loading).'
+  description: 'full + a TensorRT-compiled 2D network for extra speed (NVIDIA + torch-tensorrt).'
   username: ''
   out_dir: output
   jobs_log_dir: output/logs/jobs
@@ -38,7 +39,7 @@ ma_2d:
   repo_path: landmarks
   config_path: configs/train/models_2d/config_mammanet_mask_512.yaml
   weights: data/weights/ma_2d/mamma_mask_full_cvpr.ckpt
-  flags: []
+  flags: ["--tensorrt"]
   undistort: false
 ma_3d:
   engine: conda
@@ -57,8 +58,5 @@ ma_vis:
   - ma_3d
   script: run_ma_vis.py
   repo_path: visualization
-  # Parallelize per-camera overlay rendering (measured ~2x on 6 cams). The script
-  # default is 1 (serial) to stay safe where parallel pyrender/EGL is finicky;
-  # lower this if a host struggles with concurrent offscreen rendering.
   flags: ["--overlay-num-workers 4"]
   undistort: false

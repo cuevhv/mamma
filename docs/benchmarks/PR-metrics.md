@@ -187,7 +187,7 @@ no EGL/renderer failure, same overlay outputs. Enabled in the example presets
 ## TensorRT at scale — measured (32-camera, 6-person, 743-frame)
 The headline scale validation: the full 32-camera MultiMama capture
 (6 people, 743 frames/cam) through `ma_2d --tensorrt`, run clean and uncontended
-on the RTX 4090. This is the real measurement behind `fast.yaml`.
+on the RTX 4090. This is the real measurement behind `full_tensorrt.yaml`.
 
 | 32-cam `ma_2d` (6 ppl, 743 f) | wall time | peak CPU RSS | backend |
 |---|---:|---:|---|
