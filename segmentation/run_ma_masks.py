@@ -144,6 +144,15 @@ SAM backends:
                         help='Skip collage video generation at the end')
     parser.add_argument('--skip_masked_outputs', action='store_true',
                         help='Skip overlay visualization images and MP4 (saves time/disk)')
+    parser.add_argument('--lazy-frames', '--lazy_frames', dest='lazy_frames', action='store_true',
+                        help='Bound host RAM by loading frames on demand (a small window) '
+                             'instead of all at once — needed for long videos that would '
+                             'otherwise run out of RAM. Sets sam.lazy_frame_loading. mp4 input '
+                             'streams via cv2 (near-identical, ~+24%% wall); image/frame input '
+                             'is byte-identical. Off by default (short clips do not need it).')
+    parser.add_argument('--prune-memory', '--prune_memory', dest='prune_memory', action='store_true',
+                        help='Also bound SAM2 per-frame memory state on very long clips '
+                             '(sets sam.prune_memory_state; GT-equivalent, edge-pixel).')
     parser.add_argument('--debug_crop_summary', action='store_true',
                         help='Render per-person crop-summary + t-SNE + cross-camera '
                              'debug PNGs (off by default; pure viz, costs wall time). '
@@ -254,6 +263,16 @@ SAM backends:
         assignment_config.setdefault("exports", {})["skip_masked_outputs"] = True
         # Collage requires masked_outputs videos, so skip it too
         args.skip_collage = True
+
+    if args.lazy_frames:
+        if assignment_config is None:
+            assignment_config = {}
+        assignment_config.setdefault("sam", {})["lazy_frame_loading"] = True
+
+    if args.prune_memory:
+        if assignment_config is None:
+            assignment_config = {}
+        assignment_config.setdefault("sam", {})["prune_memory_state"] = True
 
     if args.debug_crop_summary:
         if assignment_config is None:

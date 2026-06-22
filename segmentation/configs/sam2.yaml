@@ -186,15 +186,33 @@ sam:
   offload_video_to_cpu: true       # keep decoded frames on host RAM, stream to GPU (≈free; bounds VRAM)
   offload_state_to_cpu: auto        # per-frame memory bank on host. auto = on past offload_state_min_frames; or true/false
   offload_state_min_frames: 1500    # frame count above which "auto" enables offload_state_to_cpu
-  fp16_frames: false                # store decoded frames as float16 (halves frame RAM/VRAM). Opt-in: alters overlay pixels by ≤1 LSB
+  # Store decoded frames as float16 — ~halves the HOST frame tensor (not VRAM:
+  # offload already keeps frames on the host). Opt-in & NOT byte-identical: ~94%
+  # of masks stay within IoU >= 0.99, but the lower input precision can drop a
+  # tiny/distant subject on borderline frames (measured: a 0.08%-of-frame mask
+  # vanished for ~6 frames). Prefer lazy_frame_loading below — it bounds host RAM
+  # more (-42% vs -19% @400f) AND is byte-identical; use fp16 only for an extra
+  # squeeze when that isn't enough. (issue #14)
+  fp16_frames: false
 
-  # Lazy frame loading: keep only an LRU window of decoded frames in RAM instead
-  # of all N, so host RAM is O(window) not O(num_frames) — the way to bound host
-  # RAM on arbitrarily long clips (offload bounds VRAM, not host). Byte-identical
-  # (same per-frame processing); costs re-reading each frame from disk once per
-  # pass. Off by default. (issue #14)
+  # Lazy frame loading: load frames on demand (a small window in RAM) instead of
+  # all N, bounding host RAM on long clips (offload bounds VRAM, not host). Two
+  # backends, same flag:
+  #   - image / frame-folder input: LRU window, byte-identical, re-reads from disk.
+  #   - mp4 input: cv2 chunk streaming (no disk extraction); near-identical to
+  #     native decode (edge-pixel, ~0.99 IoU) and ~+24% wall from re-decoding.
+  # Turn on when a long video would otherwise run out of host RAM; leave off for
+  # short clips that already fit. Off by default. (issue #14)
   lazy_frame_loading: false
-  lazy_frame_window: 8              # frames kept resident when lazy_frame_loading is on
+  lazy_frame_window: 8              # window size for the image/frame (LRU) path
+
+  # Memory-state pruning: drop the per-frame mask-memory SAM no longer attends to
+  # (everything outside a window around the current frame and around anchors), so
+  # the stored state stays bounded on long clips instead of growing ~linearly.
+  # Byte-identical (only drops state the model would never read again). Off by
+  # default. memory_keep_window must be >= the model's attention reach (16). (issue #14)
+  prune_memory_state: false
+  memory_keep_window: 32
 
 # ─── Export ───────────────────────────────────────────────────────────────────
 # After mask generation, optionally convert image sequences to MP4 videos
