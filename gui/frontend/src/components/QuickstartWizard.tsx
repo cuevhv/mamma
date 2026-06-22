@@ -56,15 +56,15 @@ const DATASET_URL = 'https://mamma.is.tue.mpg.de/download.php';
  *  the wizard's "Try the example" path runs end-to-end on a modest
  *  GPU box in a few minutes. */
 const DEFAULT_CAPTURE_NAME = 'mamma_example';
-/** Preset pre-selected in step 2. The two shipped presets are "quick"
- *  and "full"; both use SAM2 by default to avoid the Hugging Face
- *  login / gated-access step SAM 3 requires. "quick" is the ~5min
- *  smoke variant and the right default for a first-time demo. */
+/** Preset pre-selected in step 2. Shipped presets are "quick", "full",
+ *  "debug", and "full_tensorrt"; all use SAM2 by default to avoid the
+ *  Hugging Face login / gated-access step SAM 3 requires. "quick" is the
+ *  ~5min smoke variant and the right default for a first-time demo. */
 const DEFAULT_PRESET_DISPLAY = 'quick';
-/** For the `quick` preset, mirror smoke_test.py's 4-camera cap. With
- *  start_frame:100 / end_frame:130 in the preset, this keeps the demo
- *  bounded to ~5 min on a GPU. `full` runs the capture's full camera
- *  list. */
+/** For the `quick` preset, mirror smoke_test.py's 4-camera cap. Combined
+ *  with the preset's short frame slice (start_frame:60 / end_frame:120,
+ *  ~2 s), this keeps the demo bounded to ~5 min on a GPU. `full` runs the
+ *  capture's full camera list. */
 const QUICK_CAMERA_CAP = 4;
 
 interface CaptureSummary {
@@ -501,8 +501,10 @@ function Step2Presets({
   onSelect: (name: string) => void;
 }) {
   const presetBlurb = (displayName: string): string => {
-    if (displayName === 'quick') return '~5 min · 4 cams · 30 frames · SAM2';
-    if (displayName === 'full') return 'slower · all cams · all frames · SAM2';
+    if (displayName === 'quick') return '~5 min · 4 cams · ~2 s slice · efficient · SAM2';
+    if (displayName === 'full') return 'slower · all cams · all frames · efficient · SAM2';
+    if (displayName === 'debug') return 'overlays + visualizations on · short slice · SAM2';
+    if (displayName === 'full_tensorrt') return 'all cams · all frames · TensorRT 2D (NVIDIA only) · SAM2';
     return '';
   };
   return (
@@ -530,9 +532,11 @@ function Step2Presets({
             >
               {selected === p.name && <span className="w-1.5 h-1.5 rounded-full bg-primary-foreground" />}
             </span>
-            <div className="flex-1 min-w-0">
-              <div className="text-foreground text-sm font-medium font-mono">{p.displayName}</div>
-              <div className="text-foreground-faint text-[11px] mt-0.5">{presetBlurb(p.displayName)}</div>
+            <div className="flex-1 min-w-0 flex items-baseline gap-2">
+              <span className="text-foreground text-sm font-medium font-mono flex-shrink-0">{p.displayName}</span>
+              <span className="text-foreground-faint text-[11px] truncate" title={presetBlurb(p.displayName)}>
+                {presetBlurb(p.displayName)}
+              </span>
             </div>
           </button>
         ))}
