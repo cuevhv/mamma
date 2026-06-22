@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Box } from 'lucide-react';
 import { ExportPanel, jget } from './ExportPanel';
+import { SequenceSelect } from './SequenceSelect';
 
 /** Inline SMPL-X export on a capture's results page. Reuses the shared ExportPanel;
  *  scopes the sequence list to this capture. Collapsed by default to stay out of
  *  the way; tool setup (Blender downloads) lives in the Exporter tab. */
 
-interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir: string; already_exported: boolean; }
+interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir: string; already_exported: boolean; mtime?: number; }
 const key = (s: Seq) => `${s.tag}/${s.capture}/${s.seq}::${s.ma_3d_dir}`;
 
 export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
@@ -45,12 +46,7 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
             </p>
           ) : (
             <div className="mt-4 space-y-3">
-              <select value={sel} onChange={e => setSel(e.target.value)} className="w-full bg-surface-2 border border-border rounded-md px-2 py-2 text-sm text-foreground">
-                <option value="">Select a sequence…</option>
-                {(seqs ?? []).map(s => (
-                  <option key={key(s)} value={key(s)}>{s.seq} — {s.people} {s.people === 1 ? 'person' : 'people'} (run {s.tag}){s.already_exported ? ' · exported' : ''}</option>
-                ))}
-              </select>
+              <SequenceSelect seqs={seqs ?? []} value={sel} onChange={setSel} getKey={key} />
               <ExportPanel target={target} onNeedTools={onGoToExporter} />
             </div>
           )

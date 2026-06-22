@@ -131,6 +131,14 @@ def _run_export(jid: str, spec: dict) -> None:
 
 # ---- sequence discovery -------------------------------------------------
 
+def _safe_mtime(path: str) -> float:
+    """File mtime (epoch seconds) for a "when was this produced" hint; 0 on error."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
 def _exportable_sequences() -> list[dict]:
     """Scan output/ma_3d/<tag>/<capture>/<seq>/ for smplx_params_body_id-*.npz."""
     seqs = []
@@ -148,6 +156,7 @@ def _exportable_sequences() -> list[dict]:
             "ma_3d_dir": str(seq_dir.parent),
             "ma_cap_dir": str(ma_cap) if ma_cap.is_dir() else "",
             "already_exported": (_OUTPUT / "export" / tag / capture / seq).is_dir(),
+            "mtime": _safe_mtime(params),  # result write time, for a "when" hint in the UI
         })
     for s in seqs:
         s.pop("_key", None)
@@ -181,6 +190,7 @@ def _scan_sequences(root: str):
             "seq": seq_dir.name, "people": 1, "ma_3d_dir": ma_3d_dir,
             "ma_cap_dir": ma_cap if (ma_cap != ma_3d_dir and Path(ma_cap).is_dir()) else "",
             "already_exported": False,
+            "mtime": _safe_mtime(params),
         })
     for s in seqs:
         s.pop("_key", None)

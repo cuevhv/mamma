@@ -23,6 +23,17 @@ export async function jpost<T>(url: string, body?: unknown): Promise<T> {
   return r.json();
 }
 
+/** Run/output id padded to >=4 digits for a stable, sortable look (numeric tags only). */
+export function fmtRun(tag: string): string {
+  return /^\d+$/.test(tag) ? tag.padStart(4, '0') : tag;
+}
+/** Compact "when produced" hint from an epoch-seconds mtime; '' when missing. */
+export function fmtWhen(mtime?: number): string {
+  if (!mtime) return '';
+  return new Date(mtime * 1000).toLocaleString(undefined,
+    { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
 export function ExportPanel({ target, readiness, onNeedTools }: {
   target: ExportTarget | null;
   /** Pass readiness to share one source of truth (tab); omit to let the panel fetch it (results). */

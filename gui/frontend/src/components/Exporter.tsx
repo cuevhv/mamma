@@ -1,15 +1,15 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Download, Check, Loader2, AlertTriangle, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { ExportPanel, jget, jpost, type Readiness, type Job } from './ExportPanel';
+import { SequenceSelect } from './SequenceSelect';
 
 /** SMPL-X Exporter tab: in-tab setup (Blender + add-on downloads) and readiness,
  *  a sequence source (detected results OR a custom path), and the shared export
  *  panel. The export core itself lives in ExportPanel so it's reused on results. */
 
-interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir: string; already_exported: boolean; }
+interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir: string; already_exported: boolean; mtime?: number; }
 
 const seqKey = (s: Seq) => `${s.tag}/${s.capture}/${s.seq}::${s.ma_3d_dir}`;
-const seqLabel = (s: Seq) => `${s.capture} / ${s.seq} — ${s.people} ${s.people === 1 ? 'person' : 'people'} (run ${s.tag})${s.already_exported ? ' · exported' : ''}`;
 
 export function Exporter() {
   const [ready, setReady] = useState<Readiness | null>(null);
@@ -147,10 +147,7 @@ export function Exporter() {
           seqs.length === 0 ? (
             <p className="text-foreground-muted text-sm">No completed <code className="font-mono">ma_3d</code> results found. Run the pipeline, or use <button onClick={() => setSource('custom')} className="text-primary hover:underline">Custom path</button>.</p>
           ) : (
-            <select value={sel} onChange={e => setSel(e.target.value)} className="w-full bg-surface-2 border border-border rounded-md px-2 py-2 text-sm text-foreground">
-              <option value="">Select a sequence…</option>
-              {seqs.map(s => <option key={seqKey(s)} value={seqKey(s)}>{seqLabel(s)}</option>)}
-            </select>
+            <SequenceSelect seqs={seqs} value={sel} onChange={setSel} getKey={seqKey} showCapture />
           )
         ) : (
           <div className="space-y-2">
@@ -166,10 +163,8 @@ export function Exporter() {
             {scan.state === 'error' && <p className="text-status-failed text-xs"><AlertTriangle className="w-3.5 h-3.5 inline mr-1" />{scan.msg}</p>}
             {scan.state === 'done' && customSeqs.length === 0 && <p className="text-foreground-muted text-xs">No <code className="font-mono">smplx_params_*.npz</code> found under that path.</p>}
             {customSeqs.length > 0 && (
-              <select value={customSel} onChange={e => setCustomSel(e.target.value)} className="w-full bg-surface-2 border border-border rounded-md px-2 py-2 text-sm text-foreground">
-                <option value="">Select a sequence… ({customSeqs.length} found)</option>
-                {customSeqs.map(s => <option key={seqKey(s)} value={seqKey(s)}>{seqLabel(s)}</option>)}
-              </select>
+              <SequenceSelect seqs={customSeqs} value={customSel} onChange={setCustomSel} getKey={seqKey} showCapture
+                placeholder={`Select a sequence… (${customSeqs.length} found)`} />
             )}
           </div>
         )}
