@@ -280,6 +280,19 @@ class RerunSceneLogger:
         rr.init(app_id, spawn=(rrd_path is None))
         if rrd_path is not None:
             rr.save(rrd_path)
+        # Ship a default blueprint with the recording so the viewer opens with a
+        # fresh auto-layout for THIS sequence, instead of reusing a cached layout
+        # from a previously-opened .rrd (Rerun persists blueprints per app_id, which
+        # otherwise carries over stale per-camera windows and zoom). Best-effort:
+        # older rerun-sdk without the blueprint API just keeps the plain recording.
+        try:
+            import rerun.blueprint as rrb
+            rr.send_blueprint(
+                rrb.Blueprint(auto_layout=True, auto_views=True),
+                make_active=True, make_default=True,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         _set_time_seconds(0.0)
 
     # ---- context manager -------------------------------------------------

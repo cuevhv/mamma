@@ -157,6 +157,9 @@ def run_visualization(
         fps=fps,
         display_scale=rerun_display_scale,
         image_long_edge=image_long_edge,
+        # Per-sequence app id so the viewer never reuses another sequence's cached
+        # blueprint/layout when this .rrd is opened natively.
+        app_id=f"MAMMA · {seq_name}",
     ) as logger:
         logger.log_cameras(cameras)
         floor = compute_floor_height(motions, up_axis=up_axis_idx)
