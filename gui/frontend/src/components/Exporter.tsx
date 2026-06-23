@@ -95,7 +95,7 @@ export function Exporter() {
     <div className="max-w-3xl mx-auto px-4 py-6 space-y-4">
       <div>
         <h1 className="text-foreground text-xl font-semibold">Exporter</h1>
-        <p className="text-foreground-muted text-sm mt-1">Export SMPL-X fits to Blender / engine formats (npz, FBX, Alembic, BVH, USD).</p>
+        <p className="text-foreground-muted text-sm mt-1">Export the SMPL-X animation to standard formats for render/game engines and 3D tools.</p>
       </div>
 
       {/* ① Export tools */}

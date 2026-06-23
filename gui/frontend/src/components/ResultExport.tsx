@@ -35,7 +35,7 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
         <button onClick={() => setOpen(o => !o)} className="flex items-center gap-2 w-full text-left">
           {open ? <ChevronDown className="w-4 h-4 text-foreground-subtle" /> : <ChevronRight className="w-4 h-4 text-foreground-subtle" />}
           <Box className="w-4 h-4 text-foreground-subtle" />
-          <span className="text-foreground text-lg font-medium tracking-tight">Export to Blender / engines</span>
+          <span className="text-foreground text-lg font-medium tracking-tight">Export animation</span>
           <span className="ml-auto text-foreground-muted text-xs">npz · FBX · Alembic · BVH · USD</span>
         </button>
         {open && (
