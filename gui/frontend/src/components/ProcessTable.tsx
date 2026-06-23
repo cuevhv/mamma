@@ -178,9 +178,8 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
   const [search, setSearch] = useState('');
   const [latestOnly, setLatestOnly] = useState(false);
   // Status ⇄ Timing view. 'status' shows the badge grid; 'timing' swaps every
-  // step cell for its execution time (heat-tinted, slowest = most saturated)
-  // and the rollup column for the per-sequence total. Persisted so the choice
-  // sticks across visits.
+  // step cell for its execution time and the rollup column for the per-sequence
+  // total. Persisted so the choice sticks across visits.
   const [view, setView] = useState<'status' | 'timing'>(() => {
     try { return localStorage.getItem('mamma.taskTableView') === 'timing' ? 'timing' : 'status'; }
     catch { return 'status'; }
@@ -444,11 +443,6 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
               {filtered.map(({ row, status }, idx) => {
                 const rowKey = `${row.taskId}::${row.seqName}`;
                 const stripeBg = idx % 2 === 0 ? 'bg-surface-1' : 'bg-surface-1/60';
-                // Slowest step in this row — the heat-tint denominator, so the
-                // bottleneck is the most saturated cell. Only needed in timing view.
-                const rowMax = view === 'timing'
-                  ? Math.max(0, ...steps.map(s => cellDurationSecs(row.cells[s]) ?? 0))
-                  : 0;
                 return (
                   <tr key={rowKey} className={`group border-b border-border-subtle/60 ${stripeBg} hover:bg-surface-3/40 transition-colors`}>
                     <td className={`sticky left-0 ${stripeBg} group-hover:bg-surface-3/40 px-4 py-3 whitespace-nowrap z-10 transition-colors`}>
@@ -527,23 +521,10 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                           : 'cursor-default';
                       const secs = cell ? cellDurationSecs(cell) : null;
                       const isRunning = cell ? statusKind(cell.status) === 'Running' : false;
-                      // Heat tint scales with this cell's share of the row max
-                      // (slowest step). Suppressed under the selection ring so
-                      // it doesn't fight the highlight.
-                      const ratio = view === 'timing' && secs != null && rowMax > 0 ? secs / rowMax : 0;
-                      // Always pass an explicit backgroundColor key (undefined
-                      // when there's no tint) so React clears the inline color
-                      // on the Timing→Status switch. Passing the whole style as
-                      // undefined leaves the stale color until the cell next
-                      // re-renders for another reason (e.g. hover).
-                      const tintColor = ratio > 0 && !isSelected
-                        ? `rgba(245, 158, 11, ${(0.06 + 0.22 * ratio).toFixed(3)})`
-                        : undefined;
                       return (
                         <td
                           key={step}
                           className={`${baseCls} ${stateCls}`}
-                          style={{ backgroundColor: tintColor }}
                           onClick={() => clickable && onCellClick?.(row, step, cell)}
                           title={clickable ? `Open logs and outputs for ${step} on ${row.seqName} (${formatTaskId(row.taskId)})` : undefined}
                         >
