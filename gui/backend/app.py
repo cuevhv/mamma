@@ -2204,10 +2204,59 @@ def _find_rerun_binary() -> str | None:
     return None
 
 
+def _rerun_data_dir() -> str:
+    """Native Rerun viewer's per-user data dir (holds the saved `blueprints/`)."""
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/rerun")
+    if sys.platform.startswith("win"):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
+        return os.path.join(base, "rerun", "data")
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "rerun")
+
+
+def _reset_rrd_blueprint(rrd_path: str) -> int:
+    """Delete the native viewer's saved blueprint(s) for this `.rrd`'s app_id so it
+    reopens with a fresh layout instead of a cached one. The viewer keys blueprints
+    by application_id; our viz uses ``MAMMA · <seq>`` (post-fix) or the legacy
+    ``MAMMA visualization``. We confirm which id the recording actually carries, then
+    delete the `.rbl` whose contents reference it. Returns the number removed."""
+    try:
+        with open(rrd_path, "rb") as fh:
+            head = fh.read(1 << 16)  # app_id lives in the StoreInfo near the start
+    except OSError:
+        return 0
+    seq = os.path.basename(os.path.dirname(rrd_path))
+    app_id = next((c for c in (f"MAMMA · {seq}", "MAMMA visualization")
+                   if c.encode("utf-8") in head), None)
+    if not app_id:
+        return 0
+    bp_dir = os.path.join(_rerun_data_dir(), "blueprints")
+    if not os.path.isdir(bp_dir):
+        return 0
+    needle = app_id.encode("utf-8")
+    removed = 0
+    for name in os.listdir(bp_dir):
+        if not name.endswith(".rbl"):
+            continue
+        fp = os.path.join(bp_dir, name)
+        try:
+            with open(fp, "rb") as fh:
+                if needle in fh.read():
+                    os.remove(fp)
+                    removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 @app.route("/api/rrd/open", methods=["POST"])
 def open_rrd():
     """Launch the native Rerun viewer with the given .rrd file. Detaches
     immediately so the request returns even though the viewer keeps running.
+
+    With ``reset_layout`` true, first delete the viewer's saved blueprint for this
+    recording's app_id so it opens with a fresh layout (the "fresh layout" action).
     """
     data = request.json or {}
     path = (data.get("path") or "").strip()
@@ -2217,6 +2266,8 @@ def open_rrd():
         return jsonify({"error": "Only .rrd files are supported"}), 400
     if not os.path.isfile(path):
         return jsonify({"error": f"File not found: {path}"}), 404
+
+    layout_reset = _reset_rrd_blueprint(path) if data.get("reset_layout") else 0
 
     rerun_bin = _find_rerun_binary()
     if not rerun_bin:
@@ -2238,7 +2289,8 @@ def open_rrd():
     except OSError as e:
         return jsonify({"error": f"Failed to launch {rerun_bin}: {e}"}), 500
 
-    return jsonify({"ok": True, "pid": proc.pid, "path": path, "binary": rerun_bin})
+    return jsonify({"ok": True, "pid": proc.pid, "path": path,
+                    "binary": rerun_bin, "layout_reset": layout_reset})
 
 
 # Players we try in priority order when the frontend asks us to open a

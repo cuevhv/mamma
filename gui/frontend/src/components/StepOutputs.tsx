@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, Monitor, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText } from 'lucide-react';
+import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText } from 'lucide-react';
 import { stepLabel } from './shared/stepLabels';
+import { NativeOpenButton } from './NativeOpenButton';
 import { FileRowsSkeleton } from './shared/Skeleton';
 
 interface FileEntry { name: string; size: number; }
@@ -17,7 +18,7 @@ interface StepOutputsProps {
   onPlayVideo: (relPath: string) => void;
   onPlayImage: (relPath: string) => void;
   onOpenRrdBrowser: (relPath: string, name: string) => void;
-  onOpenRrdNative: (relPath: string) => void;
+  onOpenRrdNative: (relPath: string, fresh?: boolean) => void;
   onOpenHtml: (relPath: string, name: string) => void;
   onOpenNpz: (relPath: string, name: string) => void;
   /** JSON, CSV/TSV, YAML, plain text — all routed through the shared
@@ -249,14 +250,12 @@ export function StepOutputs({
                             <Globe className="w-3 h-3" />
                             Browser
                           </button>
-                          <button
-                            onClick={() => onOpenRrdNative(filePath)}
-                            className="inline-flex items-center gap-1 px-2 py-1 text-xs text-foreground-muted bg-surface-2 border border-border hover:border-border-strong hover:text-foreground rounded-md transition-colors"
-                            title="Launch the native Rerun desktop viewer — better for large recordings (1GB+)"
-                          >
-                            <Monitor className="w-3 h-3" />
-                            Native
-                          </button>
+                          <NativeOpenButton
+                            label="Native"
+                            size="sm"
+                            title="Launch the native Rerun desktop viewer — better for large recordings (1GB+). Keeps your saved layout."
+                            onOpen={(fresh) => onOpenRrdNative(filePath, fresh)}
+                          />
                         </div>
                       </div>
                     );

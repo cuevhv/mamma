@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, Sparkles, Monitor, Loader2, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
+import { X, Sparkles, Loader2, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
 import { WebViewer } from '@rerun-io/web-viewer';
 import { isChromiumBased } from './shared/browser';
+import { NativeOpenButton } from './NativeOpenButton';
 
 const CHROME_HINT_KEY = 'mamma.rrdChromeVideoHintDismissed';
 
@@ -11,8 +12,9 @@ interface Props {
   fileName: string;
   onClose: () => void;
   /** Called when the user picks "Open native instead" from the modal —
-   *  parent triggers POST /api/rrd/open. */
-  onOpenNative?: () => void;
+   *  parent triggers POST /api/rrd/open. `fresh` requests a reset of the native
+   *  viewer's saved layout for this recording before launching. */
+  onOpenNative?: (fresh: boolean) => void;
 }
 
 /**
@@ -166,14 +168,12 @@ export function RerunWebViewer({ rrdPath, fileName, onClose, onOpenNative }: Pro
               {expanded ? 'Restore' : 'Fullscreen'}
             </button>
             {onOpenNative && (
-              <button
-                onClick={onOpenNative}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-surface-2 hover:bg-surface-3 border border-border hover:border-border-strong text-foreground-muted hover:text-foreground rounded-md text-xs transition-colors"
-                title="Open this .rrd in the native Rerun desktop viewer instead — better for very large files."
-              >
-                <Monitor className="w-3.5 h-3.5" />
-                Open native instead
-              </button>
+              <NativeOpenButton
+                label="Open native instead"
+                size="md"
+                title="Open this .rrd in the native Rerun desktop viewer — better for very large files. Keeps your saved layout."
+                onOpen={onOpenNative}
+              />
             )}
             <button
               onClick={onClose}
@@ -193,7 +193,7 @@ export function RerunWebViewer({ rrdPath, fileName, onClose, onOpenNative }: Pro
               Camera video backdrops can render black on some Linux GPU setups. Try{' '}
               <span className="text-foreground font-medium">Firefox</span>
               {onOpenNative ? (
-                <>, or <button onClick={onOpenNative} className="text-primary hover:underline font-medium">open the native viewer</button></>
+                <>, or <button onClick={() => onOpenNative(false)} className="text-primary hover:underline font-medium">open the native viewer</button></>
               ) : null}
               {' '}— the 3D scene and overlays are unaffected.
             </p>

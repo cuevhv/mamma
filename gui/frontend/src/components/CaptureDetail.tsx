@@ -236,16 +236,16 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
    *  We use the native viewer (not the web embed) because GB-scale .rrd
    *  files routinely exceed browser memory limits. The Rerun process
    *  pops up on the same machine the Flask backend runs on. */
-  const openRrd = async (path: string) => {
+  const openRrd = async (path: string, fresh = false) => {
     try {
       const res = await fetch('/api/rrd/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ path, reset_layout: fresh }),
       });
       const data = await res.json();
       if (res.ok) {
-        toast.success(`Opening ${path.split('/').pop()} in Rerun…`);
+        toast.success(`Opening ${path.split('/').pop()} in Rerun${fresh && data.layout_reset ? ' (fresh layout)' : ''}…`);
       } else {
         toast.error(data.error || `Failed to launch (${res.status})`);
       }
@@ -676,10 +676,10 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
             rrdPath={rrdWebViewer.path}
             fileName={rrdWebViewer.name}
             onClose={() => setRrdWebViewer(null)}
-            onOpenNative={() => {
+            onOpenNative={(fresh) => {
               const path = rrdWebViewer.path;
               setRrdWebViewer(null);
-              openRrd(path);
+              openRrd(path, fresh);
             }}
           />
         )}
