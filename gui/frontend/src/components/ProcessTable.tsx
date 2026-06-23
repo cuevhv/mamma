@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, AlertTriangle, Clock, ListChecks } from 'lucide-react';
 import { StatusBadge, statusKind, StatusKind, statusStyle, Dot } from './shared/StatusBadge';
 import { stepLabel } from './shared/stepLabels';
@@ -112,6 +112,24 @@ export function rowRollupStatus(cells: ProcessRow['cells']): RowStatus {
   return 'Pending';
 }
 
+/** Roll a task's per-sequence row statuses up into one task-level status.
+ *  Used to drive the task-scoped Stop/Restart buttons (shown once per task)
+ *  so they reflect the whole run — e.g. Stop stays enabled while ANY sequence
+ *  is still Running even if the first one already Completed. */
+export function aggregateTaskStatus(statuses: RowStatus[]): RowStatus {
+  if (statuses.some(s => s === 'Running')) return 'Running';
+  const failed = statuses.some(s => s === 'Failed');
+  const mixed = statuses.some(s => s === 'Mixed');
+  const completed = statuses.some(s => s === 'Completed');
+  const pending = statuses.some(s => s === 'Pending');
+  const queued = statuses.some(s => s === 'Queued');
+  if (mixed || (failed && (completed || pending || queued))) return 'Mixed';
+  if (failed) return 'Failed';
+  if (queued && !completed && !pending) return 'Queued';
+  if (completed && !pending && !queued) return 'Completed';
+  return 'Pending';
+}
+
 const STATUS_ORDER: RowStatus[] = ['Running', 'Queued', 'Failed', 'Mixed', 'Pending', 'Completed'];
 
 function rowTokens(s: RowStatus): { pill: string; dot: string } {
@@ -155,9 +173,11 @@ interface Props {
    *  runner's DONE-sentinel skip handles already-completed (step, seq)
    *  pairs. Pass to enable the Restart button. */
   onRestartTask?: (taskId: string) => void | Promise<void>;
-  /** Remove a task from the DB. **Does not delete output files on disk.**
-   *  Pass to enable the Delete button in the Actions column. */
-  onDeleteTask?: (taskId: string) => void | Promise<void>;
+  /** Remove a single (task, sequence) row from the DB. **Does not delete
+   *  output files on disk.** Each table row is one sequence, so delete is
+   *  scoped to that sequence; the task row is dropped only when its last
+   *  sequence goes. Pass to enable the Delete button in the Actions column. */
+  onDeleteSequence?: (taskId: string, seqName: string) => void | Promise<void>;
 }
 
 /**
@@ -169,8 +189,8 @@ interface Props {
  * across task # and sequence, and a "Latest run only" toggle that
  * collapses to one row per sequence (the most recent task for it).
  */
-export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutputs, onStopTask, onRestartTask, onDeleteTask }: Props) {
-  const showActions = !!(onStopTask || onRestartTask || onDeleteTask);
+export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutputs, onStopTask, onRestartTask, onDeleteSequence }: Props) {
+  const showActions = !!(onStopTask || onRestartTask || onDeleteSequence);
   const [statusFilter, setStatusFilter] = useState<Set<RowStatus>>(new Set());
   /** Selected capture filter, keyed by capture JSON path (more specific than
    *  the display name in case two captures share a name). Empty = no filter. */
@@ -237,6 +257,30 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
     () => rows.map(r => ({ row: r, status: rowRollupStatus(r.cells) })),
     [rows]
   );
+
+  // How many sequences each task has. A task's sequences all run in ONE
+  // runner subprocess, so Stop/Restart are inherently whole-task — we use
+  // this count to spell that out in the row-level Stop button (vs. Delete,
+  // which is genuinely per-sequence). Keyed by taskId over the full row set,
+  // not the filtered view, so the count reflects the real run.
+  const seqCountByTask = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(r.taskId, (m.get(r.taskId) ?? 0) + 1);
+    return m;
+  }, [rows]);
+
+  // Task-level rollup status (one entry per taskId), feeding the task-scoped
+  // Stop/Restart buttons rendered once per group.
+  const taskStatusById = useMemo(() => {
+    const byTask = new Map<string, RowStatus[]>();
+    for (const a of annotated) {
+      const arr = byTask.get(a.row.taskId);
+      if (arr) arr.push(a.status); else byTask.set(a.row.taskId, [a.status]);
+    }
+    const m = new Map<string, RowStatus>();
+    for (const [tid, sts] of byTask) m.set(tid, aggregateTaskStatus(sts));
+    return m;
+  }, [annotated]);
 
   const statusCounts = useMemo(() => {
     const c: Record<RowStatus, number> = { Running: 0, Failed: 0, Mixed: 0, Pending: 0, Completed: 0 };
@@ -443,9 +487,21 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
               {filtered.map(({ row, status }, idx) => {
                 const rowKey = `${row.taskId}::${row.seqName}`;
                 const stripeBg = idx % 2 === 0 ? 'bg-surface-1' : 'bg-surface-1/60';
+                // Rows are sorted task-major, so same-task rows are adjacent.
+                // We show the Task # / preset / capture once per task and slot a
+                // thin spacer+divider before each new group so a task's sequences
+                // read as one block. Continuation rows leave those cells blank.
+                const prevRow = idx > 0 ? filtered[idx - 1].row : null;
+                const isGroupStart = !prevRow || prevRow.taskId !== row.taskId;
+                // Aggregate status across the whole task — drives the task-level
+                // Stop/Restart enabled state on the group-start row (this single
+                // row's status would be wrong, e.g. seq A done while B runs).
+                const taskStatus = taskStatusById.get(row.taskId) ?? status;
                 return (
-                  <tr key={rowKey} className={`group border-b border-border-subtle/60 ${stripeBg} hover:bg-surface-3/40 transition-colors`}>
+                  <Fragment key={rowKey}>
+                  <tr className={`group border-b border-border-subtle/60 ${stripeBg} hover:bg-surface-3/40 transition-colors ${isGroupStart && idx > 0 ? 'border-t border-border' : ''}`}>
                     <td className={`sticky left-0 ${stripeBg} group-hover:bg-surface-3/40 px-4 py-3 whitespace-nowrap z-10 transition-colors`}>
+                      {isGroupStart && (<>
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); openPeek(row.taskId, 'task'); }}
@@ -467,10 +523,11 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                           </button>
                         ) : null;
                       })()}
+                      </>)}
                     </td>
                     {showCapture && (
                       <td className="px-4 py-3 whitespace-nowrap">
-                        {onBrowseOutputs && row.captureName && row.captureJsonPath ? (
+                        {!isGroupStart ? null : onBrowseOutputs && row.captureName && row.captureJsonPath ? (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -577,41 +634,50 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                     </td>
                     {showActions && (
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="flex items-center gap-1">
-                          {onStopTask && (
+                        <div className="flex items-center justify-end gap-1">
+                          {/* Stop + Restart act on the WHOLE task (one runner runs
+                              all its sequences), so they render once per task — on
+                              the group's first row — and key off the task's
+                              aggregate status, not this single row's. Delete is
+                              per-sequence, so it stays on every row. */}
+                          {onStopTask && isGroupStart && (() => {
+                            const seqN = seqCountByTask.get(row.taskId) ?? 1;
+                            const allSeq = seqN > 1 ? ` — all ${seqN} sequences in this run (they share one process)` : '';
+                            return (
                             <button
                               onClick={(e) => { e.stopPropagation(); onStopTask(row.taskId); }}
-                              disabled={status !== 'Running' && status !== 'Pending' && status !== 'Queued'}
-                              aria-label="Stop task"
+                              disabled={taskStatus !== 'Running' && taskStatus !== 'Pending' && taskStatus !== 'Queued'}
+                              aria-label={`Stop task ${formatTaskId(row.taskId)}`}
                               className="inline-flex items-center justify-center p-1.5 text-foreground-muted bg-surface-2 border border-border hover:border-status-failed/55 hover:text-status-failed rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-foreground-muted"
-                              title={status === 'Queued'
-                                ? `Drop task ${formatTaskId(row.taskId)} from the queue — it will be cancelled before its runner starts.`
-                                : (status === 'Running' || status === 'Pending')
-                                ? `Stop task ${formatTaskId(row.taskId)} — kills the runner and marks remaining steps as Cancelled.`
+                              title={taskStatus === 'Queued'
+                                ? `Drop task ${formatTaskId(row.taskId)} from the queue${allSeq} — cancelled before its runner starts.`
+                                : (taskStatus === 'Running' || taskStatus === 'Pending')
+                                ? `Stop the whole task ${formatTaskId(row.taskId)}${allSeq} — kills the runner and marks remaining steps Cancelled.`
                                 : `Task ${formatTaskId(row.taskId)} is not running.`}
                             >
                               <Square className="w-3.5 h-3.5" />
                             </button>
-                          )}
-                          {onRestartTask && (
+                            );
+                          })()}
+                          {onRestartTask && isGroupStart && (
                             <button
                               onClick={(e) => { e.stopPropagation(); onRestartTask(row.taskId); }}
-                              disabled={status !== 'Failed' && status !== 'Mixed'}
-                              aria-label="Restart task"
+                              disabled={taskStatus !== 'Failed' && taskStatus !== 'Mixed'}
+                              aria-label={`Restart task ${formatTaskId(row.taskId)}`}
                               className="inline-flex items-center justify-center p-1.5 text-foreground-muted bg-surface-2 border border-border hover:border-primary/55 hover:text-primary rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-foreground-muted"
-                              title={status === 'Failed' || status === 'Mixed'
-                                ? `Restart task ${formatTaskId(row.taskId)} — re-queues the task; the runner's DONE-sentinel skip resumes from where it left off (already-completed steps are not re-run).`
+                              title={taskStatus === 'Failed' || taskStatus === 'Mixed'
+                                ? `Restart task ${formatTaskId(row.taskId)} — re-queues the whole task; the runner's DONE-sentinel skip resumes from where it left off (already-completed steps are not re-run).`
                                 : `Restart is only available for failed or partially-failed tasks.`}
                             >
                               <RotateCcw className="w-3.5 h-3.5" />
                             </button>
                           )}
-                          {onDeleteTask && (
+                          {onDeleteSequence && (
                             <button
-                              onClick={(e) => { e.stopPropagation(); onDeleteTask(row.taskId); }}
-                              aria-label="Delete task"
+                              onClick={(e) => { e.stopPropagation(); onDeleteSequence(row.taskId, row.seqName); }}
+                              aria-label="Delete sequence"
                               className="inline-flex items-center justify-center p-1.5 text-foreground-muted bg-surface-2 border border-border hover:border-status-failed/55 hover:text-status-failed rounded-md transition-colors"
-                              title={`Remove task ${formatTaskId(row.taskId)} from the database. Output files on disk are NOT deleted — only the DB record disappears, so this row stops cluttering the table.`}
+                              title={`Remove sequence '${row.seqName}' from task ${formatTaskId(row.taskId)}. Only this row is removed; other sequences in the task stay. Output files on disk are NOT deleted.`}
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
@@ -620,6 +686,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                       </td>
                     )}
                   </tr>
+                  </Fragment>
                 );
               })}
             </tbody>

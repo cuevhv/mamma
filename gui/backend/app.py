@@ -1802,6 +1802,48 @@ def delete_task(task_id):
     return jsonify({"message": f"Task {task_id} removed from database", "filesDeleted": False})
 
 
+@app.route("/api/tasks/<int:task_id>/sequence", methods=["DELETE"])
+def delete_task_sequence(task_id):
+    """Remove a single sequence from a task — the Tasks table renders one
+    row per (task, sequence), so the row-level delete must scope to that
+    sequence, not the whole task. Drops only this task's processes for the
+    named sequence; if it was the task's last sequence, the empty task row
+    goes too. Like the whole-task delete, **files on disk are untouched**.
+
+    Refuses while the task's runner is still alive: one subprocess runs all
+    of a task's sequences, so its DB rows are mutating — stop the task first."""
+    seq_name = (request.args.get("name") or "").strip()
+    if not seq_name:
+        return jsonify({"error": "missing sequence name (?name=...)"}), 400
+    task = db.get_task_by_id(task_id)
+    if not task:
+        return jsonify({"error": f"Task {task_id} not found"}), 404
+
+    pid = task.get("runnerPid")
+    if pid:
+        try:
+            os.kill(int(pid), 0)  # signal 0 = liveness probe
+            return jsonify({
+                "error": (
+                    f"Task {task_id}'s runner (pid={pid}) is still running. "
+                    "Stop it first, then delete."
+                ),
+            }), 409
+        except ProcessLookupError:
+            pass  # stale pid, safe to drop
+        except Exception as e:
+            print(f"Error checking runner pid={pid}: {e}")
+
+    removed, task_removed = db.delete_sequence_from_task(task_id, seq_name)
+    if not removed:
+        return jsonify({"error": f"Sequence '{seq_name}' not found on task {task_id}"}), 404
+    return jsonify({
+        "message": f"Removed sequence '{seq_name}' from task {task_id}",
+        "taskRemoved": task_removed,
+        "filesDeleted": False,
+    })
+
+
 @app.route("/api/tasks/<int:task_id>/stop", methods=["POST"])
 def stop_task(task_id):
     task = db.get_task_by_id(task_id)

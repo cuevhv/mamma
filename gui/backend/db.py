@@ -476,6 +476,43 @@ def delete_task_with_processes(task_id):
         return True
 
 
+def delete_sequence_from_task(task_id, seq_name):
+    """Drop just the processes for one (task, sequence) pair.
+
+    The Tasks table renders one row per (task, sequence), so the row-level
+    delete must scope to a single sequence — not the whole task. We delete
+    only this task's processes for the named sequence; the shared `sequences`
+    row is left alone (other tasks may reference it). Restricting the delete
+    to `processes.task_id = ?` keeps it safe even if the same sequence_name
+    exists under another capture — this task only owns its own capture's rows.
+
+    If that was the task's last remaining sequence, the now-empty task row is
+    removed too, so an orphan task with zero processes doesn't linger.
+
+    Returns ``(removed, task_removed)``: whether any process row matched, and
+    whether the parent task row was also dropped as a result.
+    """
+    with create_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """DELETE FROM processes
+                 WHERE task_id = ?
+                   AND sequence_id IN (
+                       SELECT sequence_id FROM sequences WHERE sequence_name = ?
+                   )""",
+            (task_id, seq_name),
+        )
+        removed = cur.rowcount > 0
+        task_removed = False
+        if removed:
+            cur.execute("SELECT COUNT(*) AS n FROM processes WHERE task_id = ?", (task_id,))
+            if cur.fetchone()["n"] == 0:
+                cur.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+                task_removed = cur.rowcount > 0
+        conn.commit()
+        return removed, task_removed
+
+
 def get_all_task_minimal():
     """Compact listing of every task, used by the audit endpoint to
     detect orphans (DB rows whose outputs are gone). Avoids the full

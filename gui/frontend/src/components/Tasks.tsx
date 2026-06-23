@@ -176,8 +176,23 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
   };
 
   // Stop a whole task (kills the runner subprocess + cancels remaining
-  // processes server-side). Used by the row-level Stop button.
+  // processes server-side). Used by the row-level Stop button. A task's
+  // sequences all run in ONE process, so Stop is whole-task by nature —
+  // when the run has more than one sequence we confirm first so it's clear
+  // this cancels every sequence, not just the row that was clicked.
   const handleStopTask = async (taskId: string) => {
+    const seqNames = tableData.rows.filter(r => r.taskId === taskId).map(r => r.seqName);
+    if (seqNames.length > 1) {
+      const ok = window.confirm(
+        `Stop task ${formatTaskId(taskId)}?\n\n` +
+        `This run's ${seqNames.length} sequences all execute in a single ` +
+        `process, so stopping it cancels ALL of them:\n` +
+        `  • ${seqNames.join('\n  • ')}\n\n` +
+        `Finished steps keep their outputs (DONE sentinels), so a later ` +
+        `Restart resumes from where it left off.`
+      );
+      if (!ok) return;
+    }
     try {
       const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/stop`, { method: 'POST' });
       if (!res.ok) {
@@ -217,31 +232,40 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
     }
   };
 
-  /** Remove a task from the DB. **Does not delete output files on disk.**
-   *  We surface the same caveat in the confirmation dialog so the user
-   *  isn't surprised when re-submitting against the same `output_id`
-   *  picks up DONE sentinels and skips finished work. */
-  const handleDeleteTask = async (taskId: string) => {
+  /** Remove a single sequence from a task. Each Tasks-table row is one
+   *  (task, sequence), so delete is scoped to that sequence — the other
+   *  sequences in the same task are untouched. If it was the task's last
+   *  sequence, the empty task row disappears too. **Does not delete output
+   *  files on disk** — we surface that caveat so re-submitting against the
+   *  same `output_id` still skips finished work via DONE sentinels. */
+  const handleDeleteSequence = async (taskId: string, seqName: string) => {
     const ok = window.confirm(
-      `Remove task ${formatTaskId(taskId)} from the database?\n\n` +
-      `Output files on disk are NOT deleted — this only removes the row ` +
-      `from the Tasks table so it stops cluttering the view. Logs and ` +
-      `outputs (under output/<step>/<output_id>/...) stay where they are, ` +
-      `and re-submitting against the same Output ID will still skip ` +
-      `finished steps via DONE sentinels.\n\n` +
-      `If you want to wipe the files too, delete them on disk afterwards.`
+      `Remove sequence '${seqName}' from task ${formatTaskId(taskId)}?\n\n` +
+      `Only this sequence is removed from the Tasks table — other sequences ` +
+      `in the same task stay. If it's the task's last sequence, the task row ` +
+      `goes too.\n\n` +
+      `Output files on disk are NOT deleted: logs and outputs (under ` +
+      `output/<step>/<output_id>/...) stay where they are, and re-submitting ` +
+      `against the same Output ID will still skip finished steps via DONE ` +
+      `sentinels. If you want to wipe the files too, delete them on disk afterwards.`
     );
     if (!ok) return;
     try {
-      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+      const res = await fetch(
+        `/api/tasks/${encodeURIComponent(taskId)}/sequence?name=${encodeURIComponent(seqName)}`,
+        { method: 'DELETE' },
+      );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        toast.error(err.error || `Failed to delete task ${formatTaskId(taskId)} (${res.status})`);
+        toast.error(err.error || `Failed to remove '${seqName}' from task ${formatTaskId(taskId)} (${res.status})`);
         return;
       }
-      toast.success(`Removed task ${formatTaskId(taskId)} from the database (files on disk untouched).`);
-      // Close the side panel if it was pointing at the deleted task.
-      setSelectedCell(prev => (prev?.taskId === taskId ? null : prev));
+      const d = await res.json().catch(() => ({} as { taskRemoved?: boolean }));
+      toast.success(d.taskRemoved
+        ? `Removed sequence '${seqName}' — task ${formatTaskId(taskId)} had no sequences left, so it's gone too.`
+        : `Removed sequence '${seqName}' from task ${formatTaskId(taskId)} (files on disk untouched).`);
+      // Close the side panel if it was pointing at the deleted (task, sequence).
+      setSelectedCell(prev => (prev?.taskId === taskId && prev?.seqName === seqName ? null : prev));
       refreshHistory();
     } catch (e) {
       console.error(e);
@@ -336,7 +360,7 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
           onBrowseOutputs={onBrowseOutputs}
           onStopTask={handleStopTask}
           onRestartTask={handleRestartTask}
-          onDeleteTask={handleDeleteTask}
+          onDeleteSequence={handleDeleteSequence}
         />
       </div>
 

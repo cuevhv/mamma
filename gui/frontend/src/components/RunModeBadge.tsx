@@ -61,7 +61,7 @@ export function RunModeBadge() {
         title="Task run mode — how many tasks may run at once."
       >
         <Layers className="w-3.5 h-3.5" />
-        <span>Run mode:</span>
+        <span>Tasks Run mode:</span>
         <span className="inline-flex items-center gap-1.5">
           <span className={`w-1.5 h-1.5 rounded-full ${dotCls}`} />
           <span className="text-foreground">{label}</span>
@@ -122,7 +122,7 @@ function RunModePopover({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
-        <div className="text-foreground text-sm font-medium">Run mode</div>
+        <div className="text-foreground text-sm font-medium">Tasks Run mode</div>
         <button
           type="button"
           onClick={onClose}
