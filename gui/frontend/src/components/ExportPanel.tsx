@@ -5,9 +5,15 @@ import { Check, Loader2, AlertTriangle, Box, FolderOpen, Wrench } from 'lucide-r
  *  the Exporter tab and the inline export on a result. The caller supplies the
  *  target sequence; tool readiness is passed in (tab) or fetched here (results). */
 
-export interface Readiness { blender: { present: boolean; path: string }; addon: { present: boolean; path: string }; }
+export interface Readiness { blender: { present: boolean; path: string; version?: string; compat?: string }; addon: { present: boolean; path: string }; }
 export interface ExportTarget { tag: string; capture: string; seq: string; ma_3d_dir: string; ma_cap_dir?: string; people?: number; }
-export interface Job { id: string; kind: string; state: 'running' | 'ready' | 'error'; log_tail: string[]; outputs: string[]; error: string | null; }
+export interface SeqResult { seq: string; capture: string; tag: string; ok: boolean; outputs: string[]; error: string | null; }
+export interface Job {
+  id: string; kind: string; state: 'running' | 'ready' | 'error';
+  log_tail: string[]; outputs: string[]; error: string | null;
+  progress?: { done: number; total: number; current: string | null } | null;
+  results?: SeqResult[];
+}
 
 export const ALL_FORMATS = [
   { id: 'npz', label: 'npz', hint: 'SMPL-X Blender Add-on', blender: false },
@@ -34,8 +40,9 @@ export function fmtWhen(mtime?: number): string {
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function ExportPanel({ target, readiness, onNeedTools }: {
-  target: ExportTarget | null;
+export function ExportPanel({ targets, readiness, onNeedTools }: {
+  /** Sequences to export — one runs a single export, many run a sequential batch. */
+  targets: ExportTarget[];
   /** Pass readiness to share one source of truth (tab); omit to let the panel fetch it (results). */
   readiness?: Readiness | null;
   /** Called when the user needs to set up Blender (e.g. navigate to the Exporter tab). */
@@ -53,8 +60,9 @@ export function ExportPanel({ target, readiness, onNeedTools }: {
   const [fps, setFps] = useState('');
   const [job, setJob] = useState<Job | null>(null);
 
-  // Reset the job when the target changes so stale results don't linger.
-  useEffect(() => { setJob(null); }, [target?.ma_3d_dir, target?.seq]);
+  // Reset the job when the selection changes so stale results don't linger.
+  const targetsKey = targets.map(t => `${t.tag}/${t.capture}/${t.seq}`).join('|');
+  useEffect(() => { setJob(null); }, [targetsKey]);
 
   useEffect(() => {
     if (!job || job.state !== 'running') return;
@@ -64,13 +72,14 @@ export function ExportPanel({ target, readiness, onNeedTools }: {
 
   const chosen = ALL_FORMATS.filter(f => formats[f.id]).map(f => f.id);
   const needsBlender = chosen.some(f => ALL_FORMATS.find(x => x.id === f)?.blender);
-  const canExport = !!target && chosen.length > 0 && (!needsBlender || toolsReady) && job?.state !== 'running';
+  const canExport = targets.length > 0 && chosen.length > 0 && (!needsBlender || toolsReady) && job?.state !== 'running';
 
   const runExport = async () => {
-    if (!target) return;
+    if (targets.length === 0) return;
     const r = await jpost<{ job_id: string }>('/api/exporter/export', {
-      tag: target.tag, capture: target.capture, seq: target.seq,
-      ma_3d_dir: target.ma_3d_dir, ma_cap_dir: target.ma_cap_dir,
+      sequences: targets.map(t => ({
+        tag: t.tag, capture: t.capture, seq: t.seq, ma_3d_dir: t.ma_3d_dir, ma_cap_dir: t.ma_cap_dir,
+      })),
       formats: chosen, ground, unit, blender_format: blenderFormat, fps: fps ? Number(fps) : undefined,
     });
     setJob({ id: r.job_id, state: 'running', log_tail: [], outputs: [], error: null, kind: 'export' });
@@ -122,29 +131,58 @@ export function ExportPanel({ target, readiness, onNeedTools }: {
         <div className="flex items-center gap-3">
           <button onClick={runExport} disabled={!canExport}
             className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed">
-            <Box className="w-4 h-4" /> Export
+            <Box className="w-4 h-4" /> Export{targets.length > 1 ? ` ${targets.length}` : ''}
           </button>
-          {!target && <span className="text-foreground-faint text-xs">choose a sequence first</span>}
-          {target && needsBlender && !toolsReady && (
+          {targets.length === 0 && <span className="text-foreground-faint text-xs">choose at least one sequence</span>}
+          {targets.length > 0 && needsBlender && !toolsReady && (
             onNeedTools
               ? <button onClick={onNeedTools} className="inline-flex items-center gap-1.5 text-status-pending text-xs hover:underline"><Wrench className="w-3.5 h-3.5" /> set up Blender for FBX/ABC/BVH/USD</button>
               : <span className="text-status-pending text-xs">set up the export tools for the Blender formats</span>
           )}
         </div>
+        {ready?.blender.present && ready.blender.compat === 'too_old' && (
+          <p className="mt-2 text-xs text-status-failed">
+            <AlertTriangle className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
+            Detected Blender {ready.blender.version} is too old — the SMPL-X add-on needs Blender 4.5+. Download the portable Blender.
+          </p>
+        )}
         {job && (
           <div className="mt-3 text-sm">
-            {job.state === 'running' && <span className="inline-flex items-center gap-2 text-status-running"><Loader2 className="w-4 h-4 animate-spin" /> exporting…</span>}
-            {job.state === 'error' && <span className="inline-flex items-center gap-2 text-status-failed"><AlertTriangle className="w-4 h-4" /> {job.error}</span>}
-            {job.state === 'ready' && (
-              <div>
-                <span className="inline-flex items-center gap-2 text-status-completed"><Check className="w-4 h-4" /> wrote {job.outputs.length} file(s)</span>
-                <ul className="mt-2 space-y-0.5">
-                  {job.outputs.map(o => (
-                    <li key={o} className="flex items-center gap-1.5 text-foreground-faint text-xs font-mono"><FolderOpen className="w-3 h-3 flex-shrink-0" /> {o}</li>
-                  ))}
-                </ul>
-              </div>
+            {job.state === 'running' && (
+              <span className="inline-flex items-center gap-2 text-status-running">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                {job.progress && job.progress.total > 1
+                  ? `exporting ${Math.min(job.progress.done + 1, job.progress.total)}/${job.progress.total}${job.progress.current ? ` — ${job.progress.current}` : ''}…`
+                  : 'exporting…'}
+              </span>
             )}
+            {(job.state === 'ready' || job.state === 'error') && (() => {
+              const res = job.results ?? [];
+              const multi = res.length > 1;
+              return (
+                <div>
+                  {job.state === 'error'
+                    ? <span className="inline-flex items-center gap-2 text-status-failed"><AlertTriangle className="w-4 h-4" /> {job.error}</span>
+                    : <span className="inline-flex items-center gap-2 text-status-completed"><Check className="w-4 h-4" /> {multi ? `exported ${res.filter(r => r.ok).length}/${res.length} sequences · ${job.outputs.length} file(s)` : `wrote ${job.outputs.length} file(s)`}</span>}
+                  {multi ? (
+                    <ul className="mt-2 space-y-0.5">
+                      {res.map(r => (
+                        <li key={`${r.tag}/${r.capture}/${r.seq}`} className={`flex items-center gap-1.5 text-xs ${r.ok ? 'text-foreground-faint' : 'text-status-failed'}`}>
+                          {r.ok ? <Check className="w-3 h-3 flex-shrink-0" /> : <AlertTriangle className="w-3 h-3 flex-shrink-0" />}
+                          <span className="truncate">{r.capture}/{r.seq} — {r.ok ? `${r.outputs.length} file(s)` : (r.error || 'failed')}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : job.outputs.length > 0 ? (
+                    <ul className="mt-2 space-y-0.5">
+                      {job.outputs.map(o => (
+                        <li key={o} className="flex items-center gap-1.5 text-foreground-faint text-xs font-mono"><FolderOpen className="w-3 h-3 flex-shrink-0" /> {o}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              );
+            })()}
             {job.state === 'running' && job.log_tail.length > 0 && (
               <pre className="mt-2 text-[11px] text-foreground-faint font-mono max-h-32 overflow-auto whitespace-pre-wrap">{job.log_tail.slice(-8).join('\n')}</pre>
             )}

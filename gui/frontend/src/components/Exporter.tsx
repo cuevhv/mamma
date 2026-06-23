@@ -15,11 +15,11 @@ export function Exporter() {
   const [ready, setReady] = useState<Readiness | null>(null);
   const [seqs, setSeqs] = useState<Seq[]>([]);
   const [source, setSource] = useState<'detected' | 'custom'>('detected');
-  const [sel, setSel] = useState<string>('');
+  const [sels, setSels] = useState<string[]>([]);
   // custom path
   const [customPath, setCustomPath] = useState('');
   const [customSeqs, setCustomSeqs] = useState<Seq[]>([]);
-  const [customSel, setCustomSel] = useState('');
+  const [customSels, setCustomSels] = useState<string[]>([]);
   const [scan, setScan] = useState<{ state: 'idle' | 'scanning' | 'done' | 'error'; msg?: string }>({ state: 'idle' });
   // tools
   const [dlJob, setDlJob] = useState<Job | null>(null);
@@ -57,19 +57,19 @@ export function Exporter() {
 
   const runScan = async () => {
     if (!customPath.trim()) return;
-    setScan({ state: 'scanning' }); setCustomSeqs([]); setCustomSel('');
+    setScan({ state: 'scanning' }); setCustomSeqs([]); setCustomSels([]);
     try {
       const r = await jget<{ sequences: Seq[]; error?: string }>(`/api/exporter/scan?path=${encodeURIComponent(customPath.trim())}`);
       if (r.error) { setScan({ state: 'error', msg: r.error }); return; }
       setCustomSeqs(r.sequences);
-      if (r.sequences.length === 1) setCustomSel(seqKey(r.sequences[0]));
+      if (r.sequences.length === 1) setCustomSels([seqKey(r.sequences[0])]);
       setScan({ state: 'done', msg: `${r.sequences.length} sequence(s) found` });
     } catch (e) { setScan({ state: 'error', msg: String(e) }); }
   };
 
   const list = source === 'detected' ? seqs : customSeqs;
-  const selKey = source === 'detected' ? sel : customSel;
-  const target = list.find(s => seqKey(s) === selKey) ?? null;
+  const selKeys = source === 'detected' ? sels : customSels;
+  const targets = list.filter(s => selKeys.includes(seqKey(s)));
 
   const card = 'bg-surface-1 border border-border-subtle rounded-xl p-5 shadow-sm shadow-black/30';
   const ToolRow = ({ name, present, onDl }: { name: string; present: boolean; onDl: () => void }) => (
@@ -147,7 +147,7 @@ export function Exporter() {
           seqs.length === 0 ? (
             <p className="text-foreground-muted text-sm">No completed <code className="font-mono">ma_3d</code> results found. Run the pipeline, or use <button onClick={() => setSource('custom')} className="text-primary hover:underline">Custom path</button>.</p>
           ) : (
-            <SequenceSelect seqs={seqs} value={sel} onChange={setSel} getKey={seqKey} showCapture />
+            <SequenceSelect seqs={seqs} values={sels} onChange={setSels} getKey={seqKey} showCapture />
           )
         ) : (
           <div className="space-y-2">
@@ -163,8 +163,8 @@ export function Exporter() {
             {scan.state === 'error' && <p className="text-status-failed text-xs"><AlertTriangle className="w-3.5 h-3.5 inline mr-1" />{scan.msg}</p>}
             {scan.state === 'done' && customSeqs.length === 0 && <p className="text-foreground-muted text-xs">No <code className="font-mono">smplx_params_*.npz</code> found under that path.</p>}
             {customSeqs.length > 0 && (
-              <SequenceSelect seqs={customSeqs} value={customSel} onChange={setCustomSel} getKey={seqKey} showCapture
-                placeholder={`Select a sequence… (${customSeqs.length} found)`} />
+              <SequenceSelect seqs={customSeqs} values={customSels} onChange={setCustomSels} getKey={seqKey} showCapture
+                placeholder={`Select sequences… (${customSeqs.length} found)`} />
             )}
           </div>
         )}
@@ -173,7 +173,7 @@ export function Exporter() {
       {/* ③ Formats & options + run (shared) */}
       <div className={card}>
         <div className="text-sm font-medium text-foreground mb-3">Formats & options</div>
-        <ExportPanel target={target} readiness={ready} onNeedTools={() => setSetupOpen(true)} />
+        <ExportPanel targets={targets} readiness={ready} onNeedTools={() => setSetupOpen(true)} />
       </div>
     </div>
   );

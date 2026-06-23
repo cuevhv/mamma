@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -40,7 +41,7 @@ def _new_job(kind: str) -> str:
     with _jobs_lock:
         _jobs[jid] = {"id": jid, "kind": kind, "state": "running",
                       "log_tail": [], "outputs": [], "error": None,
-                      "started_at": time.time()}
+                      "progress": None, "results": [], "started_at": time.time()}
     return jid
 
 
@@ -73,10 +74,56 @@ def _addon_present() -> bool:
     return bool(glob.glob(str(_DATA / "blender_addon" / "smplx_blender_addon" / "data" / "*.blend")))
 
 
+# The SMPL-X add-on requires Blender >= 4.5.0 (verified against the portable 4.5
+# LTS); newer releases are fine. We surface the detected version so a fallback
+# system Blender that's too old (< 4.5) — the only problematic case — is flagged.
+_BLENDER_MIN = (4, 5, 0)
+_VERSION_CACHE: dict[str, tuple | None] = {}
+
+
+def _blender_version(bin_path: str | None) -> tuple | None:
+    """(major, minor, patch) for a Blender binary, or None. The portable download
+    encodes the version in its path (free); a system binary is queried once via
+    --version and cached (snap can be slow to start)."""
+    if not bin_path:
+        return None
+    if bin_path in _VERSION_CACHE:
+        return _VERSION_CACHE[bin_path]
+    ver = None
+    m = re.search(r"blender-(\d+)\.(\d+)\.(\d+)", bin_path)
+    if m:
+        ver = tuple(int(x) for x in m.groups())
+    else:
+        try:
+            out = subprocess.run([bin_path, "--version"], capture_output=True,
+                                 text=True, timeout=20).stdout
+            mm = re.search(r"Blender\s+(\d+)\.(\d+)\.(\d+)", out)
+            if mm:
+                ver = tuple(int(x) for x in mm.groups())
+        except Exception:  # noqa: BLE001 — missing/slow/odd binary -> unknown
+            ver = None
+    _VERSION_CACHE[bin_path] = ver
+    return ver
+
+
+def _blender_compat(ver: tuple | None) -> str:
+    """'ok' (>= 4.5.0, newer is fine) | 'too_old' (< 4.5) | 'unknown' (undetected)."""
+    if not ver:
+        return "unknown"
+    if ver < _BLENDER_MIN:
+        return "too_old"
+    return "ok"
+
+
 def _readiness() -> dict:
     bin_ = _blender_bin()
+    ver = _blender_version(bin_)
     return {
-        "blender": {"present": bin_ is not None, "path": bin_ or ""},
+        "blender": {
+            "present": bin_ is not None, "path": bin_ or "",
+            "version": ".".join(map(str, ver)) if ver else "",
+            "compat": _blender_compat(ver),
+        },
         "addon": {"present": _addon_present(),
                   "path": str(_DATA / "blender_addon") if _addon_present() else ""},
     }
@@ -107,26 +154,48 @@ def _run_script(jid: str, script: str, creds: dict | None = None) -> None:
         _update_job(jid, state="error", error=str(exc))
 
 
-def _run_export(jid: str, spec: dict) -> None:
-    try:
-        out_dir = _OUTPUT / "export" / spec["tag"] / spec["capture"] / spec["seq"]
-        cmd = [sys.executable, str(_REPO_ROOT / "optimization" / "export_blender.py"),
-               "--ma-3d-dir", spec["ma_3d_dir"], "--seq-name", spec["seq"],
-               "--out-dir", str(out_dir), "--formats", ",".join(spec["formats"]),
-               "--unit", spec.get("unit", "m"),
-               "--blender-format", spec.get("blender_format", "auto")]
-        if not spec.get("ground", True):
-            cmd.append("--no-ground")
-        if spec.get("ma_cap_dir"):
-            cmd += ["--ma-cap-dir", spec["ma_cap_dir"]]
-        if spec.get("fps"):
-            cmd += ["--fps", str(int(spec["fps"]))]
-        rc = _run_stream(jid, cmd)
-        outs = sorted(str(p) for p in out_dir.glob(f"{spec['seq']}_*")) if out_dir.is_dir() else []
-        _update_job(jid, state="ready" if rc == 0 else "error", outputs=outs,
-                    error=None if rc == 0 else f"export exited {rc}")
-    except Exception as exc:  # noqa: BLE001
-        _update_job(jid, state="error", error=str(exc))
+def _export_one(jid: str, spec: dict) -> tuple[bool, list[str], str | None]:
+    """Run one sequence's Blender export. Returns (ok, output_files, error)."""
+    out_dir = _OUTPUT / "export" / spec["tag"] / spec["capture"] / spec["seq"]
+    cmd = [sys.executable, str(_REPO_ROOT / "optimization" / "export_blender.py"),
+           "--ma-3d-dir", spec["ma_3d_dir"], "--seq-name", spec["seq"],
+           "--out-dir", str(out_dir), "--formats", ",".join(spec["formats"]),
+           "--unit", spec.get("unit", "m"),
+           "--blender-format", spec.get("blender_format", "auto")]
+    if not spec.get("ground", True):
+        cmd.append("--no-ground")
+    if spec.get("ma_cap_dir"):
+        cmd += ["--ma-cap-dir", spec["ma_cap_dir"]]
+    if spec.get("fps"):
+        cmd += ["--fps", str(int(spec["fps"]))]
+    rc = _run_stream(jid, cmd)
+    outs = sorted(str(p) for p in out_dir.glob(f"{spec['seq']}_*")) if out_dir.is_dir() else []
+    return (rc == 0, outs, None if rc == 0 else f"export exited {rc}")
+
+
+def _run_export_batch(jid: str, specs: list[dict]) -> None:
+    """Export sequences one after another in a single job, reporting aggregate
+    progress and per-sequence results (a batch of one behaves like a single export)."""
+    total = len(specs)
+    all_outs: list[str] = []
+    results: list[dict] = []
+    failed = 0
+    for i, spec in enumerate(specs, 1):
+        _update_job(jid, progress={"done": i - 1, "total": total,
+                                   "current": f"{spec['capture']}/{spec['seq']}"},
+                    log_line=f"[{i}/{total}] {spec['capture']}/{spec['seq']}")
+        try:
+            ok, outs, err = _export_one(jid, spec)
+        except Exception as exc:  # noqa: BLE001
+            ok, outs, err = False, [], str(exc)
+        if not ok:
+            failed += 1
+        all_outs += outs
+        results.append({"seq": spec["seq"], "capture": spec["capture"], "tag": spec["tag"],
+                        "ok": ok, "outputs": outs, "error": err})
+    _update_job(jid, state="ready" if failed == 0 else "error", outputs=all_outs,
+                results=results, progress={"done": total, "total": total, "current": None},
+                error=None if failed == 0 else f"{failed}/{total} export(s) failed")
 
 
 # ---- sequence discovery -------------------------------------------------
@@ -236,15 +305,24 @@ def register_routes(app) -> None:
     @app.post("/api/exporter/export")
     def _exporter_export():
         body = request.get_json(silent=True) or {}
-        required = ("tag", "capture", "seq", "ma_3d_dir", "formats")
-        missing = [k for k in required if not body.get(k)]
-        if missing:
-            return jsonify({"error": f"missing: {', '.join(missing)}"}), 400
-        spec = {k: body.get(k) for k in
-                ("tag", "capture", "seq", "ma_3d_dir", "ma_cap_dir",
-                 "formats", "unit", "ground", "blender_format", "fps")}
+        opts = {k: body.get(k) for k in ("formats", "unit", "ground", "blender_format", "fps")}
+        # `sequences` = batch (per-seq identity dicts sharing the top-level options);
+        # otherwise the top-level body is a single sequence (back-compat).
+        raw = body.get("sequences") or [body]
+        specs = []
+        for s in raw:
+            spec = {k: s.get(k) for k in ("tag", "capture", "seq", "ma_3d_dir", "ma_cap_dir")}
+            spec.update(opts)
+            missing = [k for k in ("tag", "capture", "seq", "ma_3d_dir") if not spec.get(k)]
+            if not spec.get("formats"):
+                missing.append("formats")
+            if missing:
+                return jsonify({"error": f"missing: {', '.join(missing)}"}), 400
+            specs.append(spec)
+        if not specs:
+            return jsonify({"error": "no sequences"}), 400
         jid = _new_job("export")
-        threading.Thread(target=_run_export, args=(jid, spec), daemon=True).start()
+        threading.Thread(target=_run_export_batch, args=(jid, specs), daemon=True).start()
         return jsonify({"job_id": jid}), 201
 
     @app.get("/api/exporter/job/<job_id>")

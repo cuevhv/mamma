@@ -15,7 +15,7 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
 }) {
   const [open, setOpen] = useState(false);
   const [seqs, setSeqs] = useState<Seq[] | null>(null);
-  const [sel, setSel] = useState('');
+  const [sels, setSels] = useState<string[]>([]);
 
   useEffect(() => {
     if (!open || seqs !== null) return;
@@ -23,11 +23,11 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
       const mine = r.sequences.filter(s => s.capture === captureName);
       setSeqs(mine);
       const pre = mine.find(s => s.seq === initialSeq) ?? (mine.length === 1 ? mine[0] : undefined);
-      if (pre) setSel(key(pre));
+      if (pre) setSels([key(pre)]);
     });
   }, [open, seqs, captureName, initialSeq]);
 
-  const target = (seqs ?? []).find(s => key(s) === sel) ?? null;
+  const targets = (seqs ?? []).filter(s => sels.includes(key(s)));
 
   return (
     <section className="mb-6">
@@ -46,8 +46,8 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
             </p>
           ) : (
             <div className="mt-4 space-y-3">
-              <SequenceSelect seqs={seqs ?? []} value={sel} onChange={setSel} getKey={key} />
-              <ExportPanel target={target} onNeedTools={onGoToExporter} />
+              <SequenceSelect seqs={seqs ?? []} values={sels} onChange={setSels} getKey={key} />
+              <ExportPanel targets={targets} onNeedTools={onGoToExporter} />
             </div>
           )
         )}
