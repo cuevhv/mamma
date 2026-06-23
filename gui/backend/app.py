@@ -675,61 +675,6 @@ def _resolve_capture_root_abs(capture_json_path: str | None, content: dict | Non
     return cand if os.path.isdir(cand) else None
 
 
-# Soft ordering hint: dirs listed here float to the top in the order
-# given, when present. Anything not in this list comes after, sorted
-# alphabetically. The list is not authoritative — released datasets
-# may evolve their on-disk subdir layout and this code keeps surfacing
-# whatever is actually there (see _resolve_released_sections).
-_RELEASED_SUBDIR_ORDER_HINT = (
-    "preview", "videos_crf24", "videos", "masks", "gt", "pred", "meta",
-)
-
-
-def _resolve_released_sections(seq_dir_abs: str) -> list[dict]:
-    """List every visible subdir under ``seq_dir_abs`` as a section dict.
-
-    No curated whitelist — whatever is on disk is what the user sees,
-    so adding e.g. a new ``foo/`` subdir to the released dataset
-    surfaces it without any code change here. Hidden dirs (``.``-prefixed)
-    are skipped. ``fileCount`` is the immediate file count under the
-    subdir (cheap, informational)."""
-    if not seq_dir_abs or not os.path.isdir(seq_dir_abs):
-        return []
-    try:
-        entries = list(os.scandir(seq_dir_abs))
-    except OSError:
-        return []
-    subdirs = []
-    for e in entries:
-        try:
-            if not e.is_dir(follow_symlinks=False):
-                continue
-        except OSError:
-            continue
-        if e.name.startswith("."):
-            continue
-        subdirs.append(e)
-    order_index = {name: i for i, name in enumerate(_RELEASED_SUBDIR_ORDER_HINT)}
-    subdirs.sort(key=lambda d: (
-        order_index.get(d.name, len(order_index)),
-        d.name.lower(),
-    ))
-    sections = []
-    for d in subdirs:
-        try:
-            with os.scandir(d.path) as it:
-                file_count = sum(1 for x in it if x.is_file(follow_symlinks=False))
-        except OSError:
-            file_count = 0
-        sections.append({
-            "name": d.name,
-            "label": d.name,
-            "path": d.path,
-            "fileCount": file_count,
-        })
-    return sections
-
-
 def _example_capture_details(capture_name: str) -> dict | None:
     """Load a shipped-example capture's details from disk when the DB
     has no row for it (example captures aren't persisted). Returns the
@@ -813,35 +758,16 @@ def get_capture_detail(capture_name):
             "datasetName": dataset_name,
         })
 
-    # Resolve the capture's on-disk data root once; per-sequence checks
-    # below are cheap directory probes. When the JSON declares no root
-    # (or the root doesn't exist), every sequence gets `releasedSections: []`
-    # and the UI falls through to its existing empty-state message.
-    capture_root_abs = None
-    capture_json_path = details.get("capture_json_path")
-    if capture_json_path and os.path.isfile(capture_json_path):
-        try:
-            cap_content = load_config_file(capture_json_path)
-        except (OSError, ValueError):
-            cap_content = None
-        capture_root_abs = _resolve_capture_root_abs(capture_json_path, cap_content)
-
-    sequences_out = []
-    for seq in details["sequences"]:
-        seq_dict = dict(seq)
-        seq_dir = (
-            os.path.join(capture_root_abs, seq_dict["name"])
-            if capture_root_abs else None
-        )
-        seq_dict["releasedSections"] = (
-            _resolve_released_sections(seq_dir) if seq_dir else []
-        )
-        sequences_out.append(seq_dict)
-
+    # Sequences come straight from the DB — no input-dir probing. The Results
+    # view renders only local pipeline outputs and never consumed the old
+    # `releasedSections` field (which scanned each sequence's input root — slow
+    # when that root is on a network FS, e.g. a released dataset symlinked to the
+    # cluster). If browsing released source assets is ever wanted, fetch it lazily
+    # per sequence on expand rather than eagerly here.
     return jsonify({
         "captureName": details["capture_name"],
         "tasks": tasks_formatted,
-        "sequences": sequences_out,
+        "sequences": details["sequences"],
     })
 
 
