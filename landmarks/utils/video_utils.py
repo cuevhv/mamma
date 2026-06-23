@@ -1,6 +1,14 @@
 import glob
 import os
 
+import imageio_ffmpeg
+
+
+# Prefer imageio-ffmpeg's bundled/static binary (or its PATH/sys.prefix
+# discovery) over a hard-coded /usr/bin/ffmpeg. This matches the segmentation
+# stack and avoids per-machine path assumptions.
+FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+
 
 def create_video_from_images(images_folder, output_path, img_format="img_%04d.jpg"):
     """Encode the numbered frames under ``images_folder`` into an MP4 via ffmpeg.
@@ -25,7 +33,7 @@ def create_video_from_images(images_folder, output_path, img_format="img_%04d.jp
         return False
 
     ffmpeg_command = [
-        "/usr/bin/ffmpeg",
+        FFMPEG_EXE,
         "-framerate", "30",
         "-i", input_path,
         "-vf", "scale=iw:ih",
@@ -49,4 +57,7 @@ def create_video_from_images(images_folder, output_path, img_format="img_%04d.jp
             f"ffmpeg rc={e.returncode}. Last stderr lines:\n  "
             + "\n  ".join(stderr_tail)
         )
+        return False
+    except FileNotFoundError:
+        print(f"Error occurred while creating the video {output_path!r}: ffmpeg binary not found at {FFMPEG_EXE!r}")
         return False

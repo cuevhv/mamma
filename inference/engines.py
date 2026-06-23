@@ -17,8 +17,10 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import List, Optional
@@ -118,18 +120,33 @@ def run_conda(
     out_path: str,
     err_path: str,
 ) -> int:
-    """``conda run -n <env> --no-capture-output --live-stream python <argv>``."""
+    """Run a step via conda, or via the active interpreter if conda is absent.
+
+    The public docs and shipped presets historically default to
+    ``engine: conda``. For lightweight local installs that use a plain venv
+    instead, fall back to ``sys.executable`` when ``conda`` is not on PATH.
+    This preserves the config surface while keeping standalone installs usable.
+    """
     argv = builder.build_argv(seq_name)
-    cmd = [
-        "conda",
-        "run",
-        "-n",
-        builder.conda_env,
-        "--no-capture-output",
-        "--live-stream",
-        "python",
-        *argv,
-    ]
+    if shutil.which("conda"):
+        cmd = [
+            "conda",
+            "run",
+            "-n",
+            builder.conda_env,
+            "--no-capture-output",
+            "--live-stream",
+            "python",
+            *argv,
+        ]
+    else:
+        log.warning(
+            "conda executable not found; falling back to current interpreter %s "
+            "for step %r",
+            sys.executable,
+            builder.step_name,
+        )
+        cmd = [sys.executable, *argv]
     out_f, err_f = _open_logs(out_path, err_path)
     try:
         return _run(cmd, builder.host_cwd(), out_f, err_f)

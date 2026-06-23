@@ -545,7 +545,14 @@ def main(args, out_folder, masks_folder, img_folder=None):
     model = build_model(cfg).to(device)
 
     logger.info(f"loading weights from: {args.weights}")
-    model.load_state_dict(torch.load(args.weights)['state_dict'])
+    # Trusted local checkpoint: PyTorch >=2.6 defaults torch.load(...)
+    # to weights_only=True, which rejects the OmegaConf metadata stored in
+    # this release checkpoint. Opt into the full checkpoint payload here.
+    try:
+        checkpoint = torch.load(args.weights, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(args.weights, map_location=device)
+    model.load_state_dict(checkpoint['state_dict'])
     model.eval()
 
     # Resolve relative to this script (landmarks/) so the detector config
