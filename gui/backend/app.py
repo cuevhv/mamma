@@ -1728,6 +1728,11 @@ def get_task_preset_digest(name):
             "datasetName": g.get("dataset_name") or "",
             "condaEnv": g.get("conda_env") or "mamma",
             "bind": list(g.get("bind") or []),
+            # Run frame window. ma_cap turns these into --start/--end and bakes
+            # them into the per-camera NPZ that downstream steps inherit (see
+            # inference/steps/base.py). null = unset = process every frame.
+            "startFrame": g.get("start_frame"),
+            "endFrame": g.get("end_frame"),
         },
         "steps": steps_out,
     })

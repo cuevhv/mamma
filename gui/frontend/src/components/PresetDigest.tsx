@@ -27,6 +27,10 @@ export interface PresetDigest {
     datasetName: string;
     condaEnv: string;
     bind: string[];
+    /** Run frame window. null = unset = all frames. Becomes ma_cap's
+     *  --start/--end at runtime; downstream steps inherit it via the NPZ. */
+    startFrame: number | null;
+    endFrame: number | null;
   };
   steps: PresetStep[];
 }
@@ -41,6 +45,10 @@ export interface PresetOverrides {
     dataset_name?: string;
     conda_env?: string;
     bind?: string[];
+    // Run frame window. Explicit null clears the preset's range (= all frames);
+    // deep-merged into global.start_frame/end_frame on the backend.
+    start_frame?: number | null;
+    end_frame?: number | null;
   };
   // Per-step overrides keyed by step name (ma_cap, ma_masks, ...).
   [stepName: string]: any;
@@ -119,11 +127,23 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
     const nextStep = { ...(ov[stepName] ?? {}), [key]: value };
     setOv({ ...ov, [stepName]: nextStep });
   };
+  // Set both frame bounds in one override write. null = "all frames from/through".
+  const setFrameRange = (start: number | null, end: number | null) => {
+    setOv({ ...ov, global: { ...(ov.global ?? {}), start_frame: start, end_frame: end } });
+  };
 
   // Effective values = preset value, overridden if the user touched it.
+  // For the frame bounds, `!== undefined` so an explicit null override (the
+  // user cleared the range = "all frames") wins over the preset's value.
   const eff = {
     bind: ov.global?.bind ?? digest.global.bind,
+    startFrame: ov.global?.start_frame !== undefined ? ov.global.start_frame : digest.global.startFrame,
+    endFrame: ov.global?.end_frame !== undefined ? ov.global.end_frame : digest.global.endFrame,
   };
+  const frameRangeDirty = ov.global?.start_frame !== undefined || ov.global?.end_frame !== undefined;
+  const frameRangeLabel = eff.startFrame == null && eff.endFrame == null
+    ? 'All frames'
+    : `Frames ${eff.startFrame ?? 0}–${eff.endFrame ?? 'end'}`;
 
   return (
     <div className="bg-surface-2/40 border border-border-subtle rounded-lg p-4 space-y-3">
@@ -158,6 +178,21 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                 Modified
               </span>
             )}
+            {/* Frame window at a glance — the preset's slice is otherwise
+                invisible (e.g. `quick` runs only 60–120). Expand the body to
+                change it. */}
+            <span
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] tracking-wide border font-mono ${
+                frameRangeDirty
+                  ? 'bg-status-pending-bg border-status-pending/35 text-status-pending'
+                  : 'bg-surface-2 border-border-subtle text-foreground-muted'
+              }`}
+              title={frameRangeLabel === 'All frames'
+                ? 'This run processes every frame.'
+                : `This run is sliced to ${frameRangeLabel.toLowerCase()} (ma_cap --start/--end). Expand to change.`}
+            >
+              {frameRangeLabel}
+            </span>
           </div>
           {digest.description && (
             <div className="text-foreground-subtle text-xs mt-1">{digest.description}</div>
@@ -352,18 +387,27 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
               play). Dataset name and global conda env were removed: the
               former is a property of the capture, not the preset, and
               per-step Conda env fields already cover the latter. */}
-          {showBind && (
+          {(showBind || editable) && (
             <div className="space-y-2 bg-surface-1/50 border border-border-subtle rounded-md p-3">
               <div className="text-foreground-subtle text-[11px] uppercase tracking-wider font-medium">Global</div>
-              <ArrayField
-                label="Bind paths"
-                values={eff.bind ?? []}
-                dirty={ov.global?.bind !== undefined}
+              <FrameRangeField
+                start={eff.startFrame}
+                end={eff.endFrame}
+                dirty={frameRangeDirty}
                 editable={editable}
-                onChange={list => setGlobalField('bind', list)}
-                placeholder="/path/to/mount"
-                hint="Mounted into apptainer (--bind) and docker (-v) containers."
+                onChange={setFrameRange}
               />
+              {showBind && (
+                <ArrayField
+                  label="Bind paths"
+                  values={eff.bind ?? []}
+                  dirty={ov.global?.bind !== undefined}
+                  editable={editable}
+                  onChange={list => setGlobalField('bind', list)}
+                  placeholder="/path/to/mount"
+                  hint="Mounted into apptainer (--bind) and docker (-v) containers."
+                />
+              )}
             </div>
           )}
 
@@ -656,6 +700,67 @@ function SelectField({
             <option key={o} value={o} className="bg-surface-2">{o}</option>
           ))}
         </select>
+      </div>
+    </div>
+  );
+}
+
+/** Run frame window editor. Two optional integer bounds; both empty = all
+ *  frames. Writes through to global.start_frame/end_frame (→ ma_cap --start/--end). */
+function FrameRangeField({
+  start, end, dirty, editable, onChange,
+}: {
+  start: number | null;
+  end: number | null;
+  dirty?: boolean;
+  editable: boolean;
+  onChange: (start: number | null, end: number | null) => void;
+}) {
+  const parse = (v: string): number | null => {
+    const t = v.trim();
+    if (t === '') return null;
+    const n = parseInt(t, 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const label = 'Frame range';
+  if (!editable) {
+    const txt = start == null && end == null ? 'All frames' : `${start ?? 0} – ${end ?? 'end'}`;
+    return (
+      <div>
+        <FieldLabel label={label} />
+        <div className="px-2.5 py-1.5 text-foreground-muted text-xs font-mono">{txt}</div>
+      </div>
+    );
+  }
+  const inputCls = `w-24 bg-surface-2 border ${dirty ? 'border-status-pending/60' : 'border-border'} rounded-md px-2.5 py-1.5 text-foreground text-xs font-mono tabular-nums focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint`;
+  return (
+    <div>
+      <FieldLabel label={label} dirty={dirty} />
+      <div className="flex items-center gap-2 flex-wrap">
+        <input
+          type="number" min={0} value={start ?? ''} placeholder="start"
+          onChange={e => onChange(parse(e.target.value), end)}
+          className={inputCls}
+        />
+        <span className="text-foreground-faint text-xs">→</span>
+        <input
+          type="number" min={0} value={end ?? ''} placeholder="end"
+          onChange={e => onChange(start, parse(e.target.value))}
+          className={inputCls}
+        />
+        {(start != null || end != null) && (
+          <button
+            type="button"
+            onClick={() => onChange(null, null)}
+            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-foreground-muted hover:text-foreground border border-border rounded-md hover:border-border-strong transition-colors"
+            title="Clear the slice — process every frame"
+          >
+            <X className="w-3 h-3" /> All frames
+          </button>
+        )}
+      </div>
+      <div className="text-foreground-faint text-[10px] mt-1">
+        Passed to <code className="font-mono">ma_cap</code> as <code className="font-mono">--start/--end</code>; downstream steps inherit it. Leave both empty to process every frame.
       </div>
     </div>
   );
