@@ -545,8 +545,22 @@ class OptimizeSMPLX:
             floor_contact_world_dict[body_id] = floor_contact_prob
             contact_world_dict[body_id] = contact_prob
 
-        animate_pointcloud_bodies_body_first(triangulated_points_world, floor_contact_world, out_html=os.path.join(self.save_prediction_fn, "_floor_contact.html"))
-        animate_pointcloud_bodies_body_first(triangulated_points_world, contact_world, out_html=os.path.join(self.save_prediction_fn, "_contact.html"))
+        # Legacy Plotly contact HTMLs — superseded by the Rerun (.rrd) view below
+        # (faster, smaller, clearer). Kept commented out for easy fallback; the
+        # `animate_pointcloud_bodies_body_first` helper still exists in
+        # utils/epipolar_association.py if these need to be re-enabled.
+        # animate_pointcloud_bodies_body_first(triangulated_points_world, floor_contact_world, out_html=os.path.join(self.save_prediction_fn, "_floor_contact.html"))
+        # animate_pointcloud_bodies_body_first(triangulated_points_world, contact_world, out_html=os.path.join(self.save_prediction_fn, "_contact.html"))
+        # Rerun (.rrd) view of the triangulated contact points. Best-effort.
+        try:
+            from utils.contact_rrd import write_contact_rrd
+            write_contact_rrd(
+                os.path.join(self.save_prediction_fn, "intermediate_triangulated_points.rrd"),
+                triangulated_points_world, contact_world, floor_contact_world,
+                valid_mask=triangulated_valid_mask,
+            )
+        except Exception as e:
+            print(f"[contact_rrd] skipped: {e}")
         return triangulated_points_world_dict, triangulated_valid_mask_dict, floor_contact_world_dict, contact_world_dict
 
 
