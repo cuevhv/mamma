@@ -34,6 +34,15 @@ Examples:
 import argparse
 import os
 
+# Force matplotlib's non-interactive backend before any import below pulls
+# in ``matplotlib.pyplot`` (core.pipeline does, at module load). Without
+# this the interactive default (TkAgg) is used, and Tk objects garbage-
+# collected off the main thread during SAM2 propagation abort the process
+# with ``Tcl_AsyncDelete: async handler deleted by the wrong thread``. The
+# inference engine also pins this (see inference/engines.py._child_env);
+# setting it here keeps direct ``python run_ma_masks.py`` runs safe too.
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 from core.logging import logger
 from process_sequence import (
     process_seq,

@@ -44,12 +44,25 @@ _STRIPPED_PREFIXES = ("MAMMA_",)
 
 
 def _child_env() -> dict:
-    """Return os.environ with the ``MAMMA_*`` keys removed."""
-    return {
+    """Return os.environ with the ``MAMMA_*`` keys removed.
+
+    Also pins ``MPLBACKEND=Agg`` for every step. The pipeline is headless
+    (GUI backend / cluster / CLI), but some steps import
+    ``matplotlib.pyplot`` at module load before any backend is forced, so
+    they inherit the interactive default (TkAgg). Tk's objects are then
+    garbage-collected off the main thread during SAM2 propagation, which
+    aborts the process with ``Tcl_AsyncDelete: async handler deleted by
+    the wrong thread``. Forcing the non-interactive Agg backend here makes
+    every step safe regardless of how it's launched. ``setdefault`` so an
+    explicit caller override still wins.
+    """
+    env = {
         k: v
         for k, v in os.environ.items()
         if not any(k.startswith(p) for p in _STRIPPED_PREFIXES)
     }
+    env.setdefault("MPLBACKEND", "Agg")
+    return env
 
 
 def current_proc() -> Optional[subprocess.Popen]:
