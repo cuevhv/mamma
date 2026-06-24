@@ -306,7 +306,10 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
       });
       const data = await res.json();
       if (res.ok) {
-        toast.success(`Opening ${path.split('/').pop()} in Rerun${fresh && data.layout_reset ? ' (fresh layout)' : ''}…`);
+        toast.success(`Opening ${path.split('/').pop()} in Rerun${fresh && data.layout_reset ? ' (fresh layout)' : ''}…`, {
+          description: "If you don't see it, check behind this window — it may already be open.",
+          duration: 6000,
+        });
       } else {
         toast.error(data.error || `Failed to launch (${res.status})`);
       }

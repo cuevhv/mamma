@@ -43,15 +43,17 @@ export function RerunWebViewer({ rrdPath, fileName, onClose, onOpenNative }: Pro
    *  on the start() call below — and instead just expand our own modal
    *  to fill the window. */
   const [expanded, setExpanded] = useState(false);
-  // One-time, dismissible heads-up shown only to Chromium users: their H.264
+  // Per-session, dismissible heads-up shown only to Chromium users: their H.264
   // camera backdrops can render black on some Linux GPU setups (Firefox + the
   // native viewer are unaffected). Phrased conditionally so it never alarms.
+  // Stored in sessionStorage so it reappears in a fresh session but doesn't
+  // nag on every reload within the same one.
   const [chromeHintDismissed, setChromeHintDismissed] = useState(() => {
-    try { return localStorage.getItem(CHROME_HINT_KEY) === '1'; } catch { return false; }
+    try { return sessionStorage.getItem(CHROME_HINT_KEY) === '1'; } catch { return false; }
   });
   const dismissChromeHint = () => {
     setChromeHintDismissed(true);
-    try { localStorage.setItem(CHROME_HINT_KEY, '1'); } catch { /* ignore */ }
+    try { sessionStorage.setItem(CHROME_HINT_KEY, '1'); } catch { /* ignore */ }
   };
   const showChromeHint = phase === 'ready' && !chromeHintDismissed && isChromiumBased();
 
@@ -190,7 +192,7 @@ export function RerunWebViewer({ rrdPath, fileName, onClose, onOpenNative }: Pro
             <AlertTriangle className="w-4 h-4 text-status-mixed mt-px flex-shrink-0" />
             <p className="flex-1 text-foreground-muted leading-relaxed">
               <span className="text-status-mixed font-semibold">Using Chrome?</span>{' '}
-              Camera video backdrops can render black on some Linux GPU setups. Try{' '}
+              Camera video backdrops can render black on some Chrome setups. Try{' '}
               <span className="text-foreground font-medium">Firefox</span>
               {onOpenNative ? (
                 <>, or <button onClick={() => onOpenNative(false)} className="text-primary hover:underline font-medium">open the native viewer</button></>
