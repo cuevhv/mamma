@@ -675,6 +675,52 @@ def _resolve_capture_root_abs(capture_json_path: str | None, content: dict | Non
     return cand if os.path.isdir(cand) else None
 
 
+def _resolve_capture_thumbnail(capture_json_path, content, latest_task):
+    """Best-effort absolute thumbnail path for a capture, or None.
+
+    Mirrors the priority used by the captures-list route (``get_captures``):
+      1) user-set ``thumbnail`` override on the capture JSON,
+      2) raw input footage (image frames),
+      3) a mid-frame extracted from ``videos_*/`` footage,
+      4) the latest run's ma_vis preview output.
+    ``content`` is the already-parsed capture JSON (may be None); ``latest_task``
+    is the most-recent task dict from ``get_capture_details`` (may be None)."""
+    import sync as _sync
+    thumb = None
+    if isinstance(content, dict) and capture_json_path:
+        try:
+            user_thumb = content.get("thumbnail")
+            if isinstance(user_thumb, str) and user_thumb and os.path.isfile(user_thumb):
+                return user_thumb
+            thumb = _sync.find_input_thumbnail(content)
+            if not thumb:
+                cap_root_abs = _resolve_capture_root_abs(capture_json_path, content)
+                if cap_root_abs and os.path.isdir(cap_root_abs):
+                    stem = os.path.splitext(os.path.basename(capture_json_path))[0]
+                    thumb = _sync.find_video_thumbnail(
+                        content, cap_root_abs, stem, _THUMB_CACHE_DIR,
+                    )
+        except (OSError, ValueError):
+            thumb = None
+    if not thumb and latest_task and latest_task.get("output_id") and latest_task.get("task_json_path"):
+        task_root = latest_task.get("output_path") or DEFAULT_OUTPUT_DIR
+        dataset = None
+        try:
+            tjp = latest_task.get("task_json_path")
+            if tjp and os.path.isfile(tjp):
+                task_cfg = load_config_file(tjp)
+                g = (task_cfg or {}).get("global") or {}
+                task_root = _sync.resolve_output_root(task_cfg, task_root)
+                dataset = (g.get("dataset_name") or "").strip() or None
+        except (OSError, ValueError):
+            pass
+        try:
+            thumb = _sync.find_capture_thumbnail(task_root, latest_task["output_id"], dataset)
+        except (OSError, ValueError):
+            thumb = None
+    return thumb
+
+
 def _example_capture_details(capture_name: str) -> dict | None:
     """Load a shipped-example capture's details from disk when the DB
     has no row for it (example captures aren't persisted). Returns the
@@ -758,6 +804,40 @@ def get_capture_detail(capture_name):
             "datasetName": dataset_name,
         })
 
+    # Essential capture metadata for the Results-page info card. Read straight
+    # from the capture JSON (same source the captures-list route uses), so it
+    # stays best-effort — a missing/unparseable JSON just yields empties and the
+    # card omits those stats rather than failing the whole request.
+    cams: list[str] = []
+    cam_fps = None
+    calib = None
+    data_path = None
+    content = None
+    capture_json_path = details.get("capture_json_path")
+    if capture_json_path and os.path.isfile(capture_json_path):
+        try:
+            content = load_config_file(capture_json_path)
+            if isinstance(content, dict):
+                declared = content.get("cams") or []
+                if isinstance(declared, list) and declared:
+                    cams = [str(x) for x in declared]
+                else:
+                    cams = _scan_cams_for_first_sequence(content)
+                cam_fps = content.get("cam_fps")
+                calib_val = content.get("calib")
+                if isinstance(calib_val, str) and calib_val:
+                    calib = os.path.basename(calib_val)
+                cap_root_abs = _resolve_capture_root_abs(capture_json_path, content)
+                data_path = _display_capture_path(cap_root_abs)
+        except (OSError, ValueError):
+            content = None
+
+    # Same thumbnail priority as the captures list (user override -> input
+    # footage -> mid-frame from videos -> latest ma_vis preview), so the
+    # Results info card matches the card the user clicked to get here.
+    latest_task = details["tasks"][0] if details.get("tasks") else None
+    thumbnail_path = _resolve_capture_thumbnail(capture_json_path, content, latest_task)
+
     # Sequences come straight from the DB — no input-dir probing. The Results
     # view renders only local pipeline outputs and never consumed the old
     # `releasedSections` field (which scanned each sequence's input root — slow
@@ -768,6 +848,13 @@ def get_capture_detail(capture_name):
         "captureName": details["capture_name"],
         "tasks": tasks_formatted,
         "sequences": details["sequences"],
+        "cams": cams,
+        "camFps": cam_fps,
+        "calib": calib,
+        "dataPath": data_path,
+        "captureJsonPath": capture_json_path,
+        "ioiRoot": details.get("ioi_root"),
+        "thumbnailPath": thumbnail_path,
     })
 
 

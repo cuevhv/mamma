@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText } from 'lucide-react';
+import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText, Users } from 'lucide-react';
 import { stepLabel } from './shared/stepLabels';
 import { NativeOpenButton } from './NativeOpenButton';
 import { FileRowsSkeleton } from './shared/Skeleton';
@@ -16,7 +16,9 @@ interface StepOutputsProps {
   /** Scroll into view on mount. Same use-case as `defaultOpen`. */
   scrollIntoViewOnMount?: boolean;
   onPlayVideo: (relPath: string) => void;
-  onPlayImage: (relPath: string) => void;
+  /** `siblings` is the ordered list of image relPaths in the same folder,
+   *  so the lightbox can offer prev/next within the directory. */
+  onPlayImage: (relPath: string, siblings: string[]) => void;
   onOpenRrdBrowser: (relPath: string, name: string) => void;
   onOpenRrdNative: (relPath: string, fresh?: boolean) => void;
   onOpenHtml: (relPath: string, name: string) => void;
@@ -38,6 +40,18 @@ function isImageFile(name: string): boolean {
   const lower = name.toLowerCase();
   return lower.endsWith('.png') || lower.endsWith('.jpg') || lower.endsWith('.jpeg')
       || lower.endsWith('.webp') || lower.endsWith('.gif') || lower.endsWith('.bmp');
+}
+
+// Per-person mask images are named `<...>_<frame>_<person>.<ext>` (e.g.
+// `mask_0325_04.png`). Two trailing underscore-separated numeric groups —
+// the last is the 1-based person id. We key the person facet off this so the
+// pattern is generic to any step that emits per-person frames, not just masks.
+const PERSON_FILE_RE = /_(\d+)_(\d+)\.(?:png|jpe?g|webp|gif|bmp)$/i;
+
+/** Returns the person id (as it appears in the filename, e.g. "04") or null. */
+function personIdOf(name: string): string | null {
+  const m = name.match(PERSON_FILE_RE);
+  return m ? m[2] : null;
 }
 
 /**
@@ -67,6 +81,8 @@ export function StepOutputs({
   const [entries, setEntries] = useState<{ dirs: DirEntry[]; files: FileEntry[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Active person facet ("04") or null for "all". Reset on folder change. */
+  const [personFilter, setPersonFilter] = useState<string | null>(null);
   const sectionRef = useRef<HTMLDivElement | null>(null);
 
   // Reset back to the step's root when the surrounding selection (task /
@@ -129,8 +145,34 @@ export function StepOutputs({
 
   const fileCount = entries ? entries.dirs.length + entries.files.length : null;
 
+  // Drop any active person filter when navigating to a different folder.
+  useEffect(() => { setPersonFilter(null); }, [relPath]);
+
+  // Person facets present in this folder: [["01", count], ["02", count], ...]
+  // sorted by id. Drives the filter bar; only shown when ≥2 persons exist.
+  const personFacets = useMemo(() => {
+    if (!entries) return [] as [string, number][];
+    const counts = new Map<string, number>();
+    for (const f of entries.files) {
+      const pid = personIdOf(f.name);
+      if (pid) counts.set(pid, (counts.get(pid) ?? 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [entries]);
+
+  // Files actually rendered: when a person is selected, hide other persons'
+  // mask images but keep non-mask files (configs, summaries, etc.) visible.
+  const visibleFiles = useMemo(() => {
+    if (!entries) return [] as FileEntry[];
+    if (!personFilter) return entries.files;
+    return entries.files.filter(f => {
+      const pid = personIdOf(f.name);
+      return pid === null || pid === personFilter;
+    });
+  }, [entries, personFilter]);
+
   return (
-    <div ref={sectionRef} className="bg-background border border-border-subtle rounded-lg overflow-hidden">
+    <div ref={sectionRef} className="bg-background border border-border-subtle rounded-lg overflow-hidden flex flex-col">
       {/* Step header — clickable to collapse/expand. The label uses the
           same stepLabel() helper as the matrix so naming stays consistent. */}
       <button
@@ -149,7 +191,10 @@ export function StepOutputs({
       </button>
 
       {open && (
-        <>
+        // Fixed-height open region so every step card is the same size in the
+        // Results grid; the file listing flexes to fill whatever space the
+        // breadcrumbs (and optional person-filter bar) leave.
+        <div className="flex flex-col h-[300px]">
           {/* Breadcrumbs + Up */}
           <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-1/40 border-b border-border-subtle">
             <button
@@ -183,9 +228,32 @@ export function StepOutputs({
             </div>
           </div>
 
+          {/* Person filter — appears only when the folder holds per-person
+              mask frames (≥2 persons). Scopes the listing (and therefore the
+              lightbox prev/next) to a single person so masks are easy to scan. */}
+          {personFacets.length >= 2 && (
+            <div className="flex items-center gap-1.5 px-3 py-2 bg-surface-1/40 border-b border-border-subtle overflow-x-auto">
+              <Users className="w-3.5 h-3.5 text-foreground-faint shrink-0 mr-0.5" />
+              <FacetPill
+                label="All"
+                active={personFilter === null}
+                onClick={() => setPersonFilter(null)}
+              />
+              {personFacets.map(([pid, count]) => (
+                <FacetPill
+                  key={pid}
+                  label={`Person ${pid}`}
+                  count={count}
+                  active={personFilter === pid}
+                  onClick={() => setPersonFilter(p => (p === pid ? null : pid))}
+                />
+              ))}
+            </div>
+          )}
+
           {/* File listing — capped height so 5 stacked steps stay scannable
               without forcing the whole page to scroll past one giant step. */}
-          <div className="min-h-24 max-h-[260px] overflow-y-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {loading && (
               <div className="py-1">
                 <FileRowsSkeleton count={4} />
@@ -210,7 +278,7 @@ export function StepOutputs({
                     <span className="text-foreground text-sm font-mono">{dir.name}</span>
                   </button>
                 ))}
-                {entries.files.map(file => {
+                {visibleFiles.map(file => {
                   const lower = file.name.toLowerCase();
                   const isMP4 = lower.endsWith('.mp4');
                   const isImage = isImageFile(file.name);
@@ -268,7 +336,12 @@ export function StepOutputs({
                       onClick={() => {
                         if (!isActionable) return;
                         if (isMP4) onPlayVideo(filePath);
-                        else if (isImage) onPlayImage(filePath);
+                        else if (isImage) onPlayImage(
+                          filePath,
+                          visibleFiles
+                            .filter(f => isImageFile(f.name))
+                            .map(f => `${relPath}/${f.name}`),
+                        );
                         else if (isHtml) onOpenHtml(filePath, file.name);
                         else if (isNpz) onOpenNpz(filePath, file.name);
                         else if (isText) onOpenText(filePath, file.name);
@@ -299,8 +372,41 @@ export function StepOutputs({
               </div>
             )}
           </div>
-        </>
+        </div>
       )}
     </div>
+  );
+}
+
+/** A single pill in the person-filter bar. Active pill uses the primary
+ *  accent; the optional count sits in a subtle inset badge. */
+function FacetPill({
+  label, count, active, onClick,
+}: {
+  label: string;
+  count?: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`inline-flex items-center gap-1.5 shrink-0 rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
+        active
+          ? 'bg-primary text-primary-foreground ring-1 ring-inset ring-white/10'
+          : 'bg-surface-2 text-foreground-muted ring-1 ring-inset ring-border hover:bg-surface-3 hover:text-foreground'
+      }`}
+    >
+      <span>{label}</span>
+      {count !== undefined && (
+        <span className={`tabular-nums rounded px-1 text-[10px] leading-tight ${
+          active ? 'bg-white/15 text-primary-foreground' : 'bg-surface-1 text-foreground-faint'
+        }`}>
+          {count}
+        </span>
+      )}
+    </button>
   );
 }

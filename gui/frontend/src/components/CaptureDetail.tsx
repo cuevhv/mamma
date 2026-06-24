@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react';
-import { ArrowLeft, X, FileJson } from 'lucide-react';
+import { useState, useEffect, useMemo, type ReactNode } from 'react';
+import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, Film, Maximize2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
 import { useTaskPolling } from './shared/useTaskPolling';
 import { FileViewerModal } from './shared/FileViewerModal';
 import { Skeleton } from './shared/Skeleton';
+import { Thumbnail } from './shared/Thumbnail';
 import { RerunWebViewer } from './RerunWebViewer';
 import { HtmlViewer } from './HtmlViewer';
 import { NpzViewer } from './NpzViewer';
@@ -96,6 +97,15 @@ interface CaptureData {
   captureName: string;
   tasks: APITask[];
   sequences: SequenceInfo[];
+  // Essential capture metadata for the info card (best-effort from the
+  // capture JSON; may be absent for examples or missing/unparseable JSON).
+  cams?: string[];
+  camFps?: number | null;
+  calib?: string | null;
+  dataPath?: string | null;
+  captureJsonPath?: string | null;
+  ioiRoot?: string | null;
+  thumbnailPath?: string | null;
 }
 
 // Glyphs prefixed to task-option labels in the Task dropdown so each run's
@@ -207,6 +217,12 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
   const [loading, setLoading] = useState(true);
   const [playingVideoRelPath, setPlayingVideoRelPath] = useState<string | null>(null);
   const [playingImageRelPath, setPlayingImageRelPath] = useState<string | null>(null);
+  /** Ordered image relPaths in the folder the lightbox was opened from,
+   *  used for prev/next navigation. */
+  const [imageSiblings, setImageSiblings] = useState<string[]>([]);
+  /** ma_vis preview.mp4 relPath for the current task/sequence, or null if it
+   *  doesn't exist — fills the spare cell in the step grid when present. */
+  const [previewRelPath, setPreviewRelPath] = useState<string | null>(null);
   // Run config viewer state — shared across all the "view config" pill actions.
   const [taskConfigViewer, setTaskConfigViewer] = useState<{ name: string; path: string } | null>(null);
   /** When set, the embedded Rerun web viewer is open for this .rrd. */
@@ -215,6 +231,29 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
   const [htmlViewer, setHtmlViewer] = useState<{ path: string; name: string } | null>(null);
   /** When set, the .npz inspector is open for this archive. */
   const [npzViewer, setNpzViewer] = useState<{ path: string; name: string } | null>(null);
+
+  // Lightbox prev/next within the folder the image was opened from. Index is
+  // derived from the live siblings list so it survives re-renders; navigation
+  // wraps around the ends.
+  const imageIndex = playingImageRelPath ? imageSiblings.indexOf(playingImageRelPath) : -1;
+  const stepImage = (delta: number) => {
+    if (imageIndex < 0 || imageSiblings.length < 2) return;
+    const next = (imageIndex + delta + imageSiblings.length) % imageSiblings.length;
+    setPlayingImageRelPath(imageSiblings[next]);
+  };
+
+  // Arrow keys page through the gallery while the image lightbox is open.
+  useEffect(() => {
+    if (!playingImageRelPath) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') { e.preventDefault(); stepImage(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); stepImage(1); }
+      else if (e.key === 'Escape') { setPlayingImageRelPath(null); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playingImageRelPath, imageSiblings]);
 
   const openTaskConfig = async (taskId: string) => {
     try {
@@ -438,6 +477,28 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     return `output/${step}/${outId}/${dataset}/${selectedSequence}`;
   };
 
+  // Probe for the ma_vis preview.mp4 of the current task/sequence so the step
+  // grid can show it inline (fills the otherwise-empty trailing cell). Cleared
+  // and re-checked whenever the selection changes.
+  useEffect(() => {
+    setPreviewRelPath(null);
+    if (!availableProcesses.includes('ma_vis')) return;
+    const base = baseRelPathFor('ma_vis');
+    if (!base) return;
+    const controller = new AbortController();
+    fetch(`/api/files/list?path=${encodeURIComponent(base)}`, { signal: controller.signal })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (d && Array.isArray(d.files) && d.files.some((f: { name: string }) => f.name === 'preview.mp4')) {
+          setPreviewRelPath(`${base}/preview.mp4`);
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+    // baseRelPathFor is a render-local closure over these same deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTaskId, selectedSequence, captureData, availableProcesses]);
+
   const tasks: Task[] = captureData
     ? captureData.tasks.map(t => ({
         taskId: t.id,
@@ -447,6 +508,9 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     : [];
 
   const numberOfSequences = captureData?.sequences?.length ?? 0;
+
+  // Derived values for the capture info card (see the grid below).
+  const infoCams = captureData?.cams ?? [];
 
   if (loading) {
     // Layout-shaped skeleton: title bar → runs-summary card → outputs
@@ -499,58 +563,107 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
           <p className="text-foreground-muted text-sm">Pipeline runs, status, and outputs for this capture.</p>
         </div>
 
-        {/* Recent runs summary — gives the user a "what produced these
-            outputs" answer without dragging the live matrix in here. The
-            matrix lives only in the Tasks tab now. */}
-        {taskOptions.length > 0 && (
-          <section className="mb-6">
-            <div className="bg-surface-1 border border-border-subtle rounded-xl p-5 shadow-sm shadow-black/30 ring-1 ring-inset ring-white/[0.02]">
-              <div className="flex items-end justify-between gap-4 mb-4 flex-wrap">
-                <div>
-                  <h3 className="text-foreground text-lg font-medium tracking-tight">Runs for this capture</h3>
-                  <p className="text-foreground-muted text-sm mt-0.5">
-                    {taskOptions.length} run{taskOptions.length === 1 ? '' : 's'} · {numberOfSequences} sequence{numberOfSequences === 1 ? '' : 's'} · live monitoring is in the Tasks tab.
-                  </p>
+        {/* Top region: capture info card (left) + Export animation (right).
+            Two columns on wide screens, stacked on narrow. The info card holds
+            the thumbnail, at-a-glance stats, camera chips, and the run picker.
+            Best-effort: each stat renders only when its data is present, so
+            example captures / missing JSON degrade gracefully. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6 items-stretch">
+          {captureData && (
+            <div className="h-full bg-surface-1 border border-border-subtle rounded-xl p-5 shadow-sm shadow-black/30 ring-1 ring-inset ring-white/[0.02]">
+              <div className="flex gap-4">
+                <Thumbnail
+                  path={captureData.thumbnailPath}
+                  alt={captureName}
+                  loading="eager"
+                  className="w-44 aspect-video shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3">
+                    <StatItem label="Cameras" value={infoCams.length ? String(infoCams.length) : '—'} />
+                    {captureData.camFps != null && (
+                      <StatItem label="FPS" value={`${captureData.camFps}`} />
+                    )}
+                    <StatItem label="Sequences" value={String(numberOfSequences)} />
+                    <StatItem label="Runs" value={String(taskOptions.length)} />
+                    {captureData.calib && (
+                      <StatItem label="Calibration" value={captureData.calib} title={captureData.calib} mono />
+                    )}
+                  </div>
+                  {captureData.dataPath && (
+                    <div className="mt-3">
+                      <StatItem label="Source data" value={captureData.dataPath} title={captureData.dataPath} mono />
+                    </div>
+                  )}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {taskOptions.map(t => {
-                  const isSelected = selectedTaskId === t.taskId;
-                  return (
-                    <div
-                      key={t.taskId}
-                      className={`inline-flex items-stretch rounded-md border text-xs overflow-hidden transition-colors ${
-                        isSelected
-                          ? 'bg-primary-muted-strong border-primary/45 ring-1 ring-inset ring-white/10'
-                          : 'bg-surface-2 border-border hover:border-border-strong'
-                      }`}
-                    >
-                      <button
-                        onClick={() => setSelectedTaskId(t.taskId)}
-                        className={`inline-flex items-center gap-2 px-2.5 py-1.5 ${isSelected ? 'text-primary' : 'text-foreground-muted hover:bg-surface-3 hover:text-foreground'} transition-colors`}
-                        title={`Browse outputs of task ${formatTaskId(t.taskId)}`}
-                      >
-                        <span className="font-mono text-primary">{formatTaskId(t.taskId)}</span>
-                        <span className="opacity-60">·</span>
-                        <span>{STATUS_GLYPH[t.status]} {t.status}</span>
-                        {t.relativeTime && <><span className="opacity-60">·</span><span className="text-foreground-faint">{t.relativeTime}</span></>}
-                      </button>
-                      <button
-                        onClick={() => openTaskConfig(t.taskId)}
-                        className={`inline-flex items-center px-2 border-l ${isSelected ? 'border-primary/30 text-primary hover:bg-primary-muted' : 'border-border text-foreground-subtle hover:bg-surface-3 hover:text-foreground'} transition-colors`}
-                        title={`View task ${formatTaskId(t.taskId)} config (task_${t.taskId}.json)`}
-                      >
-                        <FileJson className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-        )}
 
-        <ResultExport captureName={captureName} initialSeq={selectedSequence} onGoToExporter={onGoToExporter} />
+              {infoCams.length > 0 && (
+                <div className="mt-4 flex flex-wrap items-center gap-1">
+                  {infoCams.slice(0, 8).map(c => (
+                    <span
+                      key={c}
+                      className="bg-surface-2 text-foreground-muted rounded px-1.5 py-0.5 text-[11px] font-mono ring-1 ring-inset ring-border"
+                    >
+                      {c}
+                    </span>
+                  ))}
+                  {infoCams.length > 8 && (
+                    <span className="text-foreground-faint text-[11px] px-1" title={infoCams.join(', ')}>
+                      +{infoCams.length - 8} more
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Run picker — newest first; horizontally scrollable so older
+                  runs stay reachable without growing the card. Selecting a pill
+                  drives the Outputs explorer below; the icon opens its config. */}
+              {taskOptions.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-border-subtle">
+                  <div className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium mb-2">
+                    Runs ({taskOptions.length})
+                  </div>
+                  <div className="flex gap-1.5 overflow-x-auto pb-1">
+                    {taskOptions.map(t => {
+                      const isSelected = selectedTaskId === t.taskId;
+                      return (
+                        <div
+                          key={t.taskId}
+                          className={`inline-flex items-stretch shrink-0 rounded-md border text-xs overflow-hidden transition-colors ${
+                            isSelected
+                              ? 'bg-primary-muted-strong border-primary/45 ring-1 ring-inset ring-white/10'
+                              : 'bg-surface-2 border-border hover:border-border-strong'
+                          }`}
+                        >
+                          <button
+                            onClick={() => setSelectedTaskId(t.taskId)}
+                            className={`inline-flex items-center gap-2 px-2.5 py-1.5 ${isSelected ? 'text-primary' : 'text-foreground-muted hover:bg-surface-3 hover:text-foreground'} transition-colors`}
+                            title={`Browse outputs of task ${formatTaskId(t.taskId)}`}
+                          >
+                            <span className="font-mono text-primary">{formatTaskId(t.taskId)}</span>
+                            <span className="opacity-60">·</span>
+                            <span className="whitespace-nowrap">{STATUS_GLYPH[t.status]} {t.status}</span>
+                            {t.relativeTime && <><span className="opacity-60">·</span><span className="text-foreground-faint whitespace-nowrap">{t.relativeTime}</span></>}
+                          </button>
+                          <button
+                            onClick={() => openTaskConfig(t.taskId)}
+                            className={`inline-flex items-center px-2 border-l ${isSelected ? 'border-primary/30 text-primary hover:bg-primary-muted' : 'border-border text-foreground-subtle hover:bg-surface-3 hover:text-foreground'} transition-colors`}
+                            title={`View task ${formatTaskId(t.taskId)} config (task_${t.taskId}.json)`}
+                          >
+                            <FileJson className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <ResultExport captureName={captureName} initialSeq={selectedSequence} onGoToExporter={onGoToExporter} />
+        </div>
 
         <div className="grid grid-cols-1 gap-6">
           <div className="lg:col-span-1">
@@ -599,7 +712,7 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                   This task has no recorded steps.
                 </div>
               ) : (
-                <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
                   {availableProcesses.map(step => (
                     <StepOutputs
                       // Re-mount when the underlying selection changes so each
@@ -612,7 +725,10 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       defaultOpen={initial?.process ? step === initial.process : true}
                       scrollIntoViewOnMount={initial?.process === step}
                       onPlayVideo={setPlayingVideoRelPath}
-                      onPlayImage={setPlayingImageRelPath}
+                      onPlayImage={(relPath, siblings) => {
+                        setImageSiblings(siblings);
+                        setPlayingImageRelPath(relPath);
+                      }}
                       onOpenRrdBrowser={(path, name) => setRrdWebViewer({ path, name })}
                       onOpenRrdNative={openRrd}
                       onOpenHtml={(path, name) => setHtmlViewer({ path, name })}
@@ -623,6 +739,34 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       onOpenText={(path, name) => setTaskConfigViewer({ path, name })}
                     />
                   ))}
+
+                  {/* ma_vis preview — fills the spare grid cell when a
+                      preview.mp4 exists for this task/sequence. Matches the step
+                      cards' look + fixed height for a tidy grid. */}
+                  {previewRelPath && (
+                    <div className="bg-background border border-border-subtle rounded-lg overflow-hidden flex flex-col">
+                      <div className="w-full flex items-center gap-2 px-3 py-2 bg-surface-1 border-b border-border-subtle">
+                        <Film className="w-4 h-4 text-foreground-muted" />
+                        <span className="text-foreground text-sm font-medium">Preview</span>
+                        <span className="text-foreground-faint text-xs font-mono">(preview.mp4)</span>
+                        <button
+                          onClick={() => setPlayingVideoRelPath(previewRelPath)}
+                          className="ml-auto p-1 rounded-md text-foreground-muted hover:text-foreground hover:bg-surface-3 transition-colors"
+                          title="Open fullscreen"
+                        >
+                          <Maximize2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="h-[300px] bg-background flex items-center justify-center p-2">
+                        <video
+                          key={previewRelPath}
+                          src={`/api/files/stream?path=${encodeURIComponent(previewRelPath)}`}
+                          controls
+                          className="max-h-full max-w-full rounded"
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -654,16 +798,41 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                 <VideoPlayer relPath={playingVideoRelPath} />
               )}
               {playingImageRelPath && (
-                <div className="max-h-[82vh] overflow-auto rounded-lg bg-black/30 p-2">
+                <div className="flex max-h-[82vh] items-center justify-center overflow-hidden rounded-lg bg-black/30 p-2">
                   <img
                     src={`/api/files/image?path=${encodeURIComponent(playingImageRelPath)}`}
                     alt={playingImageRelPath.split('/').pop()}
-                    className="block h-auto w-auto max-w-none"
+                    className="block max-h-full max-w-full w-auto h-auto object-contain"
                   />
                 </div>
               )}
+              {playingImageRelPath && imageSiblings.length > 1 && (
+                <>
+                  <button
+                    onClick={() => stepImage(-1)}
+                    className="absolute left-2 top-1/2 -translate-y-1/2 z-10 bg-surface-2/90 hover:bg-surface-3 text-foreground rounded-full p-2 ring-1 ring-border transition-colors"
+                    aria-label="Previous image"
+                    title="Previous (←)"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                  <button
+                    onClick={() => stepImage(1)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 z-10 bg-surface-2/90 hover:bg-surface-3 text-foreground rounded-full p-2 ring-1 ring-border transition-colors"
+                    aria-label="Next image"
+                    title="Next (→)"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                </>
+              )}
               <p className="text-foreground-subtle text-xs font-mono mt-2 text-center">
                 {(playingVideoRelPath || playingImageRelPath || '').split('/').pop()}
+                {playingImageRelPath && imageSiblings.length > 1 && (
+                  <span className="text-foreground-faint">
+                    {'  '}· {imageIndex + 1} / {imageSiblings.length}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -699,6 +868,26 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
             onClose={() => setNpzViewer(null)}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+/** One labelled stat in the capture info card. `value` may be any node (e.g. the
+ *  coloured "Latest run" status). `mono` renders paths/filenames in a compact
+ *  monospace; `title` exposes the untruncated value on hover. */
+function StatItem({ label, value, title, mono, className }: {
+  label: string;
+  value: ReactNode;
+  title?: string;
+  mono?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={`min-w-0 ${className ?? ''}`}>
+      <div className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium mb-1">{label}</div>
+      <div className={`text-foreground truncate ${mono ? 'font-mono text-xs' : 'text-sm'}`} title={title}>
+        {value}
       </div>
     </div>
   );
