@@ -841,10 +841,14 @@ def generate_capture_json():
         "sequences": sequences,
         "groups": {"whitelist": []},
     }
-    # Record the detected videos subdir so downstream loaders look in
-    # the right place when it isn't the default ("videos_crf24" for
-    # released captures, "videos" for user-imported footage).
-    if layout == "videos" and videos_subdir and videos_subdir != "videos_crf24":
+    # Record the detected videos subdir whenever the layout is videos.
+    # This is the signal the inference layer uses to tell a video
+    # capture from a per-camera image-dir capture (which omits it): see
+    # inference/config.py._derive_videos_dir. Always writing it — even
+    # for the "videos_crf24" default — keeps that videos-vs-images
+    # decision unambiguous for GUI-generated captures (which carry
+    # ioi_root, not capture_root).
+    if layout == "videos" and videos_subdir:
         capture_json_data["videos_subdir"] = videos_subdir
 
     capture_json_dir = os.path.join(MOUNT_POINT, "capture_jsons")

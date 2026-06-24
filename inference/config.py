@@ -416,8 +416,25 @@ def _derive_videos_dir(capture_path: str, capture_data: dict) -> str | None:
     absolute. ``{seq_name}`` is a template placeholder the step
     builder expands at runtime — kept literal here.
     """
-    capture_root = capture_data.get("capture_root") or ""
+    # Accept both the current ``capture_root`` key and the legacy/GUI
+    # ``ioi_root`` key. The "New Capture" backend writes ``ioi_root``
+    # (gui/backend/app.py), and run_ma_cap.py's JSON ingest already
+    # falls back the same way — without this, videos_dir is never
+    # derived for GUI-generated captures, so ma_cap silently drops to
+    # image-discovery mode and fails on per-camera video footage.
+    has_capture_root = bool(capture_data.get("capture_root"))
+    capture_root = capture_data.get("capture_root") or capture_data.get("ioi_root") or ""
     if not capture_root:
+        return None
+    # Released captures (``capture_root``) have a known default video
+    # tier, so a missing ``videos_subdir`` still means "videos" (default
+    # ``videos_crf24``). GUI captures (``ioi_root`` only) must declare
+    # their layout: the New Capture backend writes ``videos_subdir`` for
+    # video footage and omits it for per-camera image dirs. So when only
+    # ``ioi_root`` is present and ``videos_subdir`` is absent, this is an
+    # image-layout capture — return None and let ma_cap take its
+    # JSON/image-discovery path instead of inventing a videos dir.
+    if not has_capture_root and not capture_data.get("videos_subdir"):
         return None
     if os.path.isabs(capture_root):
         anchored = capture_root
