@@ -375,10 +375,24 @@ def _blender_export(blender_bin, addon_dir, npz_path, out_prefix, formats, fps, 
            "--formats", ",".join(formats), "--fps", str(int(fps)), "--unit", unit]
     log.info("  blender export [%s] -> %s.*", ",".join(formats), out_prefix)
     r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
+    produced = [f for f in formats
+                if os.path.exists(f"{out_prefix}.{f}") and os.path.getsize(f"{out_prefix}.{f}") > 0]
+    missing = [f for f in formats if f not in produced]
+    # Hard-fail only when nothing came out; otherwise keep the formats that did
+    # (one format failing in Blender must not lose the rest — e.g. the add-on's
+    # cm/UNREAL FBX path can throw on some Blender versions).
+    if not produced:
         log.error("blender export failed (rc=%s):\n%s", r.returncode, (r.stderr or r.stdout)[-2000:])
         raise RuntimeError(f"blender export failed for {os.path.basename(npz_path)}")
-    return [f"{out_prefix}.{f}" for f in formats]
+    if missing:
+        # Surface what didn't make it (and the Blender output that explains why)
+        # via print so it reaches the streamed GUI job log.
+        print(f"[export] WARNING: {os.path.basename(npz_path)}: these formats "
+              f"were not produced: {','.join(missing)}")
+        tail = (r.stdout or r.stderr or "")[-1500:]
+        if tail.strip():
+            print(tail)
+    return [f"{out_prefix}.{f}" for f in produced]
 
 
 def export_sequence(ma_3d_dir, seq_name, model_dir, out_dir, up_axis="auto",

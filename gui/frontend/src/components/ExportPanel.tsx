@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Loader2, AlertTriangle, Box, FolderOpen, Wrench } from 'lucide-react';
+import { Check, Loader2, AlertTriangle, Box, FolderOpen, Wrench, Info } from 'lucide-react';
 
 /** Shared SMPL-X export core — formats, options, run, and live status — reused by
  *  the Exporter tab and the inline export on a result. The caller supplies the
@@ -55,7 +55,10 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
 
   const [formats, setFormats] = useState<Record<string, boolean>>({ npz: true, fbx: false, abc: false, bvh: false, usd: false });
   const [ground, setGround] = useState(true);
-  const [unit, setUnit] = useState('m');
+  // Exports are always in metres. A centimetres option was dropped: only ABC
+  // honoured it correctly, while FBX (add-on UNREAL path) and USD (meters_per_unit)
+  // were unreliable across Blender versions. The npz is metres regardless.
+  const blenderUnit = 'm';
   const [blenderFormat, setBlenderFormat] = useState('auto');
   const [fps, setFps] = useState('');
   const [outputDir, setOutputDir] = useState('');
@@ -81,7 +84,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
       sequences: targets.map(t => ({
         tag: t.tag, capture: t.capture, seq: t.seq, ma_3d_dir: t.ma_3d_dir, ma_cap_dir: t.ma_cap_dir,
       })),
-      formats: chosen, ground, unit, blender_format: blenderFormat, fps: fps ? Number(fps) : undefined,
+      formats: chosen, ground, unit: blenderUnit, blender_format: blenderFormat, fps: fps ? Number(fps) : undefined,
       output_dir: outputDir.trim() || undefined,
     });
     setJob({ id: r.job_id, state: 'running', log_tail: [], outputs: [], error: null, kind: 'export' });
@@ -111,11 +114,9 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
           <input type="checkbox" checked={ground} onChange={e => setGround(e.target.checked)} className="accent-primary" />
           Place on floor
         </label>
-        <label className="flex items-center gap-1.5" title="Units for FBX/ABC/USD/BVH. Meters for Blender/Unity/Maya; centimeters for Unreal. The npz stays in meters.">Unit
-          <select value={unit} onChange={e => setUnit(e.target.value)} className="bg-surface-2 border border-border rounded px-1.5 py-0.5 text-foreground">
-            <option value="m">meters</option><option value="cm">centimeters</option>
-          </select>
-        </label>
+        <span className="inline-flex items-center gap-1 text-foreground-faint" title="All exported formats — npz, FBX, Alembic, BVH, USD — are in meters.">
+          <Info className="w-3.5 h-3.5" /> Units: meters
+        </span>
         <label className="flex items-center gap-1.5" title="Only affects the npz. When you import it with the SMPL-X Blender add-on's 'Add Animation', you pick a Format (AMASS or SMPL-X) — each assumes a different up-axis. This pre-rotates the npz so the character imports upright for that Format. Auto keeps the data's own axes and tells you which Format to select.">Up-axis
           <select value={blenderFormat} onChange={e => setBlenderFormat(e.target.value)} className="bg-surface-2 border border-border rounded px-1.5 py-0.5 text-foreground">
             <option value="auto">Auto (keep data axes)</option>

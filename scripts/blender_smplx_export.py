@@ -88,7 +88,6 @@ def main():
 
     out = os.path.abspath(a.out_prefix)
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    written = []
 
     # All formats derive from the single npz source — no per-format reorientation.
     # `unit` is the only knob: m (scale 1) or cm (scale 100). The add-on FBX UNREAL
@@ -98,38 +97,59 @@ def main():
     fbx_preset = "UNREAL" if cm else "UNITY"
     print(f"[blender_export] unit={a.unit} (scale {scale:g}) -> fbx preset={fbx_preset}")
 
-    if "fbx" in formats:
+    # Export each requested format in isolation: one format's failure (e.g. a
+    # Blender-version quirk in the add-on's cm/UNREAL FBX path) must NOT abort
+    # the others. Collect per-format outcomes and only hard-fail if nothing wrote.
+    written, failed = [], []
+
+    def _do(fmt, path, fn):
+        if fmt not in formats:
+            return
+        try:
+            fn()
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                written.append(path)
+            else:
+                failed.append(fmt)
+                print(f"[blender_export] {fmt.upper()} produced no file")
+        except Exception as e:
+            failed.append(fmt)
+            print(f"[blender_export] {fmt.upper()} export FAILED: {type(e).__name__}: {e}")
+
+    def _fbx():
         _select([mesh, arm], mesh)
         bpy.ops.object.smplx_export_fbx(filepath=out + ".fbx", target_format=fbx_preset)
-        written.append(out + ".fbx")
 
-    if "abc" in formats:  # native (the add-on's ABC op is this call without a scale arg)
+    def _abc():  # native (the add-on's ABC op is this call without a scale arg)
         _select([mesh, arm], mesh)
         bpy.ops.wm.alembic_export(filepath=out + ".abc", selected=True, packuv=False,
                                   face_sets=True, global_scale=scale)
-        written.append(out + ".abc")
 
-    if "bvh" in formats:  # native exporter (no add-on BVH op)
+    def _bvh():  # native exporter (no add-on BVH op)
         _select([arm], arm)
         bpy.ops.export_anim.bvh(filepath=out + ".bvh", frame_start=bpy.context.scene.frame_start,
                                 frame_end=bpy.context.scene.frame_end, root_transform_only=False,
                                 global_scale=scale)
-        written.append(out + ".bvh")
 
-    if "usd" in formats:
+    def _usd():
         _select([mesh, arm], mesh)
         usd_kw = dict(filepath=out + ".usd", selected_objects_only=True, export_animation=True)
         if cm:
             usd_kw.update(meters_per_unit=0.01)  # centimeters
         bpy.ops.wm.usd_export(**usd_kw)
-        written.append(out + ".usd")
+
+    _do("fbx", out + ".fbx", _fbx)
+    _do("abc", out + ".abc", _abc)
+    _do("bvh", out + ".bvh", _bvh)
+    _do("usd", out + ".usd", _usd)
 
     for w in written:
-        ok = os.path.exists(w) and os.path.getsize(w) > 0
-        print(f"[blender_export] {'OK  ' if ok else 'MISS'} {w}"
-              f"{' (' + str(os.path.getsize(w)) + ' B)' if ok else ''}")
-    if not all(os.path.exists(w) and os.path.getsize(w) > 0 for w in written):
-        raise SystemExit("[blender_export] one or more outputs missing")
+        print(f"[blender_export] OK   {w} ({os.path.getsize(w)} B)")
+    requested = [f for f in ("fbx", "abc", "bvh", "usd") if f in formats]
+    if failed:
+        print(f"[blender_export] {len(failed)}/{len(requested)} format(s) failed: {','.join(failed)}")
+    if requested and not written:
+        raise SystemExit("[blender_export] all requested formats failed")
 
 
 if __name__ == "__main__":
