@@ -2661,7 +2661,9 @@ def sync_import_task():
 
     policy = (data.get("statusPolicy") or "infer").strip().lower()
     if policy == "completed":
-        status_provider = "Completed"
+        # Use "Done" — the same terminal-success tag the live runner writes —
+        # so imported runs are labelled consistently with runs started here.
+        status_provider = "Done"
     else:
         def status_provider(step, seq, _root=output_root, _oid=output_id, _ds=dataset):
             return _pipeline_sync.infer_step_status(_root, _oid, _ds, step, seq)

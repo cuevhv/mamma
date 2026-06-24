@@ -111,9 +111,10 @@ def scan_output_dirs(output_root: str, all_steps: Iterable[str]) -> dict[str, di
 
 def infer_step_status(output_root: str, output_id: str, dataset: str | None,
                       step: str, seq: str) -> str:
-    """Per-(step, seq) status inference: "Completed" if the expected
-    output dir contains at least one file (recursively); "Failed" if the
-    dir is missing or empty.
+    """Per-(step, seq) status inference: "Done" if the expected output dir
+    contains at least one file (recursively); "Failed" if the dir is missing
+    or empty. Uses "Done" — the same terminal-success tag the live runner
+    writes — so imported runs read identically to runs started here.
 
     This is a deliberately rough heuristic — many ML scripts write a
     sentinel "DONE" file but not all do, and parsing every step's log
@@ -125,7 +126,7 @@ def infer_step_status(output_root: str, output_id: str, dataset: str | None,
         return "Failed"
     for _, _, files in os.walk(seq_dir):
         if files:
-            return "Completed"
+            return "Done"
     return "Failed"
 
 
