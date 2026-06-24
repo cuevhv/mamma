@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText, Users } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText, Users, ScrollText } from 'lucide-react';
 import { stepLabel } from './shared/stepLabels';
 import { NativeOpenButton } from './NativeOpenButton';
 import { FileRowsSkeleton } from './shared/Skeleton';
@@ -25,8 +25,17 @@ interface StepOutputsProps {
   onOpenNpz: (relPath: string, name: string) => void;
   /** JSON, CSV/TSV, YAML, plain text — all routed through the shared
    *  FileViewerModal which renders type-aware (pretty-printed JSON,
-   *  table CSV, monospace text). */
+   *  table CSV, monospace text). Also used for the .out/.err log buttons. */
   onOpenText: (relPath: string, name: string) => void;
+  /** Absolute paths to this step's stdout/stderr logs for the current
+   *  task+sequence (live in jobs_log_dir, not the output dir). When present,
+   *  shown as `out`/`err` buttons in the header. */
+  outLog?: string | null;
+  errLog?: string | null;
+  /** Extra buttons rendered in the header action area (left of out/err).
+   *  Used to attach run-level config shortcuts (preset / task JSON) to the
+   *  entry step. */
+  headerExtras?: ReactNode;
 }
 
 function formatSize(bytes: number): string {
@@ -75,6 +84,9 @@ export function StepOutputs({
   onOpenHtml,
   onOpenNpz,
   onOpenText,
+  outLog,
+  errLog,
+  headerExtras,
 }: StepOutputsProps) {
   const [open, setOpen] = useState(defaultOpen);
   const [relPath, setRelPath] = useState(baseRelPath);
@@ -173,22 +185,50 @@ export function StepOutputs({
 
   return (
     <div ref={sectionRef} className="bg-background border border-border-subtle rounded-lg overflow-hidden flex flex-col">
-      {/* Step header — clickable to collapse/expand. The label uses the
-          same stepLabel() helper as the matrix so naming stays consistent. */}
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-surface-1 border-b border-border-subtle text-left hover:bg-surface-2/60 transition-colors"
-      >
-        {open ? <ChevronDown className="w-4 h-4 text-foreground-muted" /> : <ChevronRight className="w-4 h-4 text-foreground-muted" />}
-        <span className="text-foreground text-sm font-medium">{stepLabel(step)}</span>
-        <span className="text-foreground-faint text-xs font-mono">({step})</span>
-        {open && fileCount !== null && (
-          <span className="ml-auto text-foreground-subtle text-xs">
-            {fileCount === 0 ? 'empty' : `${fileCount} item${fileCount === 1 ? '' : 's'}`}
-          </span>
+      {/* Step header — the title area toggles collapse/expand; the .out/.err
+          log buttons sit alongside it (kept outside the toggle button since
+          buttons can't nest). */}
+      <div className="flex items-stretch bg-surface-1 border-b border-border-subtle">
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 text-left hover:bg-surface-2/60 transition-colors"
+        >
+          {open ? <ChevronDown className="w-4 h-4 text-foreground-muted shrink-0" /> : <ChevronRight className="w-4 h-4 text-foreground-muted shrink-0" />}
+          <span className="text-foreground text-sm font-medium">{stepLabel(step)}</span>
+          <span className="text-foreground-faint text-xs font-mono">({step})</span>
+          {open && fileCount !== null && (
+            <span className="ml-auto text-foreground-subtle text-xs">
+              {fileCount === 0 ? 'empty' : `${fileCount} item${fileCount === 1 ? '' : 's'}`}
+            </span>
+          )}
+        </button>
+        {(headerExtras || outLog || errLog) && (
+          <div className="flex items-center gap-1 pl-1 pr-2 shrink-0">
+            {headerExtras}
+            {outLog && (
+              <button
+                type="button"
+                onClick={() => onOpenText(outLog, outLog.split('/').pop() || 'stdout.out')}
+                title="View stdout log (.out)"
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
+              >
+                <ScrollText className="w-3 h-3" /> out
+              </button>
+            )}
+            {errLog && (
+              <button
+                type="button"
+                onClick={() => onOpenText(errLog, errLog.split('/').pop() || 'stderr.err')}
+                title="View stderr log (.err)"
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
+              >
+                <ScrollText className="w-3 h-3" /> err
+              </button>
+            )}
+          </div>
         )}
-      </button>
+      </div>
 
       {open && (
         // Fixed-height open region so every step card is the same size in the
@@ -288,7 +328,8 @@ export function StepOutputs({
                   const isJson = lower.endsWith('.json') || lower.endsWith('.jsonl');
                   const isCsv = lower.endsWith('.csv') || lower.endsWith('.tsv');
                   const isYaml = lower.endsWith('.yaml') || lower.endsWith('.yml');
-                  const isText = isJson || isCsv || isYaml;
+                  const isLog = lower.endsWith('.out') || lower.endsWith('.err') || lower.endsWith('.log') || lower.endsWith('.txt');
+                  const isText = isJson || isCsv || isYaml || isLog;
                   const filePath = `${relPath}/${file.name}`;
 
                   if (isRrd) {
@@ -359,6 +400,7 @@ export function StepOutputs({
                       {!isMP4 && !isImage && !isHtml && !isNpz && isJson && <FileJson className="w-4 h-4 text-foreground-muted shrink-0" />}
                       {!isMP4 && !isImage && !isHtml && !isNpz && !isJson && isCsv && <Sheet className="w-4 h-4 text-foreground-muted shrink-0" />}
                       {!isMP4 && !isImage && !isHtml && !isNpz && !isJson && !isCsv && isYaml && <FileText className="w-4 h-4 text-foreground-muted shrink-0" />}
+                      {!isMP4 && !isImage && !isHtml && !isNpz && !isJson && !isCsv && !isYaml && isLog && <ScrollText className="w-4 h-4 text-foreground-muted shrink-0" />}
                       {!isMP4 && !isImage && !isHtml && !isNpz && !isText && <File className="w-4 h-4 text-foreground-faint shrink-0" />}
                       <div className="min-w-0 flex-1 flex items-center gap-3">
                         <span className={`min-w-0 break-all text-sm font-mono leading-snug ${isActionable ? 'text-foreground' : 'text-foreground-subtle'}`}>

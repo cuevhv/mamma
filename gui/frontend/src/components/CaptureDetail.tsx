@@ -271,6 +271,28 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     }
   };
 
+  /** Open the source preset a run was created from (same endpoint as the run
+   *  config; it also returns `presetPath`). Surfaced on the entry step. */
+  const openTaskPreset = async (taskId: string) => {
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/config-path`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || `Failed to locate preset (${res.status})`);
+        return;
+      }
+      const data = await res.json();
+      if (!data.presetPath) {
+        toast.error('No source preset was recorded for this run.');
+        return;
+      }
+      setTaskConfigViewer({ name: data.presetPath.split('/').pop() || 'preset.yaml', path: data.presetPath });
+    } catch (e) {
+      console.error(e);
+      toast.error('Failed to load preset. See console.');
+    }
+  };
+
   /** Launch the native Rerun viewer for a .rrd file via the backend.
    *  We use the native viewer (not the web embed) because GB-scale .rrd
    *  files routinely exceed browser memory limits. The Rerun process
@@ -451,6 +473,19 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     return captureData.sequences.filter(s => availableSequenceNames.includes(s.name));
   }, [captureData, availableSequenceNames]);
 
+  // Per-step stdout/stderr log paths for the selected task + sequence, so each
+  // step card can offer `out`/`err` buttons. Logs live in jobs_log_dir (not the
+  // output dir), so they come from the process rows rather than /api/files/list.
+  const logsByStep = useMemo(() => {
+    const m = new Map<string, { outFile?: string | null; errFile?: string | null }>();
+    const run = runsForCapture.find(r => r.taskId === selectedTaskId);
+    const seq = run?.sequences.find(s => s.seqName === selectedSequence);
+    for (const p of seq?.processes ?? []) {
+      m.set(p.processType, { outFile: p.outFile, errFile: p.errFile });
+    }
+    return m;
+  }, [runsForCapture, selectedTaskId, selectedSequence]);
+
   useEffect(() => {
     if (!sequenceOptions.length) {
       setSelectedSequence('');
@@ -579,15 +614,26 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                   className="w-44 aspect-video shrink-0"
                 />
                 <div className="flex-1 min-w-0">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3">
-                    <StatItem label="Cameras" value={infoCams.length ? String(infoCams.length) : '—'} />
-                    {captureData.camFps != null && (
-                      <StatItem label="FPS" value={`${captureData.camFps}`} />
-                    )}
-                    <StatItem label="Sequences" value={String(numberOfSequences)} />
-                    <StatItem label="Runs" value={String(taskOptions.length)} />
-                    {captureData.calib && (
-                      <StatItem label="Calibration" value={captureData.calib} title={captureData.calib} mono />
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 flex-1 min-w-0">
+                      <StatItem label="Cameras" value={infoCams.length ? String(infoCams.length) : '—'} />
+                      {captureData.camFps != null && (
+                        <StatItem label="FPS" value={`${captureData.camFps}`} />
+                      )}
+                      <StatItem label="Sequences" value={String(numberOfSequences)} />
+                      <StatItem label="Runs" value={String(taskOptions.length)} />
+                      {captureData.calib && (
+                        <StatItem label="Calibration" value={captureData.calib} title={captureData.calib} mono />
+                      )}
+                    </div>
+                    {captureData.captureJsonPath && (
+                      <button
+                        onClick={() => setTaskConfigViewer({ name: 'capture.json', path: captureData.captureJsonPath! })}
+                        title="View capture config (capture.json)"
+                        className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap"
+                      >
+                        <FileJson className="w-3.5 h-3.5" /> Capture config
+                      </button>
                     )}
                   </div>
                   {captureData.dataPath && (
@@ -737,6 +783,28 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       // for task-config viewing) — it renders type-aware
                       // bodies for json/csv/yaml/plain text.
                       onOpenText={(path, name) => setTaskConfigViewer({ path, name })}
+                      outLog={logsByStep.get(step)?.outFile}
+                      errLog={logsByStep.get(step)?.errFile}
+                      headerExtras={step === 'ma_cap' && selectedTaskId ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => openTaskPreset(selectedTaskId)}
+                            title="View the source preset this run was created from"
+                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
+                          >
+                            <FileJson className="w-3 h-3" /> preset
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openTaskConfig(selectedTaskId)}
+                            title={`View the run config (run_${selectedTaskId}.json)`}
+                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
+                          >
+                            <FileJson className="w-3 h-3" /> task
+                          </button>
+                        </>
+                      ) : undefined}
                     />
                   ))}
 
