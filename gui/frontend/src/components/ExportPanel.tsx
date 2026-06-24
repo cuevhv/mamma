@@ -116,7 +116,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
             <option value="m">meters</option><option value="cm">centimeters</option>
           </select>
         </label>
-        <label className="flex items-center gap-1.5" title="Prepares the npz so the add-on's Add Animation imports it upright with this Format. Auto keeps your data's axes and tells you which Format to pick.">Blender import
+        <label className="flex items-center gap-1.5" title="Only affects the npz. When you import it with the SMPL-X Blender add-on's 'Add Animation', you pick a Format (AMASS or SMPL-X) — each assumes a different up-axis. This pre-rotates the npz so the character imports upright for that Format. Auto keeps the data's own axes and tells you which Format to select.">Up-axis
           <select value={blenderFormat} onChange={e => setBlenderFormat(e.target.value)} className="bg-surface-2 border border-border rounded px-1.5 py-0.5 text-foreground">
             <option value="auto">Auto (keep data axes)</option>
             <option value="amass">AMASS (Z-up)</option>
@@ -133,7 +133,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
         title="Where to write the exported files. Leave empty for the default output/export/. A custom folder keeps the same <run>/<capture>/<sequence>/ structure underneath.">
         <span className="shrink-0">Output folder</span>
         <input value={outputDir} onChange={e => setOutputDir(e.target.value)}
-          placeholder="output/export  (default)"
+          placeholder="./output/export  (default path)"
           className="flex-1 min-w-0 bg-surface-2 border border-border rounded px-2 py-0.5 text-foreground font-mono" />
       </label>
 
