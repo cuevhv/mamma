@@ -39,6 +39,19 @@ class StatusSink:
             for seq in seq_names:
                 self.update(step_name, seq, "Cancelled")
 
+    def record_counts(
+        self,
+        step_name: str,
+        seq_name: str,
+        num_frames: Optional[int],
+        num_cameras: Optional[int],
+    ) -> None:
+        """Persist actual frame/camera counts for a (step, sequence).
+
+        No-op by default; the GUI's DB-backed sink overrides this to store the
+        counts the runner derives after ma_cap. Keeping it on the base means the
+        runner can call it unconditionally without caring which sink is wired."""
+
 
 class PrintSink(StatusSink):
     """Print a one-line status update to stdout (plus the package logger)."""

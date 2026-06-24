@@ -163,6 +163,51 @@ def run_step(
     return _run_step_inner(task_cfg, step_name, seq_names, out_tag, log_tag, sink, force)
 
 
+def _ma_cap_counts(seq_dir: str) -> Tuple[Optional[int], Optional[int]]:
+    """Derive (num_frames, num_cameras) from a finished ma_cap output dir.
+
+    ma_cap writes ``<seq_dir>/gt/<cam>.npz`` (one per camera) plus a
+    ``global.npz``; each camera NPZ carries ``frame_start``/``frame_end``.
+    Returns ``(None, None)`` on any problem — this is best-effort metadata."""
+    import glob
+    npzs = glob.glob(os.path.join(seq_dir, "gt", "*.npz"))
+    if not npzs:
+        npzs = glob.glob(os.path.join(seq_dir, "*.npz"))
+    cams = [p for p in npzs if os.path.basename(p).lower() != "global.npz"]
+    num_cameras = len(cams) or None
+    num_frames = None
+    if cams:
+        try:
+            import numpy as np
+            # allow_pickle=False: we only read the plain int frame_start/end
+            # members, never the object arrays in the archive — keep it safe.
+            d = np.load(cams[0], allow_pickle=False)
+            if "frame_start" in d and "frame_end" in d:
+                num_frames = max(0, int(d["frame_end"]) - int(d["frame_start"]))
+        except Exception as e:  # noqa: BLE001 — metadata must never break a run
+            log.warning("could not read frame range from %s: %s", cams[0], e)
+    return num_frames, num_cameras
+
+
+def _record_ma_cap_counts(builder, step_name: str, seq: str, sink: StatusSink) -> None:
+    """After ma_cap finishes for a (step, seq), persist the actual frame/camera
+    counts via the sink. No-op for other steps; the default sink ignores it.
+    Wrapped so a metadata hiccup can never fail the pipeline run."""
+    if step_name != "ma_cap":
+        return
+    # Skip the output scan entirely for sinks that don't persist counts
+    # (CLI/headless PrintSink/JsonlSink) — no point reading NPZs to no-op.
+    if type(sink).record_counts is StatusSink.record_counts:
+        return
+    try:
+        seq_dir = os.path.join(builder.step_out_dir(with_dataset=True), seq)
+        frames, cams = _ma_cap_counts(seq_dir)
+        if frames is not None or cams is not None:
+            sink.record_counts(step_name, seq, frames, cams)
+    except Exception as e:  # noqa: BLE001
+        log.warning("%s[%s] could not record counts: %s", step_name, seq, e)
+
+
 def run_dag(
     task_path: str,
     *,
@@ -286,6 +331,7 @@ def _run_dag_seq_major(
             if not force and os.path.exists(done):
                 log.info("%s[%s] DONE present at %s; skipping", step_name, seq, done)
                 sink.update(step_name, seq, "Done")
+                _record_ma_cap_counts(builder, step_name, seq, sink)
                 continue
 
             out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq)
@@ -307,6 +353,7 @@ def _run_dag_seq_major(
                     log.warning("%s[%s] could not write DONE sentinel at %s: %s",
                                 step_name, seq, done, e)
                 sink.update(step_name, seq, "Done")
+                _record_ma_cap_counts(builder, step_name, seq, sink)
             elif CANCEL:
                 sink.update(step_name, seq, "Cancelled")
                 log.warning("%s[%s] cancelled by signal (exit=%s)", step_name, seq, rc)
@@ -352,6 +399,7 @@ def _run_step_inner(
         if not force and os.path.exists(done):
             log.info("%s[%s] DONE present at %s; skipping", step_name, seq, done)
             sink.update(step_name, seq, "Done")
+            _record_ma_cap_counts(builder, step_name, seq, sink)
             continue
 
         out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq)
@@ -375,6 +423,7 @@ def _run_step_inner(
                 log.warning("%s[%s] could not write DONE sentinel at %s: %s",
                             step_name, seq, done, e)
             sink.update(step_name, seq, "Done")
+            _record_ma_cap_counts(builder, step_name, seq, sink)
         elif CANCEL:
             # Non-zero exit because we signalled the child during a stop.
             # That's a cancel, not a failure.

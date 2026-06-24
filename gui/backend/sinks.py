@@ -46,3 +46,20 @@ class SqliteSink(StatusSink):
         db.set_process_status(proc_id, status, pid=pid_arg)
         extra = f" pid={pid}" if pid else ""
         print(f"[status] {step_name}[{seq_name}] -> {status}{extra}", flush=True)
+
+    def record_counts(
+        self,
+        step_name: str,
+        seq_name: str,
+        num_frames: Optional[int],
+        num_cameras: Optional[int],
+    ) -> None:
+        proc_id = self._index.get((step_name, seq_name))
+        if proc_id is None:
+            return
+        db.set_process_metadata(proc_id, num_frames=num_frames, num_cameras=num_cameras)
+        print(
+            f"[status] {step_name}[{seq_name}] counts frames={num_frames} "
+            f"cameras={num_cameras}",
+            flush=True,
+        )

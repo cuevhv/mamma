@@ -144,7 +144,9 @@ def initialize_database():
                 status TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 started_at TIMESTAMP,
-                ended_at TIMESTAMP
+                ended_at TIMESTAMP,
+                num_frames INTEGER,
+                num_cameras INTEGER
             );"""
         )
         # Idempotent migration for installs whose processes table predates the
@@ -157,6 +159,13 @@ def initialize_database():
             cur.execute("ALTER TABLE processes ADD COLUMN started_at TIMESTAMP")
         if "ended_at" not in proc_cols:
             cur.execute("ALTER TABLE processes ADD COLUMN ended_at TIMESTAMP")
+        # Idempotent migration (added 2026-06-24): actual frame/camera counts,
+        # written on the ma_cap process row once ma_cap finishes for a
+        # (task, sequence). Old rows / non-ma_cap rows keep NULLs (shown as "—").
+        if "num_frames" not in proc_cols:
+            cur.execute("ALTER TABLE processes ADD COLUMN num_frames INTEGER")
+        if "num_cameras" not in proc_cols:
+            cur.execute("ALTER TABLE processes ADD COLUMN num_cameras INTEGER")
         conn.commit()
         print(f"---> SQLite database initialized at {_db_path()}.")
 
@@ -631,6 +640,34 @@ def set_process_status(process_id, status, pid=None):
 
 # Alias used by app.py.
 update_process_status = set_process_status
+
+
+def set_process_metadata(process_id, num_frames=None, num_cameras=None):
+    """Store the actual frame/camera counts on a process row.
+
+    Written on the ma_cap row once that step finishes for a (task, sequence),
+    so the Tasks table can show real counts without reading any files. Both
+    args are optional; only the provided ones are updated. Returns True if a
+    row was updated."""
+    sets = []
+    params = []
+    if num_frames is not None:
+        sets.append("num_frames = ?")
+        params.append(int(num_frames))
+    if num_cameras is not None:
+        sets.append("num_cameras = ?")
+        params.append(int(num_cameras))
+    if not sets:
+        return False
+    params.append(process_id)
+    with create_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE processes SET {', '.join(sets)} WHERE process_id = ?",
+            params,
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def get_processes_for_task(task_id):
@@ -1423,7 +1460,7 @@ def get_all_tasks_with_processes():
             """SELECT p.process_id, p.task_id, c.capture_name, c.capture_json_path,
                       s.sequence_name, p.process, p.status,
                       p.created_at, p.started_at, p.ended_at, p.cluster_job_id, p.sif_file,
-                      p.out_file, p.err_file,
+                      p.out_file, p.err_file, p.num_frames, p.num_cameras,
                       t.username, t.created_at AS task_created_at, t.preset_path
                FROM processes p
                JOIN tasks t ON p.task_id = t.task_id
@@ -1446,7 +1483,16 @@ def get_all_tasks_with_processes():
                 }
             seq = r["sequence_name"]
             if seq not in tasks[tid]["sequences"]:
-                tasks[tid]["sequences"][seq] = {"seqName": seq, "processes": []}
+                tasks[tid]["sequences"][seq] = {
+                    "seqName": seq, "processes": [],
+                    "numFrames": None, "numCameras": None,
+                }
+            # Frame/camera counts are written on the ma_cap row; lift them to the
+            # sequence level so the Tasks table can show one value per row.
+            if r["num_frames"] is not None:
+                tasks[tid]["sequences"][seq]["numFrames"] = r["num_frames"]
+            if r["num_cameras"] is not None:
+                tasks[tid]["sequences"][seq]["numCameras"] = r["num_cameras"]
             tasks[tid]["sequences"][seq]["processes"].append(
                 {
                     "processId": str(r["process_id"]),
