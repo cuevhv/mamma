@@ -2972,7 +2972,9 @@ def list_files():
                     except OSError:
                         size = 0
                     files.append({"name": entry.name, "size": size})
-        return jsonify({"dirs": dirs, "files": files})
+        # Echo the resolved absolute path so the UI can offer a "copy path"
+        # affordance (users paste it into their OS file explorer).
+        return jsonify({"dirs": dirs, "files": files, "absPath": full_path})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

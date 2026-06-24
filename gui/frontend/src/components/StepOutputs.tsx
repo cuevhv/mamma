@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText, Users, ScrollText } from 'lucide-react';
+import { ArrowLeft, Folder, FileVideo, FileImage, File, Sparkles, Globe, ChevronDown, ChevronRight, FileCode2, Database, FileJson, Sheet, FileText, Users, ScrollText, Copy, Check } from 'lucide-react';
+import { toast } from 'sonner';
 import { stepLabel } from './shared/stepLabels';
 import { NativeOpenButton } from './NativeOpenButton';
 import { FileRowsSkeleton } from './shared/Skeleton';
@@ -95,6 +96,10 @@ export function StepOutputs({
   const [error, setError] = useState<string | null>(null);
   /** Active person facet ("04") or null for "all". Reset on folder change. */
   const [personFilter, setPersonFilter] = useState<string | null>(null);
+  /** Absolute filesystem path of the current folder (from the list API), so the
+   *  user can copy it and open it in their OS file explorer. */
+  const [absPath, setAbsPath] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
   const sectionRef = useRef<HTMLDivElement | null>(null);
 
   // Reset back to the step's root when the surrounding selection (task /
@@ -120,11 +125,13 @@ export function StepOutputs({
     const controller = new AbortController();
     setLoading(true);
     setError(null);
+    setAbsPath(null);
     fetch(`/api/files/list?path=${encodeURIComponent(relPath)}`, { signal: controller.signal })
       .then(res => res.json())
       .then(data => {
         if (data.error) throw new Error(data.error);
         setEntries(data);
+        setAbsPath(data.absPath ?? null);
       })
       .catch(err => {
         if (err.name !== 'AbortError') setError(err.message);
@@ -132,6 +139,18 @@ export function StepOutputs({
       .finally(() => setLoading(false));
     return () => controller.abort();
   }, [relPath, open]);
+
+  const copyPath = async () => {
+    if (!absPath) return;
+    try {
+      await navigator.clipboard.writeText(absPath);
+      setCopied(true);
+      toast.success('Path copied to clipboard');
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.error('Could not copy path');
+    }
+  };
 
   const breadcrumbs = useMemo(() => {
     if (!baseRelPath || !relPath) return [];
@@ -266,6 +285,17 @@ export function StepOutputs({
                 ))
               )}
             </div>
+            {absPath && (
+              <button
+                type="button"
+                onClick={copyPath}
+                title={`Copy this folder's absolute path:\n${absPath}`}
+                className="shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
+              >
+                {copied ? <Check className="w-3 h-3 text-status-completed" /> : <Copy className="w-3 h-3" />}
+                {copied ? 'Copied' : 'Copy path'}
+              </button>
+            )}
           </div>
 
           {/* Person filter — appears only when the folder holds per-person
