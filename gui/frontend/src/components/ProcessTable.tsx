@@ -40,6 +40,11 @@ export interface ProcessRow {
    *  the row's status badge so the user sees their place in line. */
   queuePosition?: number;
   createdAt?: string;
+  /** Actual frame / camera counts for this (task, sequence), written on the
+   *  ma_cap row once that step finishes. Null until ma_cap completes, for
+   *  pre-feature rows, or for non-GUI runs — rendered as "—". */
+  numFrames?: number | null;
+  numCameras?: number | null;
   cells: Record<string, MatrixCell | undefined>;
 }
 
@@ -472,14 +477,16 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
               <tr className="bg-surface-2/60 border-b border-border-subtle">
                 <Th sticky="left-0">Task</Th>
                 {showCapture && <Th>Capture</Th>}
-                <Th>Sequence</Th>
+                <Th grow>Sequence</Th>
+                <Th title="Number of frames" center>#F</Th>
+                <Th title="Number of views (cameras)" center>#V</Th>
                 {steps.map(step => (
-                  <th key={step} className="px-4 py-3 text-left whitespace-nowrap">
+                  <th key={step} className="px-4 py-3 text-center whitespace-nowrap">
                     <div className="text-foreground text-sm font-medium">{stepLabel(step)}</div>
                     <div className="text-foreground-faint text-[10px] font-mono mt-0.5 tracking-wide">{step}</div>
                   </th>
                 ))}
-                <Th>{view === 'timing' ? 'Total' : 'Status'}</Th>
+                <Th center>{view === 'timing' ? 'Total' : 'Status'}</Th>
                 {showActions && <Th>Actions</Th>}
               </tr>
             </thead>
@@ -544,7 +551,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                         )}
                       </td>
                     )}
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-4 py-3 w-full max-w-0">
                       {onBrowseOutputs && row.captureJsonPath ? (
                         <button
                           type="button"
@@ -552,14 +559,24 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                             e.stopPropagation();
                             onBrowseOutputs(row.captureName ?? '', row.captureJsonPath!, row.taskId, row.seqName, '');
                           }}
-                          className="font-mono text-sm text-foreground rounded-md px-2 py-1 -mx-2 mamma-cell-clickable"
+                          className="font-mono text-sm text-foreground rounded-md px-2 py-1 -mx-2 mamma-cell-clickable block truncate text-left max-w-full"
                           title={`Browse results for sequence '${row.seqName}' on task ${formatTaskId(row.taskId)}`}
                         >
                           {row.seqName}
                         </button>
                       ) : (
-                        <span className="font-mono text-sm text-foreground">{row.seqName}</span>
+                        <span className="font-mono text-sm text-foreground block truncate max-w-full" title={row.seqName}>{row.seqName}</span>
                       )}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      <span className="font-mono text-sm tabular-nums text-foreground-muted" title="Number of frames">
+                        {row.numFrames != null ? row.numFrames : '—'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-center">
+                      <span className="font-mono text-sm tabular-nums text-foreground-muted" title="Number of views (cameras)">
+                        {row.numCameras != null ? row.numCameras : '—'}
+                      </span>
                     </td>
                     {steps.map(step => {
                       const cell = row.cells[step] ?? null;
@@ -570,7 +587,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                       // see *its* logs / outputs", not "click anywhere on
                       // the row."
                       const clickable = !!cell;
-                      const baseCls = 'px-4 py-3 transition-colors';
+                      const baseCls = 'px-4 py-3 text-center transition-colors';
                       const stateCls = isSelected
                         ? 'bg-primary-muted ring-1 ring-inset ring-primary/40 cursor-pointer'
                         : clickable
@@ -615,7 +632,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                         </td>
                       );
                     })}
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 text-center">
                       {view === 'timing' ? (() => {
                         const secs = rowDurationSecs(row.cells);
                         return secs != null && secs > 0 ? (
@@ -778,10 +795,10 @@ function ConfigPeekModal({
   );
 }
 
-function Th({ children, sticky }: { children: React.ReactNode; sticky?: string }) {
+function Th({ children, sticky, title, center, grow }: { children: React.ReactNode; sticky?: string; title?: string; center?: boolean; grow?: boolean }) {
   const stickyCls = sticky ? `sticky ${sticky} bg-surface-2` : '';
   return (
-    <th className={`${stickyCls} px-4 py-3 text-left text-foreground-muted text-[11px] font-semibold uppercase tracking-wider z-10`}>
+    <th title={title} className={`${stickyCls} px-4 py-3 ${center ? 'text-center' : 'text-left'} ${grow ? 'w-full' : ''} text-foreground-muted text-[11px] font-semibold uppercase tracking-wider z-10`}>
       {children}
     </th>
   );
@@ -849,6 +866,8 @@ export function buildProcessRows<T extends {
   errFile?: string | null;
   startedAt?: string | null;
   endedAt?: string | null;
+  numFrames?: number | null;
+  numCameras?: number | null;
 }>(records: T[]): { rows: ProcessRow[]; stepsInUse: Set<string> } {
   const byKey = new Map<string, ProcessRow>();
   const stepsInUse = new Set<string>();
@@ -864,10 +883,15 @@ export function buildProcessRows<T extends {
         presetPath: r.presetPath ?? null,
         queuePosition: r.queuePosition,
         createdAt: r.createdAt,
+        numFrames: r.numFrames ?? null,
+        numCameras: r.numCameras ?? null,
         cells: {},
       };
       byKey.set(key, row);
     }
+    // Counts are per (task, seq); fill from whichever record carries them.
+    if (r.numFrames != null) row.numFrames = r.numFrames;
+    if (r.numCameras != null) row.numCameras = r.numCameras;
     row.cells[r.processType] = {
       processId: r.processId,
       status: r.status,

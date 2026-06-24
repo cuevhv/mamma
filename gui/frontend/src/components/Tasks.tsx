@@ -23,7 +23,7 @@ interface HistoryProcess {
   startedAt?: string | null;
   endedAt?: string | null;
 }
-interface HistorySequence { seqName: string; processes: HistoryProcess[]; }
+interface HistorySequence { seqName: string; processes: HistoryProcess[]; numFrames?: number | null; numCameras?: number | null; }
 interface HistoryTask {
   taskId: string;
   captureName: string;
@@ -114,7 +114,19 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
           endedAt: p.endedAt,
         });
       }
-      return { ...h, sequences: Object.entries(seqMap).map(([seqName, processes]) => ({ seqName, processes })) };
+      // Preserve the per-sequence frame/camera counts from history — the live
+      // payload doesn't carry them, so rebuilding from it alone would blank
+      // them out for a task that's still running after ma_cap finished.
+      const countsBySeq = new Map(h.sequences.map(s => [s.seqName, s]));
+      return {
+        ...h,
+        sequences: Object.entries(seqMap).map(([seqName, processes]) => ({
+          seqName,
+          processes,
+          numFrames: countsBySeq.get(seqName)?.numFrames ?? null,
+          numCameras: countsBySeq.get(seqName)?.numCameras ?? null,
+        })),
+      };
     });
   }, [historyData, activeData]);
 
@@ -129,6 +141,7 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
       processType: string; processId: string; status: string;
       pid?: string | null; outFile?: string | null; errFile?: string | null;
       startedAt?: string | null; endedAt?: string | null;
+      numFrames?: number | null; numCameras?: number | null;
     }> = [];
     for (const run of allRuns) {
       for (const seq of run.sequences) {
@@ -149,6 +162,8 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
             errFile: p.errFile,
             startedAt: p.startedAt,
             endedAt: p.endedAt,
+            numFrames: seq.numFrames,
+            numCameras: seq.numCameras,
           });
         }
       }
