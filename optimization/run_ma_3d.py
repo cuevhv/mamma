@@ -727,16 +727,20 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
                 smplx_export_flat_hand_mean=_export_flat_hand_mean,
                 smplx_export_num_betas=int(smplx_betas.shape[-1]))
 
-        # ma_vis consumes pred_vertices from this file regardless of whether
-        # a real GT exists, so write it unconditionally. With use_gt=False
-        # the gt_* fields are duplicates of pred_* (smplx_out_gt fell back
-        # to smplx_out_pred above), which is harmless — downstream readers
-        # that care about real GT only run in use_gt=True contexts.
+        # ma_vis (and regression_check) consume pred_vertices/pred_joints from
+        # this file, so always write those. The gt_* arrays are only meaningful
+        # for ground-truth eval runs (use_gt=True); in normal inference there's
+        # no GT — smplx_out_gt falls back to the prediction — so writing them
+        # would just duplicate pred_*. Omit them unless a real GT was loaded.
+        verts_payload = dict(
+            pred_joints=smplx_out_pred.joints.detach().cpu().numpy(),
+            pred_vertices=smplx_out_pred.vertices.detach().cpu().numpy(),
+        )
+        if use_gt:
+            verts_payload["gt_joints"] = smplx_out_gt.joints.detach().cpu().numpy()
+            verts_payload["gt_vertices"] = smplx_out_gt.vertices.detach().cpu().numpy()
         np.savez(os.path.join(save_prediction_fn, f"verts_joints_body_id-{body_id:02d}.npz"),
-                    gt_joints=smplx_out_gt.joints.detach().cpu().numpy(),
-                    gt_vertices=smplx_out_gt.vertices.detach().cpu().numpy(),
-                    pred_joints=smplx_out_pred.joints.detach().cpu().numpy(),
-                    pred_vertices=smplx_out_pred.vertices.detach().cpu().numpy())
+                 **verts_payload)
 
         # Only emit per-frame error metrics (body_id-NN.csv) when a real GT
         # exists. With use_gt=False the "GT" tensor was just a copy of the
