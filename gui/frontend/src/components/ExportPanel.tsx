@@ -58,6 +58,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
   const [unit, setUnit] = useState('m');
   const [blenderFormat, setBlenderFormat] = useState('auto');
   const [fps, setFps] = useState('');
+  const [outputDir, setOutputDir] = useState('');
   const [job, setJob] = useState<Job | null>(null);
 
   // Reset the job when the selection changes so stale results don't linger.
@@ -81,6 +82,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
         tag: t.tag, capture: t.capture, seq: t.seq, ma_3d_dir: t.ma_3d_dir, ma_cap_dir: t.ma_cap_dir,
       })),
       formats: chosen, ground, unit, blender_format: blenderFormat, fps: fps ? Number(fps) : undefined,
+      output_dir: outputDir.trim() || undefined,
     });
     setJob({ id: r.job_id, state: 'running', log_tail: [], outputs: [], error: null, kind: 'export' });
   };
@@ -125,6 +127,15 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
           <input value={fps} onChange={e => setFps(e.target.value)} placeholder="auto" className="w-16 bg-surface-2 border border-border rounded px-1.5 py-0.5 text-foreground" />
         </label>
       </div>
+
+      {/* optional output folder */}
+      <label className="flex items-center gap-2 text-xs text-foreground-muted"
+        title="Where to write the exported files. Leave empty for the default output/export/. A custom folder keeps the same <run>/<capture>/<sequence>/ structure underneath.">
+        <span className="shrink-0">Output folder</span>
+        <input value={outputDir} onChange={e => setOutputDir(e.target.value)}
+          placeholder="output/export  (default)"
+          className="flex-1 min-w-0 bg-surface-2 border border-border rounded px-2 py-0.5 text-foreground font-mono" />
+      </label>
 
       {/* export + status */}
       <div>

@@ -154,9 +154,21 @@ def _run_script(jid: str, script: str, creds: dict | None = None) -> None:
         _update_job(jid, state="error", error=str(exc))
 
 
+def _export_base(output_dir: str | None) -> Path:
+    """Resolve the export root. Empty -> the default ``output/export``. A custom
+    value is expanded (``~``) and, if relative, anchored to the repo root so it
+    behaves the same regardless of the backend's cwd. The structured
+    ``<tag>/<capture>/<seq>`` layout is always appended underneath by the caller."""
+    raw = (output_dir or "").strip()
+    if not raw:
+        return _OUTPUT / "export"
+    raw = os.path.expanduser(raw)
+    return Path(raw) if os.path.isabs(raw) else (_REPO_ROOT / raw)
+
+
 def _export_one(jid: str, spec: dict) -> tuple[bool, list[str], str | None]:
     """Run one sequence's Blender export. Returns (ok, output_files, error)."""
-    out_dir = _OUTPUT / "export" / spec["tag"] / spec["capture"] / spec["seq"]
+    out_dir = _export_base(spec.get("output_dir")) / spec["tag"] / spec["capture"] / spec["seq"]
     cmd = [sys.executable, str(_REPO_ROOT / "optimization" / "export_blender.py"),
            "--ma-3d-dir", spec["ma_3d_dir"], "--seq-name", spec["seq"],
            "--out-dir", str(out_dir), "--formats", ",".join(spec["formats"]),
@@ -305,7 +317,7 @@ def register_routes(app) -> None:
     @app.post("/api/exporter/export")
     def _exporter_export():
         body = request.get_json(silent=True) or {}
-        opts = {k: body.get(k) for k in ("formats", "unit", "ground", "blender_format", "fps")}
+        opts = {k: body.get(k) for k in ("formats", "unit", "ground", "blender_format", "fps", "output_dir")}
         # `sequences` = batch (per-seq identity dicts sharing the top-level options);
         # otherwise the top-level body is a single sequence (back-compat).
         raw = body.get("sequences") or [body]
