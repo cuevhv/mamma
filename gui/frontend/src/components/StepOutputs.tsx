@@ -299,7 +299,7 @@ export function StepOutputs({
                 <FileRowsSkeleton count={4} />
               </div>
             )}
-            {error && <div className="p-4 text-status-failed text-xs text-center">{error}</div>}
+            {error && <div className="p-4 text-foreground-subtle text-xs text-center">{error}</div>}
             {!loading && !error && !entries && (
               <div className="p-4 text-foreground-subtle text-xs text-center">No path selected.</div>
             )}

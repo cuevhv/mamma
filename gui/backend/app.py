@@ -2959,7 +2959,7 @@ def list_files():
     if full_path is None:
         return jsonify({"error": "Invalid path"}), 400
     if not os.path.isdir(full_path):
-        return jsonify({"error": "Path is not a directory or does not exist"}), 404
+        return jsonify({"error": "Path does not exist"}), 404
     try:
         dirs, files = [], []
         with os.scandir(full_path) as it:
