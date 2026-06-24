@@ -68,6 +68,37 @@ def list_frames(body_dir: Path) -> List[Path]:
     return frames
 
 
+def _reencode_to_h264(path: Path) -> None:
+    """Re-encode an mp4v file in place to browser-friendly H.264/yuv420p.
+
+    OpenCV's pip wheel can only encode mp4v (MPEG-4 Part 2), which browsers
+    won't play inline, so we transcode the finished file with ffmpeg. Best-effort:
+    no-ops if ffmpeg is unavailable or the encode fails.
+    """
+    import os
+    import subprocess
+    p = str(path)
+    try:
+        import imageio_ffmpeg
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not os.path.exists(p):
+        return
+    tmp = p + ".tmp.mp4"
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+             "-i", p, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", tmp],
+            check=True,
+        )
+        os.replace(tmp, p)
+    except (subprocess.CalledProcessError, OSError):
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def prepare_writer(frames: List[Path], output_path: Path, fps: float) -> tuple[cv2.VideoWriter, tuple[int, int]]:
     first = cv2.imread(str(frames[0]), cv2.IMREAD_COLOR)
     if first is None:
@@ -115,6 +146,8 @@ def process_body_camera(
             writer.write(img)
     finally:
         writer.release()
+
+    _reencode_to_h264(output_path)
 
     logging.info(
         "Wrote %s (%d frames) for sequence %s body %s camera %s",

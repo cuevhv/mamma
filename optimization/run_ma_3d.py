@@ -85,6 +85,38 @@ def _run_detection_analysis(pred_pth: str, out_path: str, out_fn: str, cam_names
         return None
 
 
+def _reencode_to_h264(path: str) -> None:
+    """Re-encode an mp4v file in place to browser-friendly H.264/yuv420p.
+
+    OpenCV's pip wheel can only encode mp4v (MPEG-4 Part 2), which browsers
+    won't play inline, so we transcode the finished file with ffmpeg (same
+    recipe ma_vis/ma_masks use). Best-effort: no-ops if ffmpeg is unavailable
+    or the encode fails, leaving the original mp4v in place.
+    """
+    import shutil
+    import subprocess
+    path = str(path)
+    try:
+        import imageio_ffmpeg
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not os.path.exists(path):
+        return
+    tmp = path + ".tmp.mp4"
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+             "-i", path, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", tmp],
+            check=True,
+        )
+        os.replace(tmp, path)
+    except (subprocess.CalledProcessError, OSError):
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def render_scene_videos(smplx_preds_by_body: dict, cameras_metadata_fns: List[str], imgs_pth: str, out_dir: str,
                         faces, fps: int = 30):
     if len(smplx_preds_by_body) == 0:
@@ -189,6 +221,7 @@ def render_scene_videos(smplx_preds_by_body: dict, cameras_metadata_fns: List[st
             writer.write(rendered)
 
         writer.release()
+        _reencode_to_h264(output_video_path)
         renderer.delete()
         video_paths.append(output_video_path)
         print(f"Saved scene video for {cam_id}: {output_video_path}")

@@ -113,6 +113,37 @@ def _fit_frame(img, h, w):
 
 # ── main visualisation entry-points ──────────────────────────────────────────
 
+def _reencode_to_h264(path: str) -> None:
+    """Re-encode an mp4v file in place to browser-friendly H.264/yuv420p.
+
+    OpenCV's pip wheel can only encode mp4v (MPEG-4 Part 2), which browsers
+    won't play inline, so we transcode the finished file with ffmpeg. Best-effort:
+    no-ops if ffmpeg is unavailable or the encode fails.
+    """
+    import shutil
+    import subprocess
+    path = str(path)
+    try:
+        import imageio_ffmpeg
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or not os.path.exists(path):
+        return
+    tmp = path + ".tmp.mp4"
+    try:
+        subprocess.run(
+            [ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+             "-i", path, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-movflags", "+faststart", tmp],
+            check=True,
+        )
+        os.replace(tmp, path)
+    except (subprocess.CalledProcessError, OSError):
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 def visualize_reid(
     pts2d_before,       # {body_id: [cam_tensor[T,L,>=2], ...]}
     pts2d_vis_before,   # {body_id: [cam_tensor[T,L], ...]}  or  {bid: None}
@@ -200,6 +231,7 @@ def visualize_reid(
             writer.write(frame)
 
         writer.release()
+        _reencode_to_h264(out_fn)
         print(f"[reid_viz] saved {out_fn}  ({T} frames @ {fps} fps)")
 
 
