@@ -116,9 +116,10 @@ def infer_step_status(output_root: str, output_id: str, dataset: str | None,
     or empty. Uses "Done" — the same terminal-success tag the live runner
     writes — so imported runs read identically to runs started here.
 
-    This is a deliberately rough heuristic — many ML scripts write a
-    sentinel "DONE" file but not all do, and parsing every step's log
-    format is out of scope. The user can edit / re-run as needed."""
+    This is a deliberately rough heuristic: it treats "the step's output dir
+    has files" as success rather than confirming the step truly finished, since
+    not every pipeline step leaves a reliable success marker and parsing each
+    step's logs is out of scope. The user can edit / re-run as needed."""
     if not dataset:
         return "Failed"
     seq_dir = os.path.join(output_root, step, output_id, dataset, seq)
