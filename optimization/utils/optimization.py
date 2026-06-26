@@ -38,8 +38,9 @@ def closest_point_rays(origins, directions):
 class OptimizeSMPLX:
     def __init__(self, body_params, world_params, smplx_model, downsampled_verts_mat, optim_cfg,
                  paths: PathsConfig,
-                 save_prediction_fn=None, device="cuda", skip_start: int = 0):
+                 save_prediction_fn=None, device="cuda", skip_start: int = 0, up_axis: str = "z"):
         self._paths = paths
+        self.up_axis = up_axis           # signed world up-axis for the contact .rrd
         intrinsics_np = world_params["cam_intrinsics"]
         extrinsics_np = world_params["cam_extrinsics"]
         self.cam_heights = world_params["cam_height"]
@@ -558,6 +559,7 @@ class OptimizeSMPLX:
                 os.path.join(self.save_prediction_fn, "intermediate_triangulated_points.rrd"),
                 triangulated_points_world, contact_world, floor_contact_world,
                 valid_mask=triangulated_valid_mask,
+                up_axis=self.up_axis,
             )
         except Exception as e:
             print(f"[contact_rrd] skipped: {e}")

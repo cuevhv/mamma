@@ -50,5 +50,9 @@ class MaVisBuilder(StepBuilder):
             ]
             argv += calibration_flag
         argv += self._undistort_flag()
+        up_axis = self.global_cfg.get("up_axis")
+        if up_axis and str(up_axis) != "auto":
+            # '=' form: a signed value like '-y' would otherwise be parsed as a flag.
+            argv += [f"--up-axis={up_axis}"]
         argv += self.flags
         return argv

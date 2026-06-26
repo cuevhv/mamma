@@ -116,9 +116,11 @@ def synthesize_capture(
 
     Returns:
         Capture-config dict. Keys: ``capture_root``, ``calib``,
-        ``cam_fps`` (default 30), ``cams``, ``sequences``, and
+        ``cam_fps`` (default 30), ``cams``, ``sequences``,
         ``videos_subdir`` (only set in videos mode when not the
-        default ``videos_crf24``).
+        default ``videos_crf24``), and an optional ``up_axis`` (signed
+        world up-axis ``x|y|z|-x|-y|-z`` or ``auto``; auto-detected from
+        the calibration when absent/``auto``).
 
     Raises:
         FileNotFoundError: If the footage_dir, the seq_name subdir,
@@ -329,6 +331,27 @@ def materialize_run_config(
         cap_cams = capture_data.get("cams") or []
         if cap_cams:
             g["cam_names"] = list(cap_cams)
+
+    # World up-axis: an explicit capture.json `up_axis` wins; otherwise
+    # auto-detect from the calibration geometry. Stored concretely (signed
+    # x|y|z|-x|-y|-z) so the step builders emit a valid `--up-axis`. Best-effort:
+    # any failure leaves it unset and steps fall back to their `z` default.
+    if not g.get("up_axis"):
+        try:
+            from capture.calibration import (
+                load_calibration, detect_up_axis, normalize_up_axis,
+            )
+            raw = str(capture_data.get("up_axis") or "").strip().lower()
+            if raw and raw != "auto":
+                g["up_axis"] = normalize_up_axis(raw)
+            else:
+                calib = capture_data.get("calib")
+                if calib:
+                    calib_path = calib if os.path.isabs(calib) else os.path.normpath(
+                        os.path.join(os.path.dirname(capture_path), calib))
+                    g["up_axis"] = detect_up_axis(load_calibration(calib_path))[0]
+        except Exception:
+            pass
 
     if out_dir is not None:
         g["out_dir"] = out_dir

@@ -40,7 +40,6 @@ from .rerun_log import RerunSceneLogger, compute_floor_height, ffmpeg_available
 log = logging.getLogger(__name__)
 
 _VENDORED_FACES = Path(__file__).parent / "assets" / "smplx_faces.npy"
-_UP_AXIS_MAP = {"x": 0, "y": 1, "z": 2}
 
 
 def run_visualization(
@@ -84,13 +83,13 @@ def run_visualization(
     seq_name = str(seq_name)
     ma_3d_dir = Path(ma_3d_dir)
     out_path = Path(out_path)
-    if up_axis not in _UP_AXIS_MAP:
-        raise ValueError(f"up_axis must be x/y/z, got {up_axis!r}")
+    from capture.calibration import normalize_up_axis, up_axis_to_vector
+    up_axis = normalize_up_axis(up_axis)          # accepts signed x|y|z|-x|-y|-z
+    up_vec = up_axis_to_vector(up_axis)           # signed unit vector, e.g. [0,-1,0]
     if fps <= 0:
         raise ValueError(f"fps must be positive, got {fps}")
     if rerun_display_scale <= 0:
         raise ValueError(f"rerun_display_scale must be positive, got {rerun_display_scale}")
-    up_axis_idx = _UP_AXIS_MAP[up_axis]
 
     # Camera source: either an in-memory MultiViewCameras (built by
     # cli.py for standalone calibration+videos workflows) or a gt_dir
@@ -161,10 +160,12 @@ def run_visualization(
         # blueprint/layout when this .rrd is opened natively.
         app_id=f"MAMMA · {seq_name}",
     ) as logger:
+        logger.log_world_up(up_axis)        # orient the viewer (the scene.rrd fix)
         logger.log_cameras(cameras)
-        floor = compute_floor_height(motions, up_axis=up_axis_idx)
-        logger.log_ground(floor_height=floor, up_axis=up_axis_idx)
-        log.info("logged rig + ground (floor=%.4f) in %.2fs", floor, time.perf_counter() - t)
+        floor = compute_floor_height(motions, up_vec=up_vec)
+        logger.log_ground(floor_height=floor, up_vec=up_vec)
+        log.info("logged rig + ground (floor=%.4f, up=%s) in %.2fs",
+                 floor, up_axis, time.perf_counter() - t)
 
         t = time.perf_counter()
         logger.log_meshes(motions, faces, colors_rgb)

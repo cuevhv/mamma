@@ -142,7 +142,7 @@ def fit_smplx(body_ids: str, pred_fns: List[str], cameras_metadata_fns: List[str
                 optim_cfg=None, valid_frames_idx=None,
                 hand_joints_pred_fns=None, rotate_cams=None,  save_prediction_fn=None,
                 start_frame=0, end_frame=None, ignore_start_frames: int = 0,
-                paths: Optional[PathsConfig] = None, parallel=True):
+                paths: Optional[PathsConfig] = None, up_axis: str = "z", parallel=True):
 
     body_params = {body_id: None for body_id in body_ids}
     world_params = None
@@ -199,7 +199,7 @@ def fit_smplx(body_ids: str, pred_fns: List[str], cameras_metadata_fns: List[str
     smplx_fitter = OptimizeSMPLX(body_params, world_params, smplx_model, downsampled_verts_mat, optim_cfg,
                                  paths,
                                  save_prediction_fn=save_prediction_fn, device=device,
-                                 skip_start=ignore_start_frames)
+                                 skip_start=ignore_start_frames, up_axis=up_axis)
     smplx_pose, smplx_betas, smplx_trans, triangulated_3d_pts, smplx_contact, smplx_floor_contact = smplx_fitter.fit(optim_verts=True,
                                                             optim_cfg=optim_cfg)
 

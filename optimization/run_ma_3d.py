@@ -570,7 +570,7 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
          out_path:str = "out", use_gt = True, cam_name_prefix: str = None, save_scene_videos: bool = True,
          start_frame: int = 0, end_frame: int = None, ignore_start_frames: int = 0,
          save_detection_analysis: bool = True,
-         detection_analysis_top_k: int = 30, cli_args=None):
+         detection_analysis_top_k: int = 30, up_axis: str = "z", cli_args=None):
 
     if smplx_model_pth is None:
         smplx_model_pth = paths.smplx_lockhead_models
@@ -645,6 +645,7 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
                                                                                 start_frame=start_frame, end_frame=end_frame,
                                                                                 ignore_start_frames=ignore_start_frames,
                                                                                 paths=paths,
+                                                                                up_axis=up_axis,
                                                                                 parallel=True)
 
     # Fill ignored start frames by copying from the first optimized frame
@@ -791,6 +792,9 @@ def parser():
     args.add_argument('--config_file', type=str, default="config_files/config.yaml", help="Path to the config file")
     args.add_argument('--cam_names', type=str, nargs='+', default=[], help="List of camera names (e.g., IOI_01 IOI_02 IOI_03)")
     args.add_argument('--cam_name_prefix', type=str, default="IOI_", help="Camera name prefix when --cam_names is empty")
+    args.add_argument('--up-axis', '--up_axis', dest='up_axis', type=str, default="z",
+                      choices=["x", "y", "z", "-x", "-y", "-z"],
+                      help="Signed world up axis for the triangulated-points .rrd (default: z).")
     args.add_argument('--out_path', type=str, required=True, help="Files to process")
     args.add_argument('--skip_scene_videos', action='store_true',
                       help="Deprecated: scene videos are rendered in mv-rerun/run_ma_vis.py.")
@@ -902,5 +906,6 @@ if __name__ == "__main__":
         ignore_start_frames=args.ignore_start_frames,
         save_detection_analysis=not args.skip_detection_analysis,
         detection_analysis_top_k=args.detection_analysis_top_k,
+        up_axis=args.up_axis,
         cli_args=args,
         )

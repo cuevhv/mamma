@@ -84,4 +84,8 @@ class Ma3dBuilder(StepBuilder):
 
         if self.cam_names:
             argv += ["--cam_names", *self.cam_names]
+        up_axis = self.global_cfg.get("up_axis")
+        if up_axis and str(up_axis) != "auto":
+            # '=' form: a signed value like '-y' would otherwise be parsed as a flag.
+            argv += [f"--up-axis={up_axis}"]
         return argv

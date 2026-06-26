@@ -26,6 +26,29 @@ _LO = (205, 210, 220)          # near-zero probability -> light cool grey
 _HI_CONTACT = (255, 55, 45)    # contact -> red
 _HI_FLOOR = (40, 145, 255)     # floor-contact -> blue
 
+# Signed up-axis helpers, inlined so this stays self-contained: the ma_3d runtime
+# imports from the ``optimization`` root and cannot see the top-level ``capture``
+# package (mirrors capture.calibration.up_axis_to_* but with no cross-package dep).
+_VIEWCOORDS_BY_UP = {
+    "x": "RIGHT_HAND_X_UP",  "-x": "RIGHT_HAND_X_DOWN",
+    "y": "RIGHT_HAND_Y_UP",  "-y": "RIGHT_HAND_Y_DOWN",
+    "z": "RIGHT_HAND_Z_UP",  "-z": "RIGHT_HAND_Z_DOWN",
+}
+
+
+def _parse_up(up_axis):
+    """Return ``(idx, up_vec, viewcoords_name)`` for a signed axis string
+    (``x|y|z|-x|-y|-z``) or a legacy int index (0/1/2)."""
+    if isinstance(up_axis, int):
+        up_axis = {0: "x", 1: "y", 2: "z"}.get(up_axis, "z")
+    s = str(up_axis).strip().lower().replace("+", "")
+    if s not in _VIEWCOORDS_BY_UP:
+        s = "z"
+    idx = {"x": 0, "y": 1, "z": 2}[s[-1]]
+    vec = np.zeros(3, dtype=np.float64)
+    vec[idx] = -1.0 if s.startswith("-") else 1.0
+    return idx, vec, _VIEWCOORDS_BY_UP[s]
+
 
 def _to_numpy(x):
     if x is None:
@@ -85,19 +108,23 @@ def _radii(prob: np.ndarray, r_min: float, r_max: float) -> np.ndarray:
     return (r_min + (r_max - r_min) * p).astype(np.float32)
 
 
-def _log_ground(rr, floor_height: float, up_axis: int, half: float,
+def _log_ground(rr, floor_height: float, up_vec, half: float,
                 center0: float = 0.0, center1: float = 0.0) -> None:
     """A square ground quad centred under the subjects (center0/center1 are the
-    two non-up axes), sized to span them, at ``floor_height``."""
-    a0, a1 = [a for a in (0, 1, 2) if a != up_axis]
+    two non-up axes), sized to span them. ``floor_height`` is the up-axis
+    projection value (``p·up_vec``); ``up_vec`` is the signed up unit vector."""
+    up = np.asarray(up_vec, dtype=np.float64)
+    idx = int(np.argmax(np.abs(up)))
+    sign = 1.0 if up[idx] >= 0 else -1.0
+    a0, a1 = [a for a in (0, 1, 2) if a != idx]
+    plane_coord = floor_height * sign        # p·up = floor_height (axis-aligned)
     corners = [(-half, half), (half, half), (-half, -half), (half, -half)]
     coords = np.zeros((4, 3), dtype=np.float64)
     for i, (d0, d1) in enumerate(corners):
         coords[i, a0] = center0 + d0
         coords[i, a1] = center1 + d1
-        coords[i, up_axis] = floor_height
-    normal = np.zeros(3, dtype=np.float64)
-    normal[up_axis] = 1.0
+        coords[i, idx] = plane_coord
+    normal = up / (np.linalg.norm(up) + 1e-12)
     _log_static(rr, "world/ground", rr.Mesh3D(
         vertex_positions=coords,
         triangle_indices=np.array([[0, 1, 2], [1, 3, 2]]),
@@ -107,12 +134,13 @@ def _log_ground(rr, floor_height: float, up_axis: int, half: float,
 
 
 def write_contact_rrd(out_path, points_world, contact, floor_contact,
-                      valid_mask=None, up_axis: int = 2) -> None:
+                      valid_mask=None, up_axis="z") -> None:
     """Write one ``.rrd`` with the triangulated points as two contact layers.
 
     ``points_world[b]``: (T, N, 3); ``contact[b]`` / ``floor_contact[b]``: (T, N)
     in [0, 1] or None; ``valid_mask[b]``: (T, N) bool or None. Lists are indexed
-    per body. Best-effort — never raises.
+    per body. ``up_axis`` is a signed axis string (``x|y|z|-x|-y|-z``); a legacy
+    int index (0/1/2) is accepted too. Best-effort — never raises.
     """
     try:
         import rerun as rr
@@ -121,6 +149,7 @@ def write_contact_rrd(out_path, points_world, contact, floor_contact,
         return
 
     try:
+        up_idx, up_vec, _vc_name = _parse_up(up_axis)
         pts = [_to_numpy(p) for p in (points_world or [])]
         pts = [p if (p is not None and p.ndim == 3 and p.shape[0] > 0) else None for p in pts]
         if not any(p is not None for p in pts):
@@ -137,12 +166,12 @@ def write_contact_rrd(out_path, points_world, contact, floor_contact,
         # off-origin floor.
         allpts = np.concatenate([p.reshape(-1, 3) for p in pts if p is not None], axis=0)
         allpts = allpts[np.isfinite(allpts).all(axis=1)]
-        plane = [a for a in (0, 1, 2) if a != up_axis]
+        plane = [a for a in (0, 1, 2) if a != up_idx]
         if allpts.shape[0] >= 2:
             lo, hi = allpts.min(0), allpts.max(0)
             bb = hi - lo
             diag = float(np.linalg.norm(bb)) or 1.0
-            floor_h = float(np.percentile(allpts[:, up_axis], 2))
+            floor_h = float(np.percentile(allpts @ up_vec, 2))   # signed up projection
             xy_extent = float(max(bb[plane[0]], bb[plane[1]]))
             half = 0.5 * xy_extent + max(0.75, 0.3 * xy_extent)   # span subjects + margin
             c0 = float((lo[plane[0]] + hi[plane[0]]) * 0.5)
@@ -154,10 +183,11 @@ def write_contact_rrd(out_path, points_world, contact, floor_contact,
         rr.init("mamma_contact", spawn=False)
         rr.save(str(out_path))
         # Make the scene upright so the camera orients sensibly on open.
-        _vc = {2: "RIGHT_HAND_Z_UP", 1: "RIGHT_HAND_Y_UP"}.get(up_axis)
-        if _vc is not None and hasattr(rr, "ViewCoordinates"):
-            _log_static(rr, "/", getattr(rr.ViewCoordinates, _vc))
-        _log_ground(rr, floor_h, up_axis, half, c0, c1)
+        if hasattr(rr, "ViewCoordinates"):
+            _vc = getattr(rr.ViewCoordinates, _vc_name, None)
+            if _vc is not None:
+                _log_static(rr, "/", _vc)
+        _log_ground(rr, floor_h, up_vec, half, c0, c1)
 
         def _emit(path, pos, prob, hi):
             finite = np.isfinite(pos).all(axis=1)

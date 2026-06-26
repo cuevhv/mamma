@@ -220,18 +220,22 @@ def _orthonormalize(R: np.ndarray) -> np.ndarray:
 
 
 def compute_floor_height(
-    motions: Sequence[PersonMotion], *, up_axis: int = 2, percentile: float = 5.0
+    motions: Sequence[PersonMotion], *, up_vec, percentile: float = 5.0
 ) -> float:
-    """Robust floor height: 5th percentile of per-frame minima of the up axis.
+    """Robust floor "height" along the (signed) up vector.
 
-    Mirrors upstream ``MultiViewSystem.compute_floor_height``.
+    Returns the ``percentile``-th value of the per-frame minima of the up-axis
+    projection ``verts @ up_vec``. For ``up_vec = +Z`` this is exactly the old
+    ``verts[:,:,2].min`` (back-compatible); for a signed axis like ``-Y`` it
+    correctly tracks the floor on the negative side.
     """
     if not motions:
         return 0.0
+    up = np.asarray(up_vec, dtype=np.float64)
     per_frame_mins = []
     for motion in motions:
-        verts = motion.vertices
-        per_frame_mins.append(verts[:, :, up_axis].min(axis=1))
+        proj = np.asarray(motion.vertices, dtype=np.float64) @ up   # (F, V)
+        per_frame_mins.append(proj.min(axis=1))
     return float(np.percentile(np.concatenate(per_frame_mins), percentile))
 
 
@@ -240,8 +244,9 @@ class RerunSceneLogger:
 
     Usage:
         with RerunSceneLogger(rrd_path="scene.rrd", fps=30) as logger:
+            logger.log_world_up("z")
             logger.log_cameras(cameras)
-            logger.log_ground(floor_height=0.0, up_axis=2)
+            logger.log_ground(floor_height=0.0, up_vec=[0, 0, 1])
             logger.log_meshes(motions, faces, colors)
             logger.log_landmark_projections(cameras, landmarks_by_cam, colors)
     """
@@ -355,20 +360,47 @@ class RerunSceneLogger:
 
     # ---- ground ----------------------------------------------------------
 
+    def log_world_up(self, up_axis: str) -> None:
+        """Log world ``ViewCoordinates`` so the viewer orients to the up-axis.
+
+        Without this the web viewer guesses the up direction (scenes from non-Z-up
+        rigs render rotated). ``up_axis`` is a signed axis string (e.g. ``-y``).
+        Best-effort: older rerun-sdk / a missing import just keeps the plain recording.
+        """
+        rr = self._rr
+        try:
+            from capture.calibration import up_axis_to_viewcoords  # ma_vis adds repo root
+            vc = getattr(rr.ViewCoordinates, up_axis_to_viewcoords(up_axis), None)
+        except Exception:  # noqa: BLE001
+            vc = None
+        if vc is None:
+            return
+        try:
+            rr.log("world", vc, static=True)
+        except TypeError:
+            try:
+                rr.log("world", vc, timeless=True)
+            except TypeError:
+                rr.log("world", vc)
+
     def log_ground(
-        self, *, floor_height: float = 0.0, size: float = 10.0, up_axis: int = 2
+        self, *, floor_height: float = 0.0, size: float = 10.0, up_vec
     ) -> None:
         rr = self._rr
-        plane = [a for a in (0, 1, 2) if a != up_axis]
-        a0, a1 = plane
+        up = np.asarray(up_vec, dtype=np.float64)
+        idx = int(np.argmax(np.abs(up)))
+        sign = 1.0 if up[idx] >= 0 else -1.0
+        a0, a1 = [a for a in (0, 1, 2) if a != idx]
+        # The floor plane satisfies p·up = floor_height; for an axis-aligned up
+        # that means p[idx] = floor_height * sign.
+        plane_coord = floor_height * sign
         corners = [(-size, size), (size, size), (-size, -size), (size, -size)]
         coords = np.zeros((4, 3), dtype=np.float64)
         for i, (c0, c1) in enumerate(corners):
             coords[i, a0] = c0
             coords[i, a1] = c1
-            coords[i, up_axis] = floor_height
-        normal = np.zeros(3, dtype=np.float64)
-        normal[up_axis] = 1.0
+            coords[i, idx] = plane_coord
+        normal = up / (np.linalg.norm(up) + 1e-12)
         ground = rr.Mesh3D(
             vertex_positions=coords,
             triangle_indices=np.array([[0, 1, 2], [1, 3, 2]]),

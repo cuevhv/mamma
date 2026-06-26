@@ -287,14 +287,19 @@ def export_person(params_path, model_dir, fps, out_path,
     # Floor grounding (optional) is done in the SOURCE frame first (a pure
     # translation along the up-axis), so both the user npz and the Z-up geometry
     # npz inherit feet-on-floor regardless of the orientation applied next.
-    floor_val = 0.0
+    # Project onto the SIGNED up vector so a negative up-axis (e.g. −Y) grounds
+    # correctly (floor is the low end of p·up, not of the raw coordinate).
     if ground:
         if ref is not None:
-            floor_val = float(np.percentile(ref[..., up_idx], 1))   # lowest verts (soles)
+            floor_proj = float(np.percentile(ref.reshape(-1, 3) @ up_vec, 1))  # soles
         elif ref_joints is not None:
-            floor_val = float(np.percentile(ref_joints[:, _J_FEET, up_idx], 5))
+            floor_proj = float(np.percentile(ref_joints[:, _J_FEET, :].reshape(-1, 3) @ up_vec, 5))
+        else:
+            floor_proj = 0.0
         trans = trans.copy()
-        trans[:, up_idx] -= floor_val
+        # Shift along the up-axis so the feet projection lands at 0. For an
+        # axis-aligned up_vec, the per-axis delta is floor_proj * sign.
+        trans[:, up_idx] -= floor_proj * float(np.sign(up_vec[up_idx]))
 
     # --- orient the npz so it imports UPRIGHT with the chosen add-on Format ---
     # AMASS reproduces the npz frame as-is (needs a Z-up npz); SMPL-X adds a fixed
@@ -316,7 +321,7 @@ def export_person(params_path, model_dir, fps, out_path,
         v_out = _reconstruct_verts(flat_model, poses_u, betas_row, trans_u)
         expected = ref.copy()
         if ground:
-            expected[..., up_idx] -= floor_val
+            expected[..., up_idx] -= floor_proj * float(np.sign(up_vec[up_idx]))
         expected = expected @ R_user.T
         out_mm = float(np.abs(v_out - expected).max() * 1000.0)
         if out_mm > validate_tol_mm:
