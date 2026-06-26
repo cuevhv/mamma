@@ -70,27 +70,16 @@ fi
 # ===================================================================
 
 INTERACTIONS_DATASETS=(
-    harmony4d_train_1_NC_200_00
     harmony4d_train_1_NC_200_00_contact
-    hi4d_1_NC_200_00
     hi4d_1_NC_200_00_contact
-    hi4d_1_NC_200_01
     hi4d_1_NC_200_01_contact
-    inter-x_train_close_1_NC_200_00
     inter-x_train_close_1_NC_200_00_contact
-    inter-x_train_close_1_NC_200_01
     inter-x_train_close_1_NC_200_01_contact
-    inter-x_train_close_1_NC_200_02
     inter-x_train_close_1_NC_200_02_contact
-    interactions_couple_1_C_200_00
     interactions_couple_1_C_200_00_contact
-    interactions_couple_close_1_C_200_00
     interactions_couple_close_1_C_200_00_contact
-    latindance10_1_NC_entire_dataset_00
     latindance10_1_NC_entire_dataset_00_contact
-    latindance10_1_NC_entire_dataset_01
     latindance10_1_NC_entire_dataset_01_contact
-    latindance10_1_NC_entire_dataset_02
     latindance10_1_NC_entire_dataset_02_contact
 )
 
