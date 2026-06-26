@@ -1,10 +1,36 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, Sparkles, Loader2, Maximize2, Minimize2, AlertTriangle } from 'lucide-react';
 import { WebViewer } from '@rerun-io/web-viewer';
+import { toast } from 'sonner';
 import { isChromiumBased } from './shared/browser';
 import { NativeOpenButton } from './NativeOpenButton';
 
 const CHROME_HINT_KEY = 'mamma.rrdChromeVideoHintDismissed';
+
+/** Launch an .rrd in the native Rerun desktop viewer (POST /api/rrd/open).
+ *  Shared so any RerunWebViewer host can wire `onOpenNative` in one line.
+ *  `fresh` resets the recording's saved layout before opening. */
+export async function openRrdNative(path: string, fresh = false): Promise<void> {
+  try {
+    const res = await fetch('/api/rrd/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, reset_layout: fresh }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      toast.success(`Opening ${path.split('/').pop()} in Rerun…`, {
+        description: "If you don't see it, check behind this window — it may already be open.",
+        duration: 6000,
+      });
+    } else {
+      toast.error(data.error || `Failed to launch the native viewer (${res.status})`);
+    }
+  } catch (e) {
+    console.error(e);
+    toast.error('Failed to reach the backend.');
+  }
+}
 
 interface Props {
   /** Absolute on-disk path of the .rrd to open. Streamed via /api/rrd/file.rrd. */

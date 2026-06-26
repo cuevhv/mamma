@@ -15,6 +15,8 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { MultiSelectDropdown } from './MultiSelectDropdown';
+import { CalibrationStatus } from './CalibrationStatus';
+import { UpAxisValue } from './UpAxisToggle';
 import { PresetDigestCard, PresetDigest, PresetOverrides } from './PresetDigest';
 import { stepLabel } from './shared/stepLabels';
 
@@ -167,6 +169,9 @@ export function NewTaskForm({ onSubmitted }: Props) {
   const [createIoiRoot, setCreateIoiRoot] = useState('');
   const [createCalib, setCreateCalib] = useState('');
   const [createOutputName, setCreateOutputName] = useState('');
+  // World up-axis chosen in the form ('auto' = let the backend auto-detect).
+  // Persisted into the new capture.json by /api/captures/generate-json.
+  const [createUpAxis, setCreateUpAxis] = useState<UpAxisValue>('auto');
   // Per-input "what goes here?" disclosures — toggled by a small (?) icon
   // next to each field's label, so the user can read the structure for
   // the field they're hovering rather than wading through a combined hint.
@@ -457,6 +462,7 @@ export function NewTaskForm({ onSubmitted }: Props) {
           ioiRoot: createIoiRoot,
           calib: createCalib,
           outputName: createOutputName || undefined,
+          upAxis: createUpAxis,
           ...(overwrite ? { overwrite: true } : {}),
         }),
       });
@@ -494,7 +500,7 @@ export function NewTaskForm({ onSubmitted }: Props) {
       toast.error('Failed to reach the backend while saving the capture.');
       return null;
     }
-  }, [captureMode, captureJsonPath, createIoiRoot, createCalib, createOutputName]);
+  }, [captureMode, captureJsonPath, createIoiRoot, createCalib, createOutputName, createUpAxis]);
 
   // When the user changes any Create-mode input after a prior Run
   // saved a capture this session, invalidate captureJsonPath so the
@@ -639,6 +645,8 @@ export function NewTaskForm({ onSubmitted }: Props) {
               preflight={preflight}
               preflightInFlight={preflightInFlight}
               createError={createError}
+              upAxis={createUpAxis}
+              onUpAxisChange={setCreateUpAxis}
             />
           ) : (
             <PickCapturePanel
@@ -1089,6 +1097,7 @@ function CreateCapturePanel({
   footageHintOpen, setFootageHintOpen,
   calibHintOpen, setCalibHintOpen,
   preflight, preflightInFlight, createError,
+  upAxis, onUpAxisChange,
 }: {
   ioiRoot: string; setIoiRoot: (v: string) => void;
   calib: string; setCalib: (v: string) => void;
@@ -1100,12 +1109,13 @@ function CreateCapturePanel({
   preflight: PreflightResponse | null;
   preflightInFlight: boolean;
   createError: string | null;
+  upAxis: UpAxisValue;
+  onUpAxisChange: (v: UpAxisValue) => void;
 }) {
   // Only render a badge once at least one preflight response has landed,
   // OR once the user has typed something + the debounce has elapsed.
   // Otherwise empty values flash a red "required" badge on first paint.
   const showFootageBadge = !!ioiRoot;
-  const showCalibBadge = !!calib;
 
   return (
     <div className="space-y-3">
@@ -1158,16 +1168,7 @@ function CreateCapturePanel({
               className="w-full bg-surface-2 border border-border rounded-md pl-9 pr-3 py-2 text-foreground text-sm font-mono focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint"
             />
           </div>
-          {showCalibBadge && (
-            <PreflightBadge
-              inFlight={preflightInFlight}
-              ok={preflight?.calibration.ok ?? false}
-              okLabel={preflight?.calibration.ok
-                ? `${preflight.calibration.cameraCount} camera${preflight.calibration.cameraCount === 1 ? '' : 's'}`
-                : ''}
-              errorLabel={preflight?.calibration.error ?? null}
-            />
-          )}
+          <CalibrationStatus calibPath={calib} upAxis={upAxis} onUpAxisChange={onUpAxisChange} />
         </div>
       </CreateField>
 
@@ -1294,9 +1295,21 @@ function CalibrationHint() {
   return (
     <div className="space-y-2">
       <div className="text-foreground-faint uppercase tracking-[0.14em] text-[10px]">
-        YAML schema (also supports .xcp and .json)
+        Supported: MAMMA YAML · OpenCV FileStorage · EasyMocap dir · Vicon .xcp · OpenCV .json
       </div>
-      <pre className="font-mono text-foreground-subtle leading-relaxed whitespace-pre text-[10.5px]">{`cameras:
+      <p className="text-foreground-faint">
+        Point at any of: a <span className="font-mono">.yml/.yaml</span> in the
+        MAMMA schema (below), an <strong>OpenCV FileStorage</strong> file or a{' '}
+        <strong>folder</strong> of per-camera OpenCV files (K/D/R/T), an{' '}
+        <strong>EasyMocap</strong> folder (<span className="font-mono">intri.yml</span>{' '}
+        + <span className="font-mono">extri.yml</span>), a Vicon{' '}
+        <span className="font-mono">.xcp</span>, or an OpenCV{' '}
+        <span className="font-mono">.json</span>. OpenCV/EasyMocap are read as{' '}
+        <em>world→camera</em>; no hand-conversion needed.
+      </p>
+      <pre className="font-mono text-foreground-subtle leading-relaxed whitespace-pre text-[10.5px]">{`# MAMMA YAML
+extrinsics_convention: cam2world   # or world2cam (declare it!)
+cameras:
   <cam_name>:
     camera_model: pinhole
     distortion_model: radtan
@@ -1304,22 +1317,21 @@ function CalibrationHint() {
     distortion_coeffs: [k1, k2, p1, p2]
     resolution: [W, H]
     translation: [tx, ty, tz]
-    rotation_quaternion: [w, x, y, z]
-  <other_cam_name>:
-    ...`}</pre>
+    rotation_quaternion: [w, x, y, z]`}</pre>
       <p className="text-foreground-faint">
-        One block per camera under <span className="font-mono">cameras:</span>.
-        Camera names must match the camera names detected in the footage
-        root above. <span className="font-mono">intrinsics</span> is{' '}
-        <em>fx fy cx cy</em>; <span className="font-mono">resolution</span> is{' '}
-        <em>width height</em> in pixels; the quaternion is Hamilton
-        convention <em>(w, x, y, z)</em> with unit norm.
+        Camera names must match those detected in the footage root.{' '}
+        <span className="font-mono">extrinsics_convention</span> declares whether{' '}
+        translation/quaternion are the <em>camera pose in the world</em>{' '}
+        (<span className="font-mono">cam2world</span>, default) or the{' '}
+        <em>world→camera</em> transform (<span className="font-mono">world2cam</span>).
+        Wrong convention silently produces bad 3D — use{' '}
+        <strong>Preview camera rig</strong> to confirm cameras ring the subject,
+        looking inward.
       </p>
       <p className="text-foreground-faint">
-        See worked examples under{' '}
+        Worked examples under{' '}
         <span className="font-mono">configs/examples/calib/</span>{' '}
-        (e.g. <span className="font-mono">iphones_outdoors.yaml</span> for a
-        4-camera rig).
+        (e.g. <span className="font-mono">iphones_outdoors.yaml</span>).
       </p>
     </div>
   );

@@ -875,11 +875,22 @@ def generate_capture_json():
     # anything. Clients should preflight first via
     # /api/captures/preflight, but a stale or hand-crafted POST mustn't
     # land a capture.json that points at a malformed YAML.
-    from capture.calibration import load_calibration, CalibrationError  # noqa: PLC0415
+    from capture.calibration import (  # noqa: PLC0415
+        load_calibration, detect_up_axis, normalize_up_axis, CalibrationError,
+    )
     try:
-        load_calibration(calib_input)
+        _calib = load_calibration(calib_input)
     except (FileNotFoundError, CalibrationError) as exc:
         return jsonify({"error": f"Invalid calibration: {exc}"}), 400
+    # Up-axis: honor an explicit choice from the form, else auto-detect. Either
+    # way it's stamped into capture.json so the pipeline + viewers all use it.
+    _raw_up = str(data.get("upAxis") or "auto").strip().lower()
+    try:
+        up_axis_value = (normalize_up_axis(_raw_up)
+                         if _raw_up and _raw_up != "auto"
+                         else detect_up_axis(_calib)[0])
+    except CalibrationError:
+        up_axis_value = detect_up_axis(_calib)[0]
 
     if not output_name:
         output_name = os.path.basename(ioi_root_input.rstrip("/"))
@@ -923,6 +934,7 @@ def generate_capture_json():
         "calib": calib_input,
         "use_deviceid": False,
         "cam_fps": 30,
+        "up_axis": up_axis_value,
         "vicon_frame_shift": 0,
         "cams": cams,
         "sequences": sequences,
@@ -1117,6 +1129,101 @@ def preflight_capture_json():
         if calib else _preflight_calibration_empty(None)
     )
     return jsonify({"footage": footage, "calibration": calibration})
+
+
+def _resolve_calib_arg(data: dict) -> tuple[str | None, str | None]:
+    """Resolve a calibration path from a request body. Accepts ``calibPath``
+    (+ optional ``baseDir``) or ``captureJsonPath`` (reads its ``calib`` field).
+    Relative paths are anchored to ``baseDir`` / the capture.json's dir, mirroring
+    the pipeline. Returns ``(resolved_abs_path, error_message)`` — one is None."""
+    calib = (data.get("calibPath") or "").strip().replace("\\", "/")
+    base_dir = (data.get("baseDir") or "").strip().replace("\\", "/")
+    capture_json = (data.get("captureJsonPath") or "").strip()
+    if capture_json and not calib:
+        if not os.path.isfile(capture_json):
+            return None, f"capture json not found: {capture_json}"
+        try:
+            content = load_config_file(capture_json) or {}
+        except (OSError, ValueError) as e:
+            return None, f"could not read capture json: {e}"
+        calib = str(content.get("calib") or "").strip()
+        if not calib:
+            return None, "capture json has no 'calib' field"
+        base_dir = os.path.dirname(os.path.abspath(capture_json))
+    if not calib:
+        return None, "calibPath or captureJsonPath is required"
+    resolved = calib
+    if not os.path.isabs(calib):
+        resolved = os.path.normpath(os.path.join(base_dir, calib)) if base_dir \
+            else os.path.abspath(calib)
+    if not os.path.exists(resolved):
+        # Echo what the user actually entered. Only show the resolved absolute
+        # path when it was anchored to a meaningful base (the capture.json dir);
+        # otherwise a relative input would surface the backend's CWD, which is
+        # irrelevant and confusing.
+        shown = resolved if (base_dir and not os.path.isabs(calib)) else calib
+        return None, f"calibration path not found: {shown}"
+    return resolved, None
+
+
+@app.route("/api/calib/inspect", methods=["POST"])
+def calib_inspect_route():
+    """Lightweight calibration validation for the live status line under the
+    calib input. Always returns 200 with ``{ok, ...}`` so the frontend treats a
+    bad file as a field error, not a network failure."""
+    resolved, err = _resolve_calib_arg(request.json or {})
+    if err:
+        return jsonify({"ok": False, "error": err})
+    try:
+        from capture.calibration import load_calibration, detect_up_axis
+        cal = load_calibration(resolved)
+        up_axis, up_conf = detect_up_axis(cal)
+        return jsonify({
+            "ok": True,
+            "cameraCount": len(cal.cameras),
+            "cameraNames": sorted(cal.cameras),
+            "distortionModels": sorted({c.distortion_model for c in cal.cameras.values()}),
+            "sourceFormat": cal.source_format,
+            "upAxis": up_axis,                       # auto-detected world up-axis
+            "upAxisConfidence": round(up_conf, 3),
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+
+@app.route("/api/calib/preview", methods=["POST"])
+def calib_preview_route():
+    """Build a small camera-rig .rrd from a calibration so the user can eyeball
+    their multi-view setup and confirm the world2cam/cam2world convention (a
+    correct rig has cameras around the scene, looking inward). Returns the .rrd
+    path, which the GUI opens in its existing Rerun viewer."""
+    data = request.json or {}
+    resolved, err = _resolve_calib_arg(data)
+    if err:
+        return jsonify({"error": err}), 400
+    try:
+        from capture.calibration import (
+            load_calibration, detect_up_axis, normalize_up_axis,
+        )
+        import calib_preview  # gui/backend/calib_preview.py
+        # Resolve the up-axis: explicit signed value, else auto-detect.
+        raw = str(data.get("upAxis") or "auto").strip().lower()
+        if raw and raw != "auto":
+            axis = normalize_up_axis(raw)
+        else:
+            axis = detect_up_axis(load_calibration(resolved))[0]
+        out_dir = os.path.join(MOUNT_POINT, "calib_previews")
+        os.makedirs(out_dir, exist_ok=True)
+        stem = os.path.basename(resolved.rstrip("/")) or "calib"
+        safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in stem)
+        # Axis in the filename → each up-axis is a distinct file, so the viewer
+        # reloads when the user switches axes. "-y" → "neg_y" to keep it tidy.
+        tag = axis.replace("-", "neg_")
+        out_path = os.path.join(out_dir, f"{safe}__{tag}up.rrd")
+        n = calib_preview.write_calib_rrd(resolved, out_path, up_axis=axis)
+        return jsonify({"rrdPath": out_path, "cameraCount": n, "upAxis": axis})
+    except Exception as e:
+        return jsonify({"error": f"Could not build camera-rig preview: {e}"}), 400
 
 
 def _safe_capture_json_path(rel_or_abs_path: str) -> str | None:

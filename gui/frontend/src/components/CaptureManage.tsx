@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, RotateCcw, Save, Trash2, AlertTriangle, Plus, X, FolderOpen, ExternalLink, Camera } from 'lucide-react';
 import { toast } from 'sonner';
+import { CalibrationStatus } from './CalibrationStatus';
+import { UpAxisValue } from './UpAxisToggle';
 
 /**
  * The capture.json structure as it lives on disk. We treat unknown keys
@@ -20,6 +22,7 @@ interface CaptureJsonContent {
   calib?: string;
   use_deviceid?: boolean;
   cam_fps?: number;
+  up_axis?: string;            // world up-axis: x|y|z|-x|-y|-z, or "auto"
   vicon_frame_shift?: number;
   cams?: string[];
   // Two shapes coexist in the wild: legacy user-imported captures use
@@ -370,6 +373,12 @@ export function CaptureManage({ captureName, jsonPath, onBack, onDeleted, onView
             mono
             onChange={v => setField('calib', v)}
             icon={<FolderOpen className="w-3.5 h-3.5" />}
+          />
+          <CalibrationStatus
+            calibPath={draft.calib ?? ''}
+            baseDir={meta?.absolutePath ? meta.absolutePath.replace(/\/[^/]*$/, '') : undefined}
+            upAxis={(draft.up_axis as UpAxisValue) ?? 'auto'}
+            onUpAxisChange={(v) => setField('up_axis', v)}
           />
         </Section>
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
-import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, Film, Maximize2 } from 'lucide-react';
+import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, Film, Maximize2, Video } from 'lucide-react';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
 import { useTaskPolling } from './shared/useTaskPolling';
@@ -7,6 +7,7 @@ import { FileViewerModal } from './shared/FileViewerModal';
 import { Skeleton } from './shared/Skeleton';
 import { Thumbnail } from './shared/Thumbnail';
 import { RerunWebViewer } from './RerunWebViewer';
+import { UpAxisValue, UpAxisSelect, upAxisLabel } from './UpAxisToggle';
 import { HtmlViewer } from './HtmlViewer';
 import { NpzViewer } from './NpzViewer';
 import { StepOutputs } from './StepOutputs';
@@ -227,6 +228,8 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
   const [taskConfigViewer, setTaskConfigViewer] = useState<{ name: string; path: string } | null>(null);
   /** When set, the embedded Rerun web viewer is open for this .rrd. */
   const [rrdWebViewer, setRrdWebViewer] = useState<{ path: string; name: string } | null>(null);
+  const [calibPreviewBusy, setCalibPreviewBusy] = useState(false);
+  const [calibUpAxis, setCalibUpAxis] = useState<UpAxisValue>('auto');
   /** When set, the embedded HTML viewer is open for this .html / .htm. */
   const [htmlViewer, setHtmlViewer] = useState<{ path: string; name: string } | null>(null);
   /** When set, the .npz inspector is open for this archive. */
@@ -254,6 +257,33 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playingImageRelPath, imageSiblings]);
+
+  /** Build + open a camera-rig .rrd from this capture's calibration so the user
+   *  can sanity-check the rig/convention. Resolves the calib via the capture
+   *  json on the backend (handles relative '../calib/...' paths). */
+  const previewCalibRig = async (axis: UpAxisValue = calibUpAxis) => {
+    if (!captureData?.captureJsonPath || calibPreviewBusy) return;
+    setCalibPreviewBusy(true);
+    try {
+      const res = await fetch('/api/calib/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ captureJsonPath: captureData.captureJsonPath, upAxis: axis }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || `Could not build camera-rig preview (${res.status})`);
+        return;
+      }
+      const name = data.upAxis ? `camera rig · ${upAxisLabel(data.upAxis)} up` : 'camera rig';
+      setRrdWebViewer({ path: data.rrdPath, name });
+    } catch (e) {
+      console.error(e);
+      toast.error('Failed to reach the backend for the camera-rig preview.');
+    } finally {
+      setCalibPreviewBusy(false);
+    }
+  };
 
   const openTaskConfig = async (taskId: string) => {
     try {
@@ -630,13 +660,32 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       )}
                     </div>
                     {captureData.captureJsonPath && (
-                      <button
-                        onClick={() => setTaskConfigViewer({ name: 'capture.json', path: captureData.captureJsonPath! })}
-                        title="View capture config (capture.json)"
-                        className="shrink-0 inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap"
-                      >
-                        <FileJson className="w-3.5 h-3.5" /> Capture config
-                      </button>
+                      <div className="shrink-0 flex flex-col items-stretch gap-1">
+                        <button
+                          onClick={() => setTaskConfigViewer({ name: 'capture.json', path: captureData.captureJsonPath! })}
+                          title="View capture config (capture.json)"
+                          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap"
+                        >
+                          <FileJson className="w-3.5 h-3.5" /> Capture config
+                        </button>
+                        <button
+                          onClick={() => previewCalibRig()}
+                          disabled={calibPreviewBusy}
+                          title="Preview the camera rig in 3D to check the calibration"
+                          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <Video className="w-3.5 h-3.5" /> {calibPreviewBusy ? 'Building…' : 'Camera rig'}
+                        </button>
+                        <UpAxisSelect
+                          value={calibUpAxis}
+                          // Re-render an open rig preview with the new up-axis.
+                          onChange={(a) => {
+                            setCalibUpAxis(a);
+                            if (rrdWebViewer?.name.startsWith('camera rig')) previewCalibRig(a);
+                          }}
+                          className="self-center"
+                        />
+                      </div>
                     )}
                   </div>
                   {captureData.dataPath && (
@@ -913,6 +962,7 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
 
         {rrdWebViewer && (
           <RerunWebViewer
+            key={rrdWebViewer.path}
             rrdPath={rrdWebViewer.path}
             fileName={rrdWebViewer.name}
             onClose={() => setRrdWebViewer(null)}

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Info, FolderOpen, FileJson } from 'lucide-react';
 import { toast } from 'sonner';
+import { CalibrationStatus } from './CalibrationStatus';
+import { UpAxisValue } from './UpAxisToggle';
 
 interface Props {
   /** Called with the new capture-json's relative path on success. */
@@ -21,6 +23,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
   const [ioiRoot, setIoiRoot] = useState('');
   const [calib, setCalib] = useState('');
   const [outputName, setOutputName] = useState('');
+  const [upAxis, setUpAxis] = useState<UpAxisValue>('auto');   // saved into capture.json
   const [submitting, setSubmitting] = useState(false);
 
   const handleCreate = async () => {
@@ -33,7 +36,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
       const res = await fetch('/api/captures/generate-json', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ioiRoot, calib, outputName }),
+        body: JSON.stringify({ ioiRoot, calib, outputName, upAxis }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -43,6 +46,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
         setIoiRoot('');
         setCalib('');
         setOutputName('');
+        setUpAxis('auto');
       } else {
         toast.error(`Failed: ${data.error || 'Unknown error'}`);
       }
@@ -92,10 +96,14 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
         label="Calibration"
         value={calib}
         onChange={setCalib}
-        placeholder="/path/to/calib.yaml"
+        placeholder="/path/to/calib.yaml  (or an OpenCV / EasyMocap folder)"
         icon={<FileJson className="w-3.5 h-3.5" />}
         required
       />
+      <div className="flex items-start gap-3">
+        <span className="w-32 flex-shrink-0" aria-hidden />
+        <CalibrationStatus calibPath={calib} upAxis={upAxis} onUpAxisChange={setUpAxis} />
+      </div>
       <Field
         label="Capture name"
         value={outputName}
