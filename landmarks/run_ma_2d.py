@@ -107,7 +107,8 @@ def _gpu_make_batch(frame_t, mask, boxes, cfg, device, mean_t, std_t):
 
 
 def process_data(frame_source, detector, device, model, cfg, out_folder, save_cam_output, masks_path=None,
-                 downsampled_verts_pth='assets/verts_512.pkl'):
+                 downsampled_verts_pth='assets/verts_512.pkl',
+                 contacts_gt=None, floor_contacts_gt=None):
     """Run dense 2D landmarks for a single camera, given a :class:`FrameSource`.
 
     The source may wrap an NPZ image-path list (chained mode), an MP4
@@ -344,9 +345,12 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
     contacts = np.stack(all_contact, axis=1)
     floor_contacts = np.stack(all_floor_contact, axis=1)
 
+    # GT contacts are written only when provided (evaluation runs); omitted during
+    # normal inference instead of being stored as empty pickled None placeholders.
+    gt = {k: v for k, v in {"contacts_gt": contacts_gt,
+                            "floor_contacts_gt": floor_contacts_gt}.items() if v is not None}
     np.savez(f"{out_folder}/{camera_id}.npz", landmarks=landmarks,
-             visibilities=visibilities, contacts=contacts, floor_contacts=floor_contacts,
-             contacts_gt=None, floor_contacts_gt=None)
+             visibilities=visibilities, contacts=contacts, floor_contacts=floor_contacts, **gt)
 
 
 def parser():
