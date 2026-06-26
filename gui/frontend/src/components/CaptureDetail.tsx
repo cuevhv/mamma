@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
-import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, Film, Maximize2, Video } from 'lucide-react';
+import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video } from 'lucide-react';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
 import { useTaskPolling } from './shared/useTaskPolling';
@@ -7,7 +7,7 @@ import { FileViewerModal } from './shared/FileViewerModal';
 import { Skeleton } from './shared/Skeleton';
 import { Thumbnail } from './shared/Thumbnail';
 import { RerunWebViewer } from './RerunWebViewer';
-import { UpAxisValue, UpAxisSelect, upAxisLabel } from './UpAxisToggle';
+import { UpAxisValue, upAxisLabel } from './UpAxisToggle';
 import { HtmlViewer } from './HtmlViewer';
 import { NpzViewer } from './NpzViewer';
 import { StepOutputs } from './StepOutputs';
@@ -668,23 +668,41 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                         >
                           <FileJson className="w-3.5 h-3.5" /> Capture config
                         </button>
-                        <button
-                          onClick={() => previewCalibRig()}
-                          disabled={calibPreviewBusy}
-                          title="Preview the camera rig in 3D to check the calibration"
-                          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          <Video className="w-3.5 h-3.5" /> {calibPreviewBusy ? 'Building…' : 'Camera rig'}
-                        </button>
-                        <UpAxisSelect
-                          value={calibUpAxis}
-                          // Re-render an open rig preview with the new up-axis.
-                          onChange={(a) => {
-                            setCalibUpAxis(a);
-                            if (rrdWebViewer?.name.startsWith('camera rig')) previewCalibRig(a);
-                          }}
-                          className="self-center"
-                        />
+                        {/* Camera rig + up-axis as ONE joined control, so it reads as
+                            a unit: the dropdown sets the axis the button previews with. */}
+                        <div className="flex items-stretch rounded-md border border-border overflow-hidden">
+                          <button
+                            onClick={() => previewCalibRig()}
+                            disabled={calibPreviewBusy}
+                            title="Open the camera rig in 3D, oriented by the up-axis on the right"
+                            className="flex-1 inline-flex items-center gap-1.5 px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <Video className="w-3.5 h-3.5" /> {calibPreviewBusy ? 'Building…' : 'Camera rig'}
+                          </button>
+                          <div className="relative inline-flex items-stretch border-l border-border">
+                            <select
+                              value={calibUpAxis}
+                              // Re-render an open rig preview with the new up-axis.
+                              onChange={(e) => {
+                                const a = e.target.value as UpAxisValue;
+                                setCalibUpAxis(a);
+                                if (rrdWebViewer?.name.startsWith('camera rig')) previewCalibRig(a);
+                              }}
+                              title="World up-axis used to orient the camera-rig preview"
+                              aria-label="Up-axis for the camera-rig preview"
+                              className="appearance-none bg-surface-2 hover:bg-surface-3 text-foreground-muted text-xs pl-1.5 pr-5 focus:outline-none cursor-pointer transition-colors"
+                            >
+                              <option value="auto">up: auto</option>
+                              <option value="x">up: +X</option>
+                              <option value="-x">up: −X</option>
+                              <option value="y">up: +Y</option>
+                              <option value="-y">up: −Y</option>
+                              <option value="z">up: +Z</option>
+                              <option value="-z">up: −Z</option>
+                            </select>
+                            <ChevronDown className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 w-3 h-3 text-foreground-faint" />
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
