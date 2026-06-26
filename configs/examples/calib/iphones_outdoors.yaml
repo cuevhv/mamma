@@ -1,3 +1,7 @@
+# extrinsics_convention declares how the extrinsics are stored. 'cam2world'
+# (default): translation/rotation_quaternion give each camera's pose in the
+# world. Use 'world2cam' if they describe the world->camera transform instead.
+extrinsics_convention: cam2world
 cameras:
   A001:
     camera_model: pinhole

@@ -2,6 +2,11 @@
 
 Schema (single rig per file, this iteration)::
 
+    # Optional, recommended — declare your extrinsics convention explicitly:
+    extrinsics_convention: cam2world   # default; translation/quaternion = camera
+                                       # pose in world. Use 'world2cam' if they
+                                       # describe the world->cam transform instead.
+    quaternion_order: wxyz             # default Hamilton; use 'xyzw' if needed.
     cameras:
       cam0:
         camera_model: pinhole
@@ -71,6 +76,20 @@ def load(path: Path) -> Dict[str, Camera]:
             f"{path}: 'cameras' must be a non-empty mapping"
         )
 
+    # Optional, explicit extrinsics convention (default keeps the historical
+    # behavior). Declaring this removes the #1 source of calibration confusion.
+    convention = str(data.get("extrinsics_convention", "cam2world")).lower()
+    if convention not in ("cam2world", "world2cam"):
+        raise CalibrationError(
+            f"{path}: extrinsics_convention must be 'cam2world' or 'world2cam', "
+            f"got {convention!r}"
+        )
+    quat_order = str(data.get("quaternion_order", "wxyz")).lower()
+    if quat_order not in ("wxyz", "xyzw"):
+        raise CalibrationError(
+            f"{path}: quaternion_order must be 'wxyz' or 'xyzw', got {quat_order!r}"
+        )
+
     errors: List[str] = []
     cameras: Dict[str, Camera] = {}
     for cam_name, cam in cameras_raw.items():
@@ -78,7 +97,8 @@ def load(path: Path) -> Dict[str, Camera]:
             errors.append(f"cameras.{cam_name}: must be a mapping")
             continue
         cam_errors: List[str] = []
-        camera = _parse_camera(str(cam_name), cam, cam_errors)
+        camera = _parse_camera(str(cam_name), cam, cam_errors,
+                               convention=convention, quat_order=quat_order)
         if cam_errors:
             errors.extend(cam_errors)
         elif camera is not None:
@@ -94,7 +114,8 @@ def load(path: Path) -> Dict[str, Camera]:
 
 
 def _parse_camera(
-    cam_name: str, cam: Dict[str, Any], errors: List[str]
+    cam_name: str, cam: Dict[str, Any], errors: List[str],
+    *, convention: str = "cam2world", quat_order: str = "wxyz",
 ) -> Camera | None:
     missing = [k for k in _REQUIRED_CAM_FIELDS if k not in cam]
     if missing:
@@ -171,16 +192,26 @@ def _parse_camera(
         dtype=np.float64,
     )
 
-    R_wc = hamilton_quat_to_rotmat(quat)            # type: ignore[arg-type]
-    t_wc = np.asarray(trans, dtype=np.float64)
+    q = list(quat)                                  # type: ignore[arg-type]
+    if quat_order == "xyzw":
+        q = [q[3], q[0], q[1], q[2]]                # -> Hamilton [w,x,y,z]
+    R = hamilton_quat_to_rotmat(q)
+    t = np.asarray(trans, dtype=np.float64)
 
     T_world_cam = np.eye(4, dtype=np.float64)
-    T_world_cam[:3, :3] = R_wc
-    T_world_cam[:3, 3] = t_wc
-
     T_cam_world = np.eye(4, dtype=np.float64)
-    T_cam_world[:3, :3] = R_wc.T
-    T_cam_world[:3, 3] = -R_wc.T @ t_wc
+    if convention == "world2cam":
+        # translation/quaternion describe world->cam (R·X_world + t = X_cam).
+        T_cam_world[:3, :3] = R
+        T_cam_world[:3, 3] = t
+        T_world_cam[:3, :3] = R.T
+        T_world_cam[:3, 3] = -R.T @ t
+    else:
+        # cam2world (default): they describe the camera's pose in the world.
+        T_world_cam[:3, :3] = R
+        T_world_cam[:3, 3] = t
+        T_cam_world[:3, :3] = R.T
+        T_cam_world[:3, 3] = -R.T @ t
 
     extra_keys = set(cam.keys()) - set(_REQUIRED_CAM_FIELDS) - {"cam_name"}
     if extra_keys:
