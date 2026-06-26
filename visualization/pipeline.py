@@ -163,7 +163,20 @@ def run_visualization(
         logger.log_world_up(up_axis)        # orient the viewer (the scene.rrd fix)
         logger.log_cameras(cameras)
         floor = compute_floor_height(motions, up_vec=up_vec)
-        logger.log_ground(floor_height=floor, up_vec=up_vec)
+        # Size + centre the ground under the subjects (not a fixed 20 m floor at
+        # the origin) so the viewer's auto-fit frames the people. Same idea as the
+        # contact .rrd; falls back to a large floor when there are no meshes.
+        g_size, g_center = 10.0, (0.0, 0.0)
+        if motions:
+            plane = [a for a in (0, 1, 2) if a != int(np.argmax(np.abs(up_vec)))]
+            allv = np.concatenate(
+                [np.asarray(m.vertices, dtype=np.float64).reshape(-1, 3) for m in motions], axis=0)
+            lo, hi = allv.min(0), allv.max(0)
+            ext = float(max(hi[plane[0]] - lo[plane[0]], hi[plane[1]] - lo[plane[1]]))
+            g_size = 0.5 * ext + max(0.75, 0.3 * ext)      # subjects span + margin
+            g_center = (float((lo[plane[0]] + hi[plane[0]]) * 0.5),
+                        float((lo[plane[1]] + hi[plane[1]]) * 0.5))
+        logger.log_ground(floor_height=floor, up_vec=up_vec, size=g_size, center=g_center)
         log.info("logged rig + ground (floor=%.4f, up=%s) in %.2fs",
                  floor, up_axis, time.perf_counter() - t)
 

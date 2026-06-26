@@ -384,21 +384,23 @@ class RerunSceneLogger:
                 rr.log("world", vc)
 
     def log_ground(
-        self, *, floor_height: float = 0.0, size: float = 10.0, up_vec
+        self, *, floor_height: float = 0.0, size: float = 10.0, up_vec,
+        center=(0.0, 0.0),
     ) -> None:
         rr = self._rr
         up = np.asarray(up_vec, dtype=np.float64)
         idx = int(np.argmax(np.abs(up)))
         sign = 1.0 if up[idx] >= 0 else -1.0
         a0, a1 = [a for a in (0, 1, 2) if a != idx]
-        # The floor plane satisfies p·up = floor_height; for an axis-aligned up
-        # that means p[idx] = floor_height * sign.
+        # ``center`` offsets the quad on the two non-up (plane) axes so it sits
+        # under the subjects; ``size`` is the half-extent. Sizing/centering to the
+        # people keeps the viewer's auto-fit framed on them, not a big origin floor.
         plane_coord = floor_height * sign
         corners = [(-size, size), (size, size), (-size, -size), (size, -size)]
         coords = np.zeros((4, 3), dtype=np.float64)
         for i, (c0, c1) in enumerate(corners):
-            coords[i, a0] = c0
-            coords[i, a1] = c1
+            coords[i, a0] = center[0] + c0
+            coords[i, a1] = center[1] + c1
             coords[i, idx] = plane_coord
         normal = up / (np.linalg.norm(up) + 1e-12)
         ground = rr.Mesh3D(
