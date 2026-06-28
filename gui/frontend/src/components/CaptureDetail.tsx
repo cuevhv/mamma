@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type ReactNode } from 'react';
+import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
@@ -354,9 +354,11 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
   // Full history for this capture; refreshed on focus / explicit reload elsewhere.
   const { data: historyData, refresh: refreshHistory } = useTaskPolling<HistoryTask[]>('/api/tasks/history', { intervalMs: 0 });
 
-  useEffect(() => {
-    setLoading(true);
-    fetch(`/api/captures/${captureName}`)
+  // Fetch capture details. `showSkeleton` is for the initial load (full-page
+  // skeleton); the Refresh button calls it quietly so the page doesn't flash.
+  const loadCapture = useCallback((showSkeleton = false) => {
+    if (showSkeleton) setLoading(true);
+    return fetch(`/api/captures/${captureName}`)
       .then(res => {
         if (!res.ok) throw new Error('Failed to fetch capture details');
         return res.json();
@@ -372,8 +374,21 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
         }
       })
       .catch(err => console.error(err))
-      .finally(() => setLoading(false));
+      .finally(() => { if (showSkeleton) setLoading(false); });
   }, [captureName]);
+
+  useEffect(() => { loadCapture(true); }, [loadCapture]);
+
+  // Bumped by the Refresh button: re-mounts the Outputs explorer's StepOutputs
+  // (its key includes refreshKey) so they re-list files, and re-fetches the
+  // capture data + run history — without a full browser reload.
+  const [refreshKey, setRefreshKey] = useState(0);
+  const handleRefresh = useCallback(() => {
+    refreshHistory();
+    loadCapture(false);
+    setRefreshKey(k => k + 1);
+    toast.success('Page reloaded — showing latest outputs');
+  }, [refreshHistory, loadCapture]);
 
   const selectedTask = useMemo(
     () => captureData?.tasks.find(t => t.id === selectedTaskId) ?? null,
@@ -662,11 +677,11 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                     {captureData.captureJsonPath && (
                       <div className="shrink-0 flex flex-col items-stretch gap-1">
                         <button
-                          onClick={() => window.location.reload()}
-                          title="Reload this page"
+                          onClick={handleRefresh}
+                          title="Reloads the page content to show the latest outputs."
                           className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap"
                         >
-                          <RotateCw className="w-3.5 h-3.5" /> Reload Page
+                          <RotateCw className="w-3.5 h-3.5" /> Reload page
                         </button>
                         <button
                           onClick={() => setTaskConfigViewer({ name: 'capture.json', path: captureData.captureJsonPath! })}
@@ -841,8 +856,9 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       // Re-mount when the underlying selection changes so each
                       // step starts collapsed/refreshed cleanly. Without the
                       // key, the <StepOutputs> would keep its old relPath
-                      // pointing at the previous task/sequence.
-                      key={`${selectedTaskId}::${selectedSequence}::${step}`}
+                      // pointing at the previous task/sequence. `refreshKey`
+                      // also forces a re-list when the Refresh button is hit.
+                      key={`${selectedTaskId}::${selectedSequence}::${step}::${refreshKey}`}
                       step={step}
                       baseRelPath={baseRelPathFor(step)}
                       defaultOpen={initial?.process ? step === initial.process : true}
