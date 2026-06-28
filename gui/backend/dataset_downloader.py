@@ -503,7 +503,7 @@ FAMILIES: dict[str, _Family] = {
     "syn": _Family(
         id="syn",
         label="Synthetic training (WebDataset)",
-        description="Synthetic SMPL-X renders for landmark training. ~29 datasets.",
+        description="Synthetic SMPL-X renders for landmark training.",
         script="download_mamma_syn_wd.sh",
         content_groups=_SYN_GROUPS,
         asset_types=(),                # only one asset kind (the WD shards)
