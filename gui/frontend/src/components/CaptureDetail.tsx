@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, type ReactNode } from 'react';
-import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video } from 'lucide-react';
+import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
 import { useTaskPolling } from './shared/useTaskPolling';
@@ -662,11 +662,18 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                     {captureData.captureJsonPath && (
                       <div className="shrink-0 flex flex-col items-stretch gap-1">
                         <button
+                          onClick={() => window.location.reload()}
+                          title="Reload this page"
+                          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap"
+                        >
+                          <RotateCw className="w-3.5 h-3.5" /> Reload Page
+                        </button>
+                        <button
                           onClick={() => setTaskConfigViewer({ name: 'capture.json', path: captureData.captureJsonPath! })}
                           title="View capture config (capture.json)"
                           className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap"
                         >
-                          <FileJson className="w-3.5 h-3.5" /> Capture config
+                          <FileJson className="w-3.5 h-3.5" /> View Capture config
                         </button>
                         {/* Camera rig + up-axis as ONE joined control, so it reads as
                             a unit: the dropdown sets the axis the button previews with. */}
