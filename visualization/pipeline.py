@@ -211,10 +211,14 @@ def run_visualization(
     preview_path = out_path / seq_name / "preview.mp4"
     overlay_paths: List[Path] = []
 
+    # Expand the 'all' sentinel to real camera names ONCE so the overlay
+    # render and the preview collage agree on the same ordered name list.
+    overlay_request = _resolve_overlay_request(cam_names_overlay, cameras.cameras)
+
     if skip_overlay:
         log.info("--skip-overlay: not rendering overlay videos")
     else:
-        overlay_cams = _select_overlay_cameras(cameras.cameras, cam_names_overlay)
+        overlay_cams = _select_overlay_cameras(cameras.cameras, overlay_request)
         if not overlay_cams:
             log.info("no renderable cameras for overlay; skipping")
         else:
@@ -248,7 +252,7 @@ def run_visualization(
         t = time.perf_counter()
         ok = make_preview_collage(
             overlay_paths, preview_path,
-            cam_names=cam_names_overlay, max_videos=max_preview_cams,
+            cam_names=overlay_request, max_videos=max_preview_cams,
         )
         log.info(
             "preview collage %s in %.2fs",
@@ -259,6 +263,33 @@ def run_visualization(
 
     log.info("visualization pipeline finished in %.2fs", time.perf_counter() - t_total)
     return rrd_path
+
+
+# Sentinel tokens that mean "render an overlay for every available camera".
+_OVERLAY_ALL = {"all", "*"}
+
+
+def _resolve_overlay_request(
+    requested: Optional[Sequence[str]], cameras: Sequence[Camera]
+) -> Optional[List[str]]:
+    """Expand the ``all`` sentinel to explicit camera names.
+
+    Returns ``None`` to mean "use the default subset" (first 4, handled by
+    :func:`_select_overlay_cameras`). A lone ``all`` or ``*`` token
+    (case-insensitive) expands to every camera name, sorted -- unless a camera
+    is literally named that, in which case it is treated as an ordinary name.
+    Any other value is passed through unchanged.
+    """
+    if not requested:
+        return None
+    names = {c.name for c in cameras}
+    if (
+        len(requested) == 1
+        and requested[0].strip().lower() in _OVERLAY_ALL
+        and requested[0] not in names
+    ):
+        return [c.name for c in sorted(cameras, key=lambda c: c.name)]
+    return list(requested)
 
 
 def _select_overlay_cameras(

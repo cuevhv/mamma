@@ -81,7 +81,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Subset of cameras whose 2D landmarks to log into the .rrd.")
     p.add_argument("--cam-names-overlay", "--cam_names_overlay",
                    nargs="+", default=None,
-                   help="Subset of cameras to render as overlay mp4s + preview.")
+                   help="Cameras to render as overlay mp4s + preview. Pass 'all' "
+                        "(or '*') to render every camera; default is the first 4.")
 
     p.add_argument("--up-axis", "--up_axis", default="z",
                    choices=["x", "y", "z", "-x", "-y", "-z"],
@@ -166,7 +167,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--max-preview-cams", "--max_preview_cams",
                    type=int, default=4,
-                   help="Max number of tiles in the preview collage.")
+                   help="Max number of tiles in the preview collage. "
+                        "0 = include every rendered overlay (full contact sheet).")
     p.add_argument("--faces", default=None,
                    help="Override path to SMPL-X face connectivity (.npy). "
                         "Default uses the vendored asset.")

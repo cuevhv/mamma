@@ -50,6 +50,19 @@ class MaVisBuilder(StepBuilder):
             ]
             argv += calibration_flag
         argv += self._undistort_flag()
+        # Overlay camera selection (applies in both chained and standalone modes).
+        # Accept "all" (-> render every view) or an explicit list; the CLI expands
+        # the 'all' sentinel against the cameras it loads. Placed before
+        # ``self.flags`` so an explicit flags entry still wins (argparse keeps the
+        # last occurrence of a nargs="+" option).
+        overlay = self.step_cfg.get("cam_names_overlay")
+        if overlay:
+            if isinstance(overlay, str):
+                overlay = [overlay]
+            argv += ["--cam-names-overlay", *[str(c) for c in overlay]]
+        mpc = self.step_cfg.get("max_preview_cams")
+        if mpc is not None:
+            argv += ["--max-preview-cams", str(int(mpc))]
         up_axis = self.global_cfg.get("up_axis")
         if up_axis and str(up_axis) != "auto":
             # '=' form: a signed value like '-y' would otherwise be parsed as a flag.
