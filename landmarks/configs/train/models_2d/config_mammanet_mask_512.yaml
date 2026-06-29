@@ -6,7 +6,7 @@ defaults:
 
 use_mask_encoder: true
 model_checkpoint: null
-dataset_path: data/mamma
+dataset_path: data/mammasyn
 
 
 debug_mode: false

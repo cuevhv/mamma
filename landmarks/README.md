@@ -32,7 +32,7 @@ override:
 python landmarks/train.py dataset_path=/your/path/to/BEDLAM_LAB_WD
 ```
 
-(default: `data/mamma`; the BEDLAM masks webdataset is expected at
+(default: `data/mammasyn`; the BEDLAM masks webdataset is expected at
 `${dataset_path}/BEDLAM_MASKS_WD/`).
 
 
@@ -148,7 +148,7 @@ precision, no per-step checkpointing) tuned for HRNet's memory characteristics.
    ViTPose backbone. See [Body models and weights](#body-models-and-weights) for
    the full layout.
 2. **Training data**: point `dataset_path` (Hydra CLI override; default
-   `data/mamma`) at your MAMMA webdataset root. The BEDLAM masks webdataset
+   `data/mammasyn`) at your MAMMA webdataset root. The BEDLAM masks webdataset
    must sit at `${dataset_path}/BEDLAM_MASKS_WD/`.
 3. **HRNet backbone (only if training HRNet)**: place
    `pose_hrnet_w48_256x192.pth` at `data/weights/hrnet/pose_hrnet_w48_256x192.pth`.

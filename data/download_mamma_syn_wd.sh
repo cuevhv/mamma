@@ -3,6 +3,9 @@
 # Download MAMMA synthetic training webdatasets from the MPI server.
 # Requires registration at https://mamma.is.tue.mpg.de/
 #
+# ALTERNATIVE source. The default (faster) way is Hugging Face — see
+# download_mamma_syn_hf.sh. Use this script if you prefer a MAMMA account.
+#
 # Usage:
 #   bash data/download_mamma_syn_wd.sh --interactions                # multi-person datasets
 #   bash data/download_mamma_syn_wd.sh --singles                     # single-person datasets
@@ -18,13 +21,13 @@ set -euo pipefail
 # ===================================================================
 
 # Anchor OUTPUT_DIR to the script's directory (the repo's data/ folder)
-# rather than the caller's cwd, so files always land in <repo>/data/mamma/
+# rather than the caller's cwd, so files always land in <repo>/data/mammasyn/
 # regardless of where the user runs the script from. This matches the
-# training `dataset_path` default (data/mamma) in
+# training `dataset_path` default (data/mammasyn) in
 # landmarks/configs/train/models_2d/config.yaml, so each dataset lands at
-# data/mamma/<dataset>/ exactly where the BEDLAM_WD loader expects it.
+# data/mammasyn/<dataset>/ exactly where the BEDLAM_WD loader expects it.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_DIR="${SCRIPT_DIR}/mamma"
+OUTPUT_DIR="${SCRIPT_DIR}/mammasyn"
 DL_INTERACTIONS=0
 DL_SINGLES=0
 DL_HANDS=0
@@ -35,13 +38,13 @@ usage() {
     echo "At least one dataset group is required."
     echo ""
     echo "Dataset groups:"
-    echo "  --interactions  Harmony4D, Hi4D, Inter-X, InteractionCouple, LatinDance10"
+    echo "  --interactions  Harmony4D, Inter-X, InteractionCouple, LatinDance10"
     echo "  --singles       BEDLAM, MoYo"
-    echo "  --hands         InterHand, SignAvatars"
+    echo "  --hands         InterHand"
     echo "  --all           All of the above"
     echo ""
     echo "Options:"
-    echo "  --output DIR    Output directory (default: <repo>/data/mamma)"
+    echo "  --output DIR    Output directory (default: <repo>/data/mammasyn)"
     echo "  -h, --help      Show this help message"
     exit 0
 }
@@ -71,8 +74,6 @@ fi
 
 INTERACTIONS_DATASETS=(
     harmony4d_train_1_NC_200_00_contact
-    hi4d_1_NC_200_00_contact
-    hi4d_1_NC_200_01_contact
     inter-x_train_close_1_NC_200_00_contact
     inter-x_train_close_1_NC_200_01_contact
     inter-x_train_close_1_NC_200_02_contact
@@ -93,7 +94,6 @@ SINGLES_DATASETS=(
 HANDS_DATASETS=(
     interhand_2-6_NC_200_00
     interhand_2-6_NC_200_01
-    sign_avatars_4-6_NC_200_00
 )
 
 # Build the list of datasets to download
@@ -104,7 +104,7 @@ DATASETS=()
 
 BASE_URL="https://download.is.tue.mpg.de/download.php?domain=mamma&resume=1"
 # Remote layout keeps the training_webdataset/ segment; locally we strip it so
-# datasets land directly under data/mamma/<dataset>/ (see OUTPUT_DIR above).
+# datasets land directly under data/mammasyn/<dataset>/ (see OUTPUT_DIR above).
 REMOTE_ROOT="datasets/training_webdataset"
 
 urle () {

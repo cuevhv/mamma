@@ -43,6 +43,26 @@ from data_readiness import (
     _check_url, _is_html_error, _safe_error, _wget_post,
 )
 
+# huggingface_hub backs the (default) HF synthetic-training family. Import it
+# lazily-but-eagerly: if the package is missing we still want this module to
+# import so the MPI families keep working — only the HF family degrades. The
+# error classes are always defined (real or stub) so ``except (GatedRepoError,
+# RepositoryNotFoundError)`` never raises NameError on the MPI-only path.
+try:
+    from huggingface_hub import (  # noqa: F401
+        list_repo_files, hf_hub_download, get_token, HfApi, auth_check,
+    )
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+    _HF_AVAILABLE = True
+except Exception:  # pragma: no cover - exercised only in minimal envs
+    _HF_AVAILABLE = False
+
+    class GatedRepoError(Exception):  # type: ignore[no-redef]
+        pass
+
+    class RepositoryNotFoundError(Exception):  # type: ignore[no-redef]
+        pass
+
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +72,38 @@ _DATA_DIR = _REPO_ROOT / "data"
 #   POST https://download.is.tue.mpg.de/download.php?domain=mamma&resume=1&sfile=datasets/<rel>
 #   body: username=<>&password=<>
 _REMOTE_ROOT = "datasets"
+
+# ─── Hugging Face (default synthetic-training source) ──────────────────────
+# MammaSyn lives in a gated HF dataset repo, laid out as
+#   MammaSyn-<Group>/<dataset>/<sequence>/000000.tar  (+ metadata.json,
+#   tar_train_list.txt)
+# `hf_hub_download` reproduces that repo path under its target dir and offers
+# no way to strip the leading MammaSyn-<Group>/ component, so we download each
+# file into a hidden, resumable staging dir and then *move* it to its flat
+# home at data/mammasyn/<dataset>/<sequence>/000000.tar. The result is a real
+# directory tree (no symlinks) whose layout is identical to the MPI script's,
+# so training configs (label_path = ${dataset_path}/<dataset>) need no change.
+# Staging sits beside data/mammasyn/ (not inside it) so data/mammasyn/ holds only
+# real dataset dirs. The shard list (tar_train_list.txt) rides along with the
+# rest of the files; it is read only later by the training loader, never here.
+_HF_REPO = "Intelligent-Systems/MammaSyn"
+_HF_STAGING = _DATA_DIR / ".mammasyn_hf"
+_SYN_GROUP_TO_HFDIR = {
+    "interactions": "MammaSyn-Interactions",
+    "singles": "MammaSyn-Singles",
+    "hands": "MammaSyn-Hands",
+}
+# Repo content is static; cache the one authenticated file listing for the
+# process lifetime so the debounced plan-preview doesn't re-list on every keystroke.
+_hf_files_cache: dict = {}
+
+
+def _hf_access_msg() -> str:
+    return (
+        "No access to the MammaSyn dataset. Sign in with `hf auth login` (or "
+        "paste a token), then accept the license at "
+        f"https://huggingface.co/datasets/{_HF_REPO} to be granted access."
+    )
 
 
 # ─── bash-array parser ────────────────────────────────────────────────────
@@ -147,6 +199,10 @@ class _Family:
     camera_kind: str        # 'ioi32', 'ioi16-or-32', 'iphone4', 'none'
     expand: Callable        # selection dict -> list[(sfile, local_relpath)]
     notes: str = ""
+    source_kind: str = "mpi"  # 'mpi' (download.php) or 'hf' (huggingface_hub).
+                              # Discriminates auth requirements + which worker
+                              # runs the job. Prefer this over `family.id`
+                              # string checks in both backend and frontend.
 
 
 # ── Markerless dance ────────────────────────────────────────────────
@@ -366,23 +422,24 @@ def _expand_eval(sel: dict) -> list[tuple[str, str]]:
 # ── MammaSyn (training webdataset) ────────────────────────────────
 
 _SYN_GROUPS = (
-    ("interactions", "Interactions (Harmony4D, Hi4D, Inter-X, …)", "INTERACTIONS_DATASETS"),
-    ("singles",      "Singles (BEDLAM, MoYo)",                     "SINGLES_DATASETS"),
-    ("hands",        "Hands (InterHand, SignAvatars)",             "HANDS_DATASETS"),
+    ("interactions", "Interactions (Harmony4D, Inter-X, …)", "INTERACTIONS_DATASETS"),
+    ("singles",      "Singles (BEDLAM, MoYo)",               "SINGLES_DATASETS"),
+    ("hands",        "Hands (InterHand)",                    "HANDS_DATASETS"),
 )
 
 
 def _expand_syn(sel: dict) -> list[tuple[str, str]]:
-    """For syn_wd we only know the top-level dataset names up-front; the
-    .tar shards inside each dataset are listed in a remote
-    `tar_train_list.txt`. We return one entry per *manifest* file here;
-    the worker expands them at download time after fetching the manifest.
+    """MPI (MAMMA-account) synthetic family — the *alternative* source.
 
-    The local path mirrors the bash script's behaviour: ``OUTPUT_DIR``
-    in the script is ``data/training_webdataset``, so files actually
-    land at ``data/training_webdataset/training_webdataset/<ds>/...``.
-    Quirky, but matches the shipped script so the widget and the script
-    are interchangeable."""
+    The .tar shards inside each dataset are listed in a remote
+    ``tar_train_list.txt`` that needs MAMMA credentials to fetch, which
+    aren't available at plan time. So this only enqueues the per-dataset
+    manifest files; the shards themselves are best pulled with the
+    ``download_mamma_syn_wd.sh`` script (a full GUI shard-expansion would
+    fetch each manifest in the worker first — a deferred follow-up). The
+    remote layout keeps the ``training_webdataset/`` segment; locally we
+    land under ``data/mammasyn/<dataset>/`` to match the .sh and the HF
+    family so all three are interchangeable."""
     arr = _arrays("download_mamma_syn_wd.sh")
     groups = _resolve_list(sel, "groups", [g[0] for g in _SYN_GROUPS])
     seq_filter = set(sel.get("sequences") or [])  # dataset-name filter
@@ -397,11 +454,54 @@ def _expand_syn(sel: dict) -> list[tuple[str, str]]:
 
     files: list[tuple[str, str]] = []
     for ds in datasets:
-        # sfile path that the .sh script uses for the manifests.
+        # sfile = remote path under datasets/ (the worker prepends "datasets/").
+        # local = on-disk path under data/, mirroring the .sh's data/mammasyn/<ds>/.
         for manifest in ("tar_train_list.txt", "train_data.txt", "get_dataset_list.sh"):
-            s = f"training_webdataset/{ds}/{manifest}"
-            files.append((s, f"training_webdataset/{s}"))
+            files.append((f"training_webdataset/{ds}/{manifest}", f"mammasyn/{ds}/{manifest}"))
     return files
+
+
+def _hf_repo_files(token: Optional[str]) -> list[str]:
+    """Return every file path in the MammaSyn HF repo (cached for the process
+    lifetime — repo content is static). May raise ``GatedRepoError`` /
+    ``RepositoryNotFoundError`` when the token lacks access; callers translate
+    those into a 403 with :func:`_hf_access_msg`."""
+    if "files" not in _hf_files_cache:
+        _hf_files_cache["files"] = list_repo_files(
+            _HF_REPO, repo_type="dataset", token=token or None,
+        )
+    return _hf_files_cache["files"]
+
+
+def _expand_syn_hf(sel: dict) -> list[tuple[str, str]]:
+    """HF synthetic family — the *default* source.
+
+    Enumerates the real files in the gated HF repo and returns
+    ``(hf_path, flat_local_relpath)`` tuples, where ``hf_path`` is the
+    repo-relative path (``MammaSyn-<Group>/<dataset>/<seq>/000000.tar``)
+    and ``flat_local_relpath`` is ``mammasyn/<dataset>/<seq>/000000.tar`` —
+    the group prefix flattened away. The bytes are downloaded into the
+    staging dir and then moved to that flat home (a real directory; see
+    :func:`_download_one_hf`). Same 2-tuple shape as the MPI families so the
+    plan preview works unchanged."""
+    token = sel.get("hf_token") or get_token()
+    groups = _resolve_list(sel, "groups", [g[0] for g in _SYN_GROUPS])
+    want_dirs = {_SYN_GROUP_TO_HFDIR[g] for g in groups if g in _SYN_GROUP_TO_HFDIR}
+    seq_filter = set(sel.get("sequences") or [])  # dataset-name filter
+
+    out: list[tuple[str, str]] = []
+    for f in _hf_repo_files(token):
+        parts = f.split("/")
+        if len(parts) < 2:            # README.md, .gitattributes — skip
+            continue
+        group_dir, dataset = parts[0], parts[1]
+        if group_dir not in want_dirs:
+            continue
+        if seq_filter and dataset not in seq_filter:
+            continue
+        flat = "/".join(["mammasyn", dataset, *parts[2:]])
+        out.append((f, flat))
+    return out
 
 
 # ── Catalog assembly ─────────────────────────────────────────────
@@ -500,17 +600,37 @@ FAMILIES: dict[str, _Family] = {
         expand=_expand_eval,
         notes="Singles/Extra ship with 16 cameras (IOI_01–16); Dance uses 32. Camera picks above 16 are auto-clipped for Singles/Extra.",
     ),
+    # Default synthetic source: Hugging Face (gated, fast xet transfers).
     "syn": _Family(
         id="syn",
-        label="Synthetic training (WebDataset)",
-        description="Synthetic SMPL-X renders for landmark training.",
-        script="download_mamma_syn_wd.sh",
+        label="MammaSyn (Hugging Face)",
+        description="Synthetic SMPL-X renders for landmark training, from the gated HF dataset.",
+        script="download_mamma_syn_hf.sh",
         content_groups=_SYN_GROUPS,
         asset_types=(),                # only one asset kind (the WD shards)
         video_variants=(),             # no video variants
         camera_kind="none",
+        expand=_expand_syn_hf,
+        source_kind="hf",
+        notes=("Gated: accept the license at huggingface.co/datasets/"
+               "Intelligent-Systems/MammaSyn and sign in with `hf auth login` "
+               "(or paste a token)."),
+    ),
+    # Alternative synthetic source: the original MAMMA-account download.
+    "syn_mpi": _Family(
+        id="syn_mpi",
+        label="MammaSyn (MAMMA account)",
+        description="Synthetic SMPL-X renders via the MAMMA download server (requires a MAMMA account).",
+        script="download_mamma_syn_wd.sh",
+        content_groups=_SYN_GROUPS,
+        asset_types=(),
+        video_variants=(),
+        camera_kind="none",
         expand=_expand_syn,
-        notes="Each dataset's .tar shards are listed in a remote manifest fetched at download time.",
+        source_kind="mpi",
+        notes=("Alternative to the Hugging Face default. The GUI fetches the "
+               "per-dataset manifests; use data/download_mamma_syn_wd.sh for "
+               "the full multi-TB shard pull."),
     ),
 }
 
@@ -552,6 +672,7 @@ def _family_record(family: _Family) -> dict:
             else [],
         "max_ioi_cameras": 32 if family.camera_kind in ("ioi32", "ioi16-or-32") else 0,
         "notes": family.notes,
+        "source_kind": family.source_kind,
     }
 
 
@@ -726,6 +847,95 @@ def _run_job(job_id: str, family: _Family, plan: list[tuple[str, str]],
     logger.info("Job %s finished: state=%s", job_id, _jobs[job_id]["state"])
 
 
+# ─── Hugging Face worker ────────────────────────────────────────────────────
+
+def _hf_flat_dest(hf_path: str) -> Path:
+    """Map a repo path ``MammaSyn-<Group>/<dataset>/<rel>`` to its flat home
+    ``data/mammasyn/<dataset>/<rel>`` (the group prefix stripped)."""
+    parts = hf_path.split("/")
+    return _DATA_DIR / "mammasyn" / Path(*parts[1:])
+
+
+def _download_one_hf(hf_path: str, token: Optional[str],
+                     job_id: str, label: str) -> str:
+    """Download one file from the HF repo and move it to its flat home under
+    ``data/mammasyn/<dataset>/``. Returns "ok", "skip", or "fail:<reason>". The
+    token is used only here and never logged."""
+    dest = _hf_flat_dest(hf_path)
+    # Defence in depth: refuse anything that escapes data/mammasyn/ (the repo
+    # file list is trusted, but a stray ".." must never write outside).
+    mamma_root = (_DATA_DIR / "mammasyn").resolve()
+    if not str(dest.resolve()).startswith(str(mamma_root) + os.sep):
+        return f"fail:refusing path outside data/mammasyn: {hf_path}"
+    # Resume/skip: a real file already in place means a prior run got it.
+    if dest.is_file() and dest.stat().st_size > 0:
+        return "skip"
+    _update_job(job_id, current_label=label, current_bytes=0, current_total=0)
+    try:
+        # Download to the staging dir (real file; hf keeps resume metadata
+        # there), then move it into place. os.replace is an atomic rename on
+        # the same filesystem (data/.mammasyn_hf and data/mammasyn share one).
+        local_path = hf_hub_download(
+            _HF_REPO, filename=hf_path, repo_type="dataset",
+            local_dir=str(_HF_STAGING), token=token or None,
+        )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(local_path, dest)
+        return "ok"
+    except (GatedRepoError, RepositoryNotFoundError):
+        return f"fail:{_hf_access_msg()}"
+    except Exception as exc:  # noqa: BLE001
+        return f"fail:{_safe_error(exc)}"
+
+
+def _run_job_hf(job_id: str, family: _Family, plan: list[tuple[str, str]],
+                token: Optional[str]) -> None:
+    """HF analogue of :func:`_run_job` — identical job-dict bookkeeping so the
+    frontend ProgressPanel is unchanged. ``token`` is passed positionally and
+    never written to the job dict or any log line."""
+    bytes_total = 0
+    for i, (hf_path, _local_relpath) in enumerate(plan):
+        with _jobs_lock:
+            rec = _jobs.get(job_id)
+            if rec is None or rec.get("_cancel"):
+                _update_job(job_id, state="cancelled")
+                logger.info("Job %s cancelled at %d/%d", job_id, i, len(plan))
+                return
+        label = f"[{i + 1}/{len(plan)}] {hf_path}"
+        result = _download_one_hf(hf_path, token, job_id, label)
+        if result in ("ok", "skip"):
+            try:
+                bytes_total += _hf_flat_dest(hf_path).stat().st_size
+            except OSError:
+                pass
+            with _jobs_lock:
+                rec = _jobs.get(job_id)
+                if rec is not None:
+                    rec["files_done"] = rec.get("files_done", 0) + 1
+                    rec["bytes_done_total"] = bytes_total
+        else:
+            with _jobs_lock:
+                rec = _jobs.get(job_id)
+                if rec is not None:
+                    rec["files_failed"] = rec.get("files_failed", 0) + 1
+                    if rec.get("error") is None:
+                        rec["error"] = result.split(":", 1)[1]
+    with _jobs_lock:
+        rec = _jobs.get(job_id)
+        if rec is None:
+            return
+        if rec.get("_cancel"):
+            rec["state"] = "cancelled"
+        elif rec.get("files_failed", 0) > 0 and rec.get("files_done", 0) == 0:
+            rec["state"] = "error"
+        else:
+            rec["state"] = "done"
+        rec["current_label"] = None
+        rec["current_bytes"] = 0
+        rec["current_total"] = 0
+    logger.info("Job %s finished: state=%s", job_id, _jobs[job_id]["state"])
+
+
 # ─── Flask wiring ─────────────────────────────────────────────────────────
 
 def register_routes(app: Flask) -> None:
@@ -751,6 +961,8 @@ def register_routes(app: Flask) -> None:
             return jsonify({"error": "unknown family"}), 404
         try:
             files = family.expand(body)
+        except (GatedRepoError, RepositoryNotFoundError):
+            return jsonify({"error": _hf_access_msg()}), 403
         except Exception as exc:  # noqa: BLE001
             return jsonify({"error": f"plan failed: {type(exc).__name__}"}), 400
         return jsonify({
@@ -766,6 +978,44 @@ def register_routes(app: Flask) -> None:
         family = FAMILIES.get(family_id)
         if family is None:
             return jsonify({"error": "unknown family"}), 404
+
+        # ── Hugging Face family: token-based, no MAMMA username/password ──
+        if family.source_kind == "hf":
+            if not _HF_AVAILABLE:
+                return jsonify({"error": "huggingface_hub is not installed in this environment."}), 400
+            token = str(body.get("hf_token") or "") or get_token()
+            if not token:
+                return jsonify({"error": "Sign in with `hf auth login` or paste a token."}), 400
+            # Fail fast on no-access rather than queueing a job that fails
+            # file-by-file. Mirrors the MPI verify-before-start posture.
+            try:
+                auth_check(_HF_REPO, repo_type="dataset", token=token)
+            except (GatedRepoError, RepositoryNotFoundError):
+                return jsonify({"error": _hf_access_msg()}), 403
+            except Exception as exc:  # noqa: BLE001
+                return jsonify({"error": _safe_error(exc)}), 400
+            try:
+                files = family.expand(body)
+            except (GatedRepoError, RepositoryNotFoundError):
+                return jsonify({"error": _hf_access_msg()}), 403
+            except Exception as exc:  # noqa: BLE001
+                return jsonify({"error": f"plan failed: {type(exc).__name__}"}), 400
+            if not files:
+                return jsonify({"error": "selection produced an empty plan"}), 400
+            logger.info(
+                "Dataset download starting: family=%s files=%d (HF)",
+                family_id, len(files),
+            )
+            job_id = _new_job(family_id, len(files))
+            # Token passed positionally so it can't surface in a kwargs repr.
+            threading.Thread(
+                target=_run_job_hf, args=(job_id, family, files, token),
+                daemon=True,
+            ).start()
+            del token
+            return jsonify({"job_id": job_id, "files_total": len(files)})
+
+        # ── MPI families: MAMMA-account username/password ──
         username = str(body.get("username") or "")
         password = str(body.get("password") or "")
         if not username or not password:
@@ -796,6 +1046,40 @@ def register_routes(app: Flask) -> None:
             daemon=True,
         ).start()
         return jsonify({"job_id": job_id, "files_total": len(files)})
+
+    @app.post("/api/datasets/hf-status")
+    def _datasets_hf_status():
+        """Report Hugging Face auth state for the synthetic-training panel.
+
+        Resolves the pasted token (if any) or the cached `hf auth login` /
+        HF_TOKEN, returns whether the user is logged in and whether they have
+        access to the gated MammaSyn repo. The token is never echoed or
+        logged."""
+        if not _HF_AVAILABLE:
+            return jsonify({"logged_in": False, "detail": "huggingface_hub not installed."})
+        body = request.get_json(silent=True) or {}
+        token = str(body.get("hf_token") or "") or get_token()
+        if not token:
+            return jsonify({"logged_in": False})
+        try:
+            who = HfApi().whoami(token=token)
+            user = who.get("name") if isinstance(who, dict) else None
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({"logged_in": False, "detail": _safe_error(exc)})
+        out = {"logged_in": True, "user": user}
+        try:
+            auth_check(_HF_REPO, repo_type="dataset", token=token)
+            out["access"] = True
+        except (GatedRepoError, RepositoryNotFoundError):
+            out["access"] = False
+            out["gated"] = True
+            out["detail"] = _hf_access_msg()
+        except Exception as exc:  # noqa: BLE001
+            out["access"] = False
+            out["detail"] = _safe_error(exc)
+        finally:
+            del token
+        return jsonify(out)
 
     @app.get("/api/datasets/job/<job_id>")
     def _datasets_job(job_id):

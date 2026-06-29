@@ -150,16 +150,21 @@ Setup and deployment: [`gui/README.md`](gui/README.md).
 
 ## MAMMA datasets
 
-The paper's released captures, evaluation data, and synthetic training data live on the MAMMA project page and require a free account.
+The paper's released captures and evaluation data live on the MAMMA project page (free account); the **MammaSyn** synthetic training data is published on [Hugging Face](https://huggingface.co/datasets/Intelligent-Systems/MammaSyn) (gated — accept the license once for instant access).
 
-1. Register at <https://mamma.is.tue.mpg.de/> and confirm your email.
-2. Either use the GUI's *Pipeline assets* panel (sign in once, click to download), or run the per-dataset shell scripts under [`data/`](data/):
+- **MammaSyn (synthetic training) — Hugging Face, default.** Accept the license, then `hf auth login`:
 
-   ```bash
-   bash data/download_mamma_dance.sh --bachata --meta --pred --videos_crf24
-   ```
+  ```bash
+  bash data/download_mamma_syn_hf.sh --hands     # or --interactions / --singles / --all
+  ```
 
-Five dataset families ship: **dance**, **multi-person**, **iPhone**, **eval**, and **synthetic**. Per-dataset sizes, video encodings, and the full script flag surface live in **[docs/DATASETS.md](docs/DATASETS.md)**.
+- **Captures / eval — MAMMA account.** Register at <https://mamma.is.tue.mpg.de/>, confirm your email, then use the GUI's *MAMMA Datasets* panel (sign in once, click to download) or the shell scripts under [`data/`](data/):
+
+  ```bash
+  bash data/download_mamma_dance.sh --bachata --meta --pred --videos_crf24
+  ```
+
+Both surfaces are also driven from the GUI's *MAMMA Datasets* panel. Per-dataset sizes, video encodings, and the full script flag surface live in **[docs/DATASETS.md](docs/DATASETS.md)**.
 
 > Just running on your own footage? You don't need any of this — see [Run the pipeline](#run-the-pipeline) above.
 

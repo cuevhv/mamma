@@ -38,6 +38,13 @@ interface CredentialsCtx {
   signIn: (d: CredentialDomain, c: Credential) => void;
   signOut: (d: CredentialDomain) => void;
   signOutAll: () => void;
+  // Hugging Face is token-based (and the token is usually already cached on
+  // disk via `hf auth login`), so it doesn't fit the MAMMA user/password
+  // `Credential` shape. We keep an optional *pasted* token here under the
+  // same never-persisted contract; a falsy value means "use the cached
+  // `hf auth login` / HF_TOKEN on the backend".
+  hfToken: string | null;
+  setHfToken: (t: string | null) => void;
 }
 
 const Ctx = createContext<CredentialsCtx | null>(null);
@@ -54,6 +61,10 @@ export const REGISTER_URL: Record<CredentialDomain, string> = {
   mamma: 'https://mamma.is.tue.mpg.de/register.php',
   smplx: 'https://smpl-x.is.tue.mpg.de/register.php',
 };
+
+/** Hugging Face links shown in the synthetic-training auth UI. */
+export const HF_DATASET_URL = 'https://huggingface.co/datasets/Intelligent-Systems/MammaSyn';
+export const HF_TOKENS_URL = 'https://huggingface.co/settings/tokens';
 
 /** Map the backend's `account_label` string ("MAMMA" / "SMPL-X") to the
  *  internal lower-case domain key the context uses. Returns null for
@@ -111,11 +122,42 @@ export async function verifyMpiCredentials(
   }
 }
 
+export interface HfStatus {
+  logged_in: boolean;
+  user?: string;
+  access?: boolean;   // has access to the gated MammaSyn dataset
+  gated?: boolean;    // logged in but license not yet accepted
+  detail?: string;
+}
+
+/**
+ * Resolve the Hugging Face auth state for the synthetic-training panel. Pass a
+ * pasted token to check it, or omit it to check the cached `hf auth login` /
+ * HF_TOKEN on the backend. The token is sent once over the local API and never
+ * persisted (the backend never echoes or logs it). Returns a best-effort
+ * status; on any failure `logged_in` is false with a `detail` message.
+ */
+export async function verifyHfStatus(token?: string): Promise<HfStatus> {
+  try {
+    const r = await fetch('/api/datasets/hf-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(token ? { hf_token: token } : {}),
+    });
+    const data = (await r.json().catch(() => ({}))) as HfStatus;
+    if (!r.ok) return { logged_in: false, detail: data.detail || `HTTP ${r.status}` };
+    return data;
+  } catch {
+    return { logged_in: false, detail: 'Could not reach the server to check Hugging Face status.' };
+  }
+}
+
 export function CredentialsProvider({ children }: { children: React.ReactNode }) {
   const [creds, setCreds] = useState<{ mamma: Credential | null; smplx: Credential | null }>({
     mamma: null,
     smplx: null,
   });
+  const [hfToken, setHfTokenState] = useState<string | null>(null);
 
   const signIn = useCallback((d: CredentialDomain, c: Credential) => {
     setCreds(prev => ({ ...prev, [d]: { username: c.username, password: c.password } }));
@@ -125,6 +167,10 @@ export function CredentialsProvider({ children }: { children: React.ReactNode })
   }, []);
   const signOutAll = useCallback(() => {
     setCreds({ mamma: null, smplx: null });
+    setHfTokenState(null);
+  }, []);
+  const setHfToken = useCallback((t: string | null) => {
+    setHfTokenState(t && t.trim() ? t.trim() : null);
   }, []);
 
   // Best-effort wipe on provider unmount so the credential strings drop
@@ -132,12 +178,12 @@ export function CredentialsProvider({ children }: { children: React.ReactNode })
   // browser still has whatever the JS engine retained internally — same
   // posture as the existing per-form `setPassword('')` calls.
   useEffect(() => {
-    return () => setCreds({ mamma: null, smplx: null });
+    return () => { setCreds({ mamma: null, smplx: null }); setHfTokenState(null); };
   }, []);
 
   const value = useMemo(
-    () => ({ creds, signIn, signOut, signOutAll }),
-    [creds, signIn, signOut, signOutAll],
+    () => ({ creds, signIn, signOut, signOutAll, hfToken, setHfToken }),
+    [creds, signIn, signOut, signOutAll, hfToken, setHfToken],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

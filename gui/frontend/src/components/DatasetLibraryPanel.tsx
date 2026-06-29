@@ -15,7 +15,11 @@ import {
   Search,
   X,
 } from 'lucide-react';
-import { DOMAIN_LABEL, REGISTER_URL, useCredentials, verifyMpiCredentials } from './CredentialsContext';
+import {
+  DOMAIN_LABEL, REGISTER_URL, useCredentials, verifyMpiCredentials,
+  verifyHfStatus, HF_DATASET_URL, HF_TOKENS_URL,
+  type HfStatus,
+} from './CredentialsContext';
 
 /*
  * Dataset library — second card on Home, below the body-models / weights
@@ -58,6 +62,7 @@ interface FamilyInfo {
   default_cameras: string[];
   max_ioi_cameras: number;
   notes: string;
+  source_kind: 'mpi' | 'hf';
 }
 
 interface Catalog { families: FamilyInfo[] }
@@ -119,7 +124,7 @@ function defaultSelection(f: FamilyInfo): Selection {
   ];
   const isMarkerless = f.id === 'dance' || f.id === 'multi' || f.id === 'iphone';
   const isEval = f.id === 'eval';
-  const isSyn = f.id === 'syn';
+  const isSyn = f.source_kind === 'hf' || f.id === 'syn' || f.id === 'syn_mpi';
 
   const allAssets = f.asset_types.map(a => a.id);
   let defaultAssets: string[] = [];
@@ -157,6 +162,29 @@ export function DatasetLibraryPanel() {
   const [job, setJob] = useState<Job | null>(null);
   const [collapsed, setCollapsed] = useState<boolean | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
+  // Hugging Face auth state (for the syn/HF family). null = not checked yet.
+  const [hfStatus, setHfStatus] = useState<HfStatus | null>(null);
+  const [hfChecking, setHfChecking] = useState(false);
+
+  const refreshHfStatus = useCallback(async (token?: string) => {
+    setHfChecking(true);
+    try {
+      const s = await verifyHfStatus(token);
+      setHfStatus(s);
+      return s;
+    } finally {
+      setHfChecking(false);
+    }
+  }, []);
+
+  // "Check" a status, and if a pasted token is what grants access, remember it
+  // (session-only) so the footer Download CTA uses that token rather than a
+  // possibly-absent cached one.
+  const checkHf = useCallback(async (token?: string) => {
+    const s = await refreshHfStatus(token);
+    if (token && s.access) ctx.setHfToken(token);
+    return s;
+  }, [refreshHfStatus, ctx]);
 
   // Initial catalog load.
   useEffect(() => {
@@ -181,6 +209,18 @@ export function DatasetLibraryPanel() {
     if (catalog && collapsed === null) setCollapsed(true);
   }, [catalog, collapsed]);
 
+  // When an HF-backed family becomes active, check the cached `hf auth login`
+  // status once so the panel can show "signed in / access granted" without
+  // the user pasting a token. Only fires for hf families and only if we
+  // haven't checked yet this session.
+  useEffect(() => {
+    if (!catalog || !activeFamily) return;
+    const fam = catalog.families.find(f => f.id === activeFamily);
+    if (fam?.source_kind === 'hf' && hfStatus === null && !hfChecking) {
+      void refreshHfStatus();
+    }
+  }, [catalog, activeFamily, hfStatus, hfChecking, refreshHfStatus]);
+
   // Whenever the active family's selection changes, refetch the plan
   // (file count + first few preview entries). Debounced ~200ms.
   useEffect(() => {
@@ -195,9 +235,14 @@ export function DatasetLibraryPanel() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ family: activeFamily, ...sel }),
         });
-        if (!cancelled && r.ok) {
+        if (cancelled) return;
+        if (r.ok) {
           const p: PlanResponse = await r.json();
           setPlanCounts(prev => ({ ...prev, [activeFamily]: p.files_total }));
+        } else if (r.status === 403) {
+          // HF family without access yet — can't compute the file count
+          // until the user signs in / accepts the license. Sentinel -1.
+          setPlanCounts(prev => ({ ...prev, [activeFamily]: -1 }));
         }
       } catch { /* ignore */ }
     }, 250);
@@ -213,6 +258,14 @@ export function DatasetLibraryPanel() {
         if (r.ok) {
           const next: Job = await r.json();
           setJob(next);
+        } else if (r.status === 404) {
+          // The backend no longer knows this job — it was almost certainly
+          // restarted. Don't hang on a stale "downloading"/"cancelling…"
+          // state: surface it as terminal so the panel offers a fresh start.
+          window.clearInterval(id);
+          setJob(j => (j && j.state === 'downloading'
+            ? { ...j, state: 'error', error: 'This download is no longer tracked by the server (the backend was restarted). Start a new download.' }
+            : j));
         }
       } catch { /* ignore */ }
     }, POLL_MS);
@@ -254,6 +307,43 @@ export function DatasetLibraryPanel() {
     }
   };
 
+  // Hugging Face start path. Uses the pasted token if given, else the cached
+  // `hf auth login` / HF_TOKEN resolved on the backend. Returns true on a
+  // queued job. The token (if any) is stashed in the never-persisted context.
+  const startHf = async (token?: string): Promise<boolean> => {
+    if (!catalog || !activeFamily) return false;
+    const sel = selections[activeFamily];
+    if (!sel) return false;
+    setStartError(null);
+    try {
+      const body: Record<string, unknown> = { family: activeFamily, ...sel };
+      if (token) body.hf_token = token;
+      const r = await fetch('/api/datasets/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        const detail = await r.json().catch(() => ({} as { error?: string }));
+        setStartError(detail.error || `HTTP ${r.status}`);
+        return false;
+      }
+      const out = await r.json();
+      if (token) ctx.setHfToken(token);
+      setSignInOpen(false);
+      setJob({
+        id: out.job_id, family: activeFamily, state: 'downloading',
+        files_total: out.files_total, files_done: 0, files_failed: 0,
+        current_label: null, current_bytes: 0, current_total: 0,
+        bytes_done_total: 0, error: null, started_at: Date.now() / 1000,
+      });
+      return true;
+    } catch {
+      setStartError('Network error');
+      return false;
+    }
+  };
+
   // Inline-form path only: verify the typed credentials before kicking off
   // a (multi-file) download, so a wrong password fails fast with a clear
   // message instead of queuing a job that fails file-by-file. On success,
@@ -287,12 +377,20 @@ export function DatasetLibraryPanel() {
   const planCount = planCounts[activeFamily] ?? null;
   const isCollapsed = collapsed === true;
   const mamma = ctx.creds.mamma;
-  const sessionSignedIn = !!mamma;
+  const isHf = active?.source_kind === 'hf';
+  // "Signed in" for the CTA: MAMMA creds present, or (for HF) the dataset is
+  // accessible with the cached/pasted token.
+  const sessionSignedIn = isHf ? !!hfStatus?.access : !!mamma;
 
-  // Primary CTA action: if the user is signed in to MAMMA via the
-  // top-of-Home SignInCenter, fire the download immediately with those
-  // creds. Otherwise expand the inline sign-in form for this family.
+  // Primary CTA action. HF: if we already have access, start straight away;
+  // otherwise open the HF auth form. MPI: if signed in via the top-of-Home
+  // SignInCenter, download immediately; otherwise open the inline sign-in form.
   const onPrimary = () => {
+    if (isHf) {
+      if (hfStatus?.access) { startHf(ctx.hfToken || undefined); return; }
+      setSignInOpen(true);
+      return;
+    }
     if (mamma) {
       start(mamma.username, mamma.password);
       return;
@@ -343,7 +441,7 @@ export function DatasetLibraryPanel() {
             </span>
           )}
           <span className="text-foreground-faint text-[11px] tabular-nums">
-            {catalog.families.length} families · MAMMA login
+            {catalog.families.length} families
           </span>
         </div>
       </button>
@@ -408,6 +506,10 @@ export function DatasetLibraryPanel() {
                 onCancelSignIn={() => { setSignInOpen(false); setStartError(null); }}
                 onSubmit={signInAndStart}
                 startError={startError}
+                hfStatus={hfStatus}
+                hfChecking={hfChecking}
+                onHfStart={startHf}
+                onHfCheck={checkHf}
               />
             </>
           )}
@@ -422,7 +524,7 @@ export function DatasetLibraryPanel() {
 function FamilyForm({
   family, selection, planCount, onChange,
   signInOpen, sessionSignedIn, onOpenSignIn, onCancelSignIn, onSubmit,
-  startError,
+  startError, hfStatus, hfChecking, onHfStart, onHfCheck,
 }: {
   family: FamilyInfo;
   selection: Selection;
@@ -434,7 +536,12 @@ function FamilyForm({
   onCancelSignIn: () => void;
   onSubmit: (u: string, p: string) => Promise<boolean | void> | boolean | void;
   startError: string | null;
+  hfStatus: HfStatus | null;
+  hfChecking: boolean;
+  onHfStart: (token?: string) => Promise<boolean>;
+  onHfCheck: (token?: string) => Promise<HfStatus>;
 }) {
+  const isHf = family.source_kind === 'hf';
   const toggleIn = (key: keyof Selection, id: string) => {
     onChange(s => {
       const arr = (s[key] as string[]).slice();
@@ -525,11 +632,15 @@ function FamilyForm({
           large enough that nobody clicks Download without seeing it. */}
       <div className="pt-3 border-t border-border-subtle flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-baseline gap-2 tabular-nums">
-          {planCount === null ? (
+          {planCount === -1 ? (
+            <span className="text-[12px] text-status-pending">
+              sign in to Hugging Face to compute the file count
+            </span>
+          ) : planCount === null ? (
             <span className="text-[12px] text-foreground-faint">computing plan…</span>
           ) : planCount === 0 ? (
             <span className="text-[12px] text-status-pending">
-              empty plan — pick at least one content group and one asset
+              empty plan — pick at least one content group
             </span>
           ) : (
             <>
@@ -547,10 +658,12 @@ function FamilyForm({
             {sessionSignedIn && (
               <span
                 className="hidden sm:inline-flex items-center gap-1 text-[10.5px] text-foreground-faint"
-                title="Will use the credentials you signed in with at the top of Home"
+                title={isHf
+                  ? 'Will use your Hugging Face login (or a pasted token)'
+                  : 'Will use the credentials you signed in with at the top of Home'}
               >
                 <KeyRound className="w-3 h-3" aria-hidden />
-                uses MAMMA credentials
+                {isHf ? 'uses Hugging Face login' : 'uses MAMMA credentials'}
               </span>
             )}
             <button
@@ -575,17 +688,26 @@ function FamilyForm({
         )}
       </div>
 
-      {/* Inline sign-in form — fallback path for users who haven't
-          signed in at the top of Home. Shown only when no session
-          credentials are available. */}
+      {/* Inline auth form — HF (token / cached login) or MAMMA account. */}
       {signInOpen && (
-        <SignInForm
-          accountLabel="MAMMA"
-          registerUrl="https://mamma.is.tue.mpg.de/register.php"
-          onCancel={onCancelSignIn}
-          onSubmit={onSubmit}
-          error={startError}
-        />
+        isHf ? (
+          <HFAuthForm
+            status={hfStatus}
+            checking={hfChecking}
+            onCancel={onCancelSignIn}
+            onCheck={onHfCheck}
+            onStart={onHfStart}
+            error={startError}
+          />
+        ) : (
+          <SignInForm
+            accountLabel="MAMMA"
+            registerUrl="https://mamma.is.tue.mpg.de/register.php"
+            onCancel={onCancelSignIn}
+            onSubmit={onSubmit}
+            error={startError}
+          />
+        )
       )}
     </div>
   );
@@ -1043,6 +1165,166 @@ function SignInForm({
         {' '}
         Tip: sign in to <span className="text-foreground-muted">{accountLabel}</span> at the top
         of Home to skip this step on every dataset.
+      </div>
+    </form>
+  );
+}
+
+// ───────────────────────── Hugging Face auth ────────────────────────────
+
+function HFAuthForm({
+  status, checking, onCancel, onCheck, onStart, error,
+}: {
+  status: HfStatus | null;
+  checking: boolean;
+  onCancel: () => void;
+  onCheck: (token?: string) => Promise<HfStatus>;
+  onStart: (token?: string) => Promise<boolean>;
+  error: string | null;
+}) {
+  const [token, setToken] = useState('');
+  const [show, setShow] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const hasAccess = !!status?.access;
+  const canSubmit = (hasAccess || token.trim().length > 0) && !submitting;
+
+  // Status line: signed-in + access granted (green), signed-in but license
+  // not accepted (amber), or not signed in (instructions).
+  let statusLine: React.ReactNode;
+  if (checking && status === null) {
+    statusLine = (
+      <span className="inline-flex items-center gap-1.5 text-foreground-faint">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" /> checking Hugging Face login…
+      </span>
+    );
+  } else if (status?.logged_in && status.access) {
+    statusLine = (
+      <span className="inline-flex items-center gap-1.5 text-status-completed">
+        <CheckCircle2 className="w-3.5 h-3.5" />
+        Signed in{status.user ? ` as ${status.user}` : ''} · dataset access granted
+      </span>
+    );
+  } else if (status?.logged_in) {
+    statusLine = (
+      <span className="inline-flex items-center gap-1.5 text-status-pending">
+        <AlertCircle className="w-3.5 h-3.5" />
+        Signed in{status.user ? ` as ${status.user}` : ''} · no dataset access yet — accept the license
+      </span>
+    );
+  } else {
+    statusLine = (
+      <span className="inline-flex items-center gap-1.5 text-foreground-muted">
+        <KeyRound className="w-3.5 h-3.5" /> Not signed in — run <span className="font-mono">hf auth login</span> or paste a token
+      </span>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={async e => {
+        e.preventDefault();
+        if (!canSubmit) return;
+        setSubmitting(true);
+        try {
+          const ok = await onStart(token.trim() || undefined);
+          if (ok) setToken('');
+        } finally {
+          setSubmitting(false);
+        }
+      }}
+      className="mt-2 rounded-md border border-border-subtle bg-surface-2/60 p-3"
+    >
+      <div className="flex items-center justify-between mb-2.5">
+        <span className="text-[10.5px] uppercase tracking-[0.16em] text-foreground-muted">
+          Hugging Face
+        </span>
+        <span className="text-[10.5px] text-foreground-faint flex items-center gap-1">
+          <span className="w-1 h-1 rounded-full bg-status-completed inline-block" />
+          not stored
+        </span>
+      </div>
+
+      <div className="text-[11px] mb-2.5">{statusLine}</div>
+
+      <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex-1 min-w-0 relative">
+          <input
+            type={show ? 'text' : 'password'}
+            autoComplete="off"
+            value={token}
+            onChange={e => setToken(e.target.value)}
+            placeholder="paste an HF token (optional — uses your hf auth login otherwise)"
+            className="w-full bg-surface-1 border border-border rounded px-2.5 py-1.5 pr-8 text-[12px] text-foreground placeholder:text-foreground-faint focus:outline-none focus:border-primary/60"
+          />
+          <button
+            type="button"
+            onClick={() => setShow(s => !s)}
+            tabIndex={-1}
+            title={show ? 'Hide token' : 'Show token'}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-foreground-faint hover:text-foreground p-1"
+          >
+            {show ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+        <div className="flex gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => onCheck(token.trim() || undefined)}
+            disabled={checking}
+            title="Re-check Hugging Face login / access"
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded border border-border text-foreground-muted hover:text-foreground transition-colors disabled:opacity-50"
+          >
+            {checking ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+            check
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="px-2.5 py-1.5 text-[11px] rounded border border-border text-foreground-muted hover:text-foreground transition-colors"
+          >
+            cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[11px] rounded bg-primary text-primary-foreground font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                submitting…
+              </>
+            ) : (
+              <>
+                <Download className="w-3 h-3" />
+                download
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-2 flex items-start gap-1.5 text-[11px] text-status-failed">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div className="mt-2 text-[10.5px] text-foreground-faint leading-relaxed">
+        One-time setup: create a free{' '}
+        <a href={HF_TOKENS_URL} target="_blank" rel="noreferrer"
+           className="text-primary hover:underline inline-flex items-center gap-0.5">
+          access token<ExternalLink className="w-3 h-3" />
+        </a>
+        {' '}(or run <span className="font-mono">hf auth login</span>), then{' '}
+        <a href={HF_DATASET_URL} target="_blank" rel="noreferrer"
+           className="text-primary hover:underline inline-flex items-center gap-0.5">
+          accept the dataset license<ExternalLink className="w-3 h-3" />
+        </a>
+        {' '}(access is granted automatically). A pasted token is sent once over
+        the local API and never stored.
       </div>
     </form>
   );

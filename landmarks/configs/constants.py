@@ -14,7 +14,7 @@ Required / optional environment variables
 | WANDB_API_KEY           | Optional. Enables Weights & Biases logging.                             | `train.py` if you want wandb                      |
 
 The webdataset root is no longer an env var — pass it as a Hydra CLI override
-(`python train.py dataset_path=/your/root`), defaulting to `data/mamma`. The
+(`python train.py dataset_path=/your/root`), defaulting to `data/mammasyn`. The
 BEDLAM masks webdataset is expected at `${dataset_path}/BEDLAM_MASKS_WD/`.
 
 If a required variable is unset, importing the relevant code path raises
