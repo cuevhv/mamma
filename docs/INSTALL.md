@@ -71,8 +71,9 @@ Two recommended paths to fetch everything (covered by [README → Get the data](
   ```bash
   bash data/download_mamma_weights.sh --all       # MAMMA landmark ckpt + downsampled SMPL-X verts (MAMMA account)
   bash data/download_smplx_locked_head.sh         # SMPL-X locked-head body model (SMPL-X account)
+  bash data/download_vposer.sh                    # optional: VPoser pose prior for ma_3d (SMPL-X account)
   ```
-  The two scripts use different gates: `download_mamma_weights.sh` authenticates against the **MAMMA** account (register at <https://mamma.is.tue.mpg.de/>); `download_smplx_locked_head.sh` against the **SMPL-X** account (register at <https://smpl-x.is.tue.mpg.de/>).
+  The scripts use different gates: `download_mamma_weights.sh` authenticates against the **MAMMA** account (register at <https://mamma.is.tue.mpg.de/>); `download_smplx_locked_head.sh` and `download_vposer.sh` against the **SMPL-X** account (register at <https://smpl-x.is.tue.mpg.de/>). `download_vposer.sh` is **optional** — only configs that enable the `vposer_recon_loss` pose prior need it; the default pipeline runs without it.
 
 Target layout:
 
@@ -80,7 +81,8 @@ Target layout:
 data/
 ├── body_models/
 │   ├── smplx_locked_head/
-│   └── downsampled_verts/verts_512.pkl
+│   ├── downsampled_verts/verts_512.pkl
+│   └── vposer/V02_05/             # optional (VPoser pose prior, ma_3d)
 └── weights/
     ├── ma_2d/mamma_mask_full_cvpr.ckpt
     ├── sam2/sam2.1_hiera_large.pt

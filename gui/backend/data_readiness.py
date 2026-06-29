@@ -777,6 +777,12 @@ def _run_mpi(asset: DataAsset, username: str, password: str, job_id: str) -> Non
                 zf.extractall(dest_path)
             if asset.id == "smplx_locked_head":
                 _flatten_single_wrapper_dir(dest_path, expected_subdir="smplx")
+            elif asset.id == "vposer":
+                # V02_05.zip nests everything under a top-level V02_05/ dir,
+                # and we extract into dest_path (.../vposer/V02_05), so lift
+                # the wrapper up to land snapshots/ + the .yaml directly under
+                # V02_05/ (the layout vposer_recon_loss loads).
+                _flatten_single_wrapper_dir(dest_path, expected_subdir="snapshots")
             zip_path.unlink(missing_ok=True)
         else:
             _atomic_install_file(tmp, dest_path)

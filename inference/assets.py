@@ -255,6 +255,34 @@ ASSETS: Tuple[InstallationAsset, ...] = (
         ),
     ),
     InstallationAsset(
+        id="vposer",
+        label="VPoser v2.05 pose prior",
+        purpose="ma_3d · optional pose prior (vposer_recon_loss)",
+        group="body_models",
+        size_hint_mb=170,
+        panel_optional=True,
+        env_key="MAMMA_VPOSER_DIR",
+        default="data/body_models/vposer/V02_05",
+        fs_kind="dir",
+        # Read directly from the environment by optimization/losses/losses.py
+        # (vposer_recon_loss), not injected as a CLI flag into the ma_3d
+        # subprocess — hence no StepConsumer. Only configs that enable
+        # vposer_recon_loss load it; the default pipeline never touches it.
+        consumers=(),
+        note=(
+            "Optional. VPoser v2.05 weights dir, read by ma_3d's vposer_recon_loss\n"
+            "pose prior. Default points to the documented data/ layout; only\n"
+            "configs that enable that loss need it."
+        ),
+        source=MpiSource(
+            domain="smplx",
+            sfile="V02_05.zip",
+            account_label="SMPL-X",
+            register_url="https://smpl-x.is.tue.mpg.de/register.php",
+            extract=True,
+        ),
+    ),
+    InstallationAsset(
         id="downsampled_verts",
         label="Downsampled SMPL-X vertices",
         purpose="ma_3d · vertex downsampling",

@@ -491,6 +491,14 @@ function AssetRow({
           >
             {asset.label}
           </span>
+          {asset.optional && (
+            <span
+              className="text-foreground-faint text-[11px] flex-shrink-0"
+              title="Not part of the default pipeline — only configs that opt in need it"
+            >
+              (optional)
+            </span>
+          )}
           <span
             className="text-foreground-subtle text-[11px] font-mono truncate flex-1 min-w-0"
             title={asset.rel_path}
