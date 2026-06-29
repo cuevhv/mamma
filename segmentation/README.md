@@ -90,7 +90,7 @@ Installation is managed by the parent `mamma_release` repo. See [`docs/INSTALL.m
 
 SAM 3 weights come from a **gated** Hugging Face model, so the SAM3 backends
 (`sam3`, `sam3_prompt`, `sam3_prompt_light`) need an approved account and a local
-`huggingface-cli login`. Inside a container that can't see the host's HF cache,
+`hf auth login`. Inside a container that can't see the host's HF cache,
 bypass cache discovery by passing the checkpoint explicitly:
 
 ```bash

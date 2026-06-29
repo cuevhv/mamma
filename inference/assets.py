@@ -185,7 +185,7 @@ ASSETS: Tuple[InstallationAsset, ...] = (
         # No env_key: SAM 3 self-resolves through HuggingFace Hub —
         # the subprocess calls from_pretrained("facebook/sam3") which
         # downloads to ~/.cache/huggingface/hub on first use (gated,
-        # needs huggingface-cli login). The runner never needs to
+        # needs `hf auth login`). The runner never needs to
         # inject --sam_checkpoint for sam3*. Users wanting a pinned
         # revision or local .pt file pass --sam_checkpoint in the
         # preset's `flags` list directly.
@@ -201,7 +201,7 @@ ASSETS: Tuple[InstallationAsset, ...] = (
             steps=(
                 "Request access on the SAM 3 Hugging Face page; wait for approval.",
                 "Activate the env: micromamba activate mamma (or conda activate mamma).",
-                "Authenticate once: huggingface-cli login.",
+                "Authenticate once: hf auth login.",
                 "Weights download lazily on the first ma_masks run — no action needed here.",
             ),
         ),

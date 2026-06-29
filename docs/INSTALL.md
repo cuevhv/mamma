@@ -117,7 +117,7 @@ The shipped presets default to **SAM 2**. To switch to SAM 3 (gated, weights dow
 ```bash
 pip install "setuptools<81"
 pip install git+https://github.com/facebookresearch/sam3.git
-huggingface-cli login              # account must have approved access
+hf auth login                      # account must have approved access
 ```
 
 Then edit the preset to use SAM 3: change `ma_masks.flags` to `- --sam_version sam3_prompt`. Weights download on first run; no env var is needed.
