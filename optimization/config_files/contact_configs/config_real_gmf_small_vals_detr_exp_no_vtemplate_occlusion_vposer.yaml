@@ -1,0 +1,148 @@
+# Occlusion-aware lower-body fix (seq-49 style: legs occluded behind a table).
+# = config_real_gmf_small_vals_detr_exp_no_vtemplate.yaml + two additions:
+#   1. occlusion_gating (hybrid gate over all landmarks) replaces the vis_clip_value
+#      clamp so occluded views stop out-voting the one view that sees a part.
+#   2. vposer_recon_loss (gentle, w=0.25) pins the evidence-starved legs to the
+#      VPoser pose manifold (distance-from-manifold; needs data/body_models/vposer/V02_05).
+# This is the validated winner. The gate applies to all landmarks; the prior does
+# the leg-anchoring, so no lower-body mask/scoping is needed. See CHANGES_occlusion_vposer.md.
+n_betas: 16
+use_v_template: False
+use_bun_model: False
+optim:
+  first_run:
+    optimize_only_global_rotation: True
+    optimize_only_body: True
+    optimize_only_hand_joints: False
+    optimize_hand_joints: False
+    optimize_only_limbs: False
+    vis_clip_value: 0.8
+    optimizer: Adam
+    optim_verts: True
+    num_iters: 50
+    learning_rate: 0.001
+    reproj_loss_name: geman_mcclure
+    only_ten_first_frames: False
+    use_sparse_body_ldmks: False
+    scale_uncertainties: False
+    optim_var:
+      pose: True
+      betas: False
+      trans: True
+    losses:
+      reproj_loss:
+        weight: 20. #0 # #10000 # 20
+      l2_loss_3d_points:
+        weight: 100
+
+
+  second_run:
+    optimize_only_body: False
+    optimize_only_hand_joints: False
+    optimize_hand_joints: False
+    optimize_only_limbs: False
+    vis_clip_value: 0.8
+    optimizer: Adam
+    optim_verts: True
+    num_iters: 500
+    learning_rate: 0.001
+    reproj_loss_name: geman_mcclure
+    only_ten_first_frames: False
+    use_sparse_body_ldmks: False
+    scale_uncertainties: False
+    optim_var:
+      pose: True
+      betas: True
+      trans: True
+    losses:
+      reproj_loss:
+        weight: 100. #50. # 2.0
+      body_shape_prior_loss:
+        weight: 1.
+      vposer_recon_loss:
+        weight: 0.25
+
+  third_run:
+    optimize_only_body: False
+    optimize_only_hand_joints: False
+    optimize_hand_joints: False
+    optimize_only_limbs: False
+    vis_clip_value: 0.2
+    optimizer: Adam
+    optim_verts: True
+    num_iters: 100
+    learning_rate: 0.001
+    reproj_loss_name: geman_mcclure
+    only_ten_first_frames: False
+    use_sparse_body_ldmks: False
+    scale_uncertainties: True
+    optim_var:
+      pose: True
+      betas: True
+      trans: True
+    losses:
+      reproj_loss:
+        weight: 120. #50. # 2.0
+      angular_acc_loss:
+        weight: 0.003
+      pts3d_temp_loss:
+        weight: 0.03
+      vposer_recon_loss:
+        weight: 0.25
+
+  fourth_run:
+    optimize_only_body: True
+    optimize_only_hand_joints: False
+    optimize_hand_joints: False
+    optimize_only_limbs: True
+    vis_clip_value: 0.2
+    optimizer: Adam
+    optim_verts: True
+    num_iters: 25
+    learning_rate: 0.001
+    reproj_loss_name: geman_mcclure
+    only_ten_first_frames: False
+    use_sparse_body_ldmks: False
+    scale_uncertainties: True
+    optim_var:
+      pose: True
+      betas: False
+      trans: False
+    losses:
+      reproj_loss:
+        weight: 300. #50. # 2.0
+      angular_acc_loss:
+        weight: 0.005
+      intersection_loss:
+        weight: 1.0
+      pts3d_temp_loss:
+        weight: 0.05
+      vposer_recon_loss:
+        weight: 0.25
+
+# Occlusion-aware gating. Replaces the per-landmark visibility clamp
+# (vis_clip_value) with a "gate" — a per-(camera, frame, landmark) weight in [0,1]
+# that down-weights landmarks the 2D network reports as occluded, so the few views
+# that actually see a body part aren't out-voted by the many that don't.
+# Gate (soft/hybrid):  weight = visibility * sigmoid((visibility - tau) / beta)
+occlusion_gating:
+  # Master switch. false (default) => original vis_clip_value weighting, gating disabled.
+  enabled: true
+  # Gate shape:
+  #   soft   = sigmoid gate only, no safety net (even the best view is suppressed below tau)
+  #   hybrid = sigmoid gate + keep_top_m safety (chosen: smooth, but never zeros a landmark in all views)
+  #   trim   = hard cutoff (weight=0 below tau) + keep_top_m safety
+  mode: hybrid
+  # Visibility threshold (sigmoid centre). Landmarks below tau are treated as
+  # occluded and driven toward zero weight; above tau they keep ~their visibility.
+  tau: 0.3
+  # Transition softness around tau (soft/hybrid only): smaller = sharper near-step,
+  # larger = gentler ramp. 0.05 => swings ~0->1 over roughly +/-0.15 visibility.
+  beta: 0.05
+  # Safety net (hybrid/trim): keep the m most-visible views per landmark ungated,
+  # so a landmark seen by >=1 camera is never fully zeroed (left unconstrained).
+  # 1 = keep the single best view (e.g. the one camera that sees the legs).
+  keep_top_m: 1
+  # Decide on the temporal MEDIAN visibility, not per-frame: a consistently-low
+  # landmark is gated, a transient single-frame dip is not (avoids flicker).
+  temporal: true

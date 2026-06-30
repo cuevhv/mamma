@@ -6,6 +6,7 @@ from losses.losses import (proj_pts_loss, trans_temp_loss, rotation_prior_loss, 
                            temp_pose_loss, SMPLifyAnglePrior, rot_consistency_loss, acceleration_loss,
                            angular_acceleration_loss, proj_pts_error,
                            visibility_loss)
+from utils.vposer import vposer_recon_loss
 from losses.sdf import MultiSDF
 import utils.triangulation_functions as triang_funcs
 from utils.paths_config import PathsConfig
@@ -248,12 +249,14 @@ class OptimizeSMPLX:
                        poses: Optional[dict] = None,
                        triangulated_3d_points: Optional[torch.Tensor] = None,
                        vis_clip_value: float = 0.8,
+                       occlusion_gating: Optional[dict] = None,
                        ):
 
         losses_functions = {
-                "reproj_loss": (proj_pts_loss, (pts2d, pts3d, K, extrinsics, reprojection_loss_name, pts2d_vis_weight, vis_clip_value)),
+                "reproj_loss": (proj_pts_loss, (pts2d, pts3d, K, extrinsics, reprojection_loss_name, pts2d_vis_weight, vis_clip_value, occlusion_gating)),
                 "pts3d_temp_loss": (trans_temp_loss, (joints3d_pred,)),
                 "rotation_prior_loss": (rotation_prior_loss, (joint_angles,)),
+                "vposer_recon_loss": (vposer_recon_loss, (joint_angles,)),
                 "body_shape_prior_loss": (body_shape_prior_loss, (body_shape, )),
                 "temp_pose_loss": (lambda ja, w: temp_pose_loss(ja, w, distance=1, rot_type="rotmat") + temp_pose_loss(ja, 5*w, distance=3, rot_type="rotmat"), (joint_angles, )),
                 "angle_prior_loss": (self.angle_prior, (joint_angles, True, )),
@@ -339,6 +342,7 @@ class OptimizeSMPLX:
                                loss_cfg=None, use_sparse_body_ldmks=False,
                                scale_uncertainties:bool=False,
                                vis_clip_value:float=0.8,
+                               occlusion_gating: Optional[dict] = None,
                                skip_first_t_frames: int = 0):
 
         optimizer = torch.optim.LBFGS(
@@ -414,7 +418,8 @@ class OptimizeSMPLX:
                                                         verts3d_pred=verts3d_pred,
                                                         poses=poses,
                                                         triangulated_3d_points=triangulated_3d_points,
-                                                        vis_clip_value=vis_clip_value)
+                                                        vis_clip_value=vis_clip_value,
+                                                        occlusion_gating=occlusion_gating)
 
                     loss = torch.sum(torch.stack(list(loss_terms.values())))
                     total_loss = total_loss + loss
@@ -735,6 +740,7 @@ class OptimizeSMPLX:
                                             use_sparse_body_ldmks=run_cfg["use_sparse_body_ldmks"],
                                             scale_uncertainties=run_cfg["scale_uncertainties"],
                                             vis_clip_value=run_cfg["vis_clip_value"],
+                                            occlusion_gating=run_cfg.get("occlusion_gating", None),
                                             skip_first_t_frames=self.skip_start,
                                             )
             else:

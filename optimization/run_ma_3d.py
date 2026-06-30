@@ -563,6 +563,46 @@ def save_scene_meshes(smplx_out_preds, frames_to_use_idx, cam_imgs_seq, cam_name
     build_scene(mesh_results_list, cam_imgs_seq, cam_names, file_name=os.path.join(out_meshes_fn, f"optim_seq"))
 
 
+def _apply_occlusion_gating(optim_cfg, enable_via_cli=False):
+    """
+    Resolve the opt-in ``occlusion_gating`` config so each optimization stage
+    carries its own block (read in ``optimization.fit``).
+
+    Precedence: a per-stage ``occlusion_gating`` wins; otherwise a top-level
+    ``occlusion_gating`` is propagated into every stage; the ``--occlusion-aware-weights``
+    CLI flag synthesizes a sensible top-level block (hybrid, tau=0.30, keep_top_m=1)
+    when none is present. The gate applies to all landmarks. When gating is off
+    everywhere this is a no-op and the optimizer behaves exactly as before.
+    """
+    top = optim_cfg.get("occlusion_gating", None)
+
+    if enable_via_cli:
+        top = dict(top) if isinstance(top, dict) else {}
+        top.setdefault("mode", "hybrid")
+        top.setdefault("tau", 0.30)
+        top.setdefault("beta", 0.05)
+        top.setdefault("keep_top_m", 1)
+        top.setdefault("temporal", True)
+        top["enabled"] = True
+        optim_cfg["occlusion_gating"] = top
+
+    stages = optim_cfg.get("optim", {}) or {}
+    if isinstance(top, dict):
+        for run_cfg in stages.values():
+            if isinstance(run_cfg, dict) and "occlusion_gating" not in run_cfg:
+                run_cfg["occlusion_gating"] = dict(top)
+
+    enabled_stages = [n for n, c in stages.items()
+                      if isinstance(c, dict) and isinstance(c.get("occlusion_gating"), dict)
+                      and c["occlusion_gating"].get("enabled")]
+    if enabled_stages:
+        sample = stages[enabled_stages[0]]["occlusion_gating"]
+        print(f"[occlusion_gating] occlusion-aware gating ENABLED for stages {enabled_stages} "
+              f"(mode={sample.get('mode')}, tau={sample.get('tau')}, "
+              f"keep_top_m={sample.get('keep_top_m')}, temporal={sample.get('temporal')}).")
+    return optim_cfg
+
+
 def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: PathsConfig,
          pred_pth:str = None, hand_joints_pred_pth:str = None,
          out_fn:str = None, downsampled_verts_mat_path:str = None,
@@ -590,6 +630,13 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
                                                                                                                         use_gt,
                                                                                                                         device,
                                                                                                                         cam_name_prefix)
+
+    # Opt-in occlusion-aware gating: resolve config (CLI flag +
+    # top-level/per-stage blocks) so each stage carries its own settings.
+    _apply_occlusion_gating(
+        optim_cfg,
+        enable_via_cli=bool(getattr(cli_args, "occlusion_aware_weights", False)),
+    )
 
     body_ids = [i for i in range(n_people)]
 
@@ -833,6 +880,16 @@ def parser():
                       help="Directory containing per-part SMPL-X mesh files. "
                            "Required only when SDF-based loss is enabled. "
                            "Previously MAMMA_PART_MESH_PATH.")
+    args.add_argument('--occlusion-aware-weights', '--stricter-weights',
+                      dest='occlusion_aware_weights', action='store_true',
+                      help="Opt-in occlusion-aware gating of 2D landmarks in the "
+                           "reprojection loss. Replaces the visibility clamp (vis_clip_value) "
+                           "with a gate that "
+                           "drives the weight of consistently low-visibility (occluded) landmarks "
+                           "toward zero, so the views that actually see a body part dominate. "
+                           "Enables a hybrid soft-gate (tau=0.30) with keep_top_m=1 safety in "
+                           "every optimization stage unless the config sets occlusion_gating "
+                           "explicitly. Default off (behaviour unchanged).")
     return args.parse_args()
 
 

@@ -62,8 +62,8 @@ class Camera:
     frame_start: Optional[int] = None
     frame_end: Optional[int] = None
     fps: Optional[int] = None
-    distortion_model: str = "radtan"           # "radtan" (no-op default) or "vicon_radial_2"
-    distortion_coeffs: tuple = (0.0, 0.0, 0.0, 0.0)
+    distortion_model: str = "radtan"           # "radtan"/"opencv_brown" (OpenCV) or "vicon_radial_2"
+    distortion_coeffs: tuple = (0.0, 0.0, 0.0, 0.0)   # zeros => undistortion is a no-op
 
     def scaled(self, factor: float) -> "Camera":
         """Return a copy with intrinsics, width, and height scaled by ``factor``.

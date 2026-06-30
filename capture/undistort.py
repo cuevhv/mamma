@@ -1,4 +1,12 @@
-"""Vicon-radial-2 frame undistortion for the inference pipeline.
+"""Frame undistortion for the inference pipeline.
+
+Supports two distortion model families:
+
+* ``radtan`` / ``opencv_brown`` — the standard OpenCV Brown-Conrady model
+  (``distortion_coeffs = [k1, k2, p1, p2(, k3)]``), undistorted via
+  ``cv2.initUndistortRectifyMap`` using the camera's ``K`` (newCameraMatrix = K,
+  so a mesh projected with ``K`` aligns with the undistorted background).
+* ``vicon_radial_2`` — the Vicon pixel-space radial model below.
 
 The Vicon distortion model is **not** OpenCV-compatible: it applies a
 radial correction in raw pixel-space coordinates rather than in
@@ -48,30 +56,53 @@ def _radial_correction(
 
 
 def _build_maps(camera: Camera) -> Tuple[np.ndarray, np.ndarray]:
-    """Build ``cv2.remap``-compatible (map_x, map_y) for one camera."""
-    pp_x, pp_y, rad_1, rad_2, rad_3 = camera.distortion_coeffs
-    w, h = camera.width, camera.height
-    x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
-    map_x_flat, map_y_flat = _radial_correction(
-        x_coords.flatten().astype(np.float64),
-        y_coords.flatten().astype(np.float64),
-        float(pp_x), float(pp_y),
-        float(rad_1), float(rad_2), float(rad_3),
-    )
-    return (
-        map_x_flat.reshape(h, w).astype(np.float32),
-        map_y_flat.reshape(h, w).astype(np.float32),
-    )
+    """Build ``cv2.remap``-compatible (map_x, map_y) for one camera.
+
+    Supports both the Vicon ``vicon_radial_2`` pixel-space model and the
+    standard OpenCV Brown-Conrady ``radtan`` / ``opencv_brown`` models. The
+    OpenCV models undistort into the *same* pinhole ``K`` frame (newCameraMatrix
+    = K), so a mesh projected with ``K`` aligns with the undistorted background.
+    """
+    w, h = int(camera.width), int(camera.height)
+    if camera.distortion_model == "vicon_radial_2":
+        pp_x, pp_y, rad_1, rad_2, rad_3 = camera.distortion_coeffs[:5]
+        x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
+        map_x_flat, map_y_flat = _radial_correction(
+            x_coords.flatten().astype(np.float64),
+            y_coords.flatten().astype(np.float64),
+            float(pp_x), float(pp_y),
+            float(rad_1), float(rad_2), float(rad_3),
+        )
+        return (
+            map_x_flat.reshape(h, w).astype(np.float32),
+            map_y_flat.reshape(h, w).astype(np.float32),
+        )
+    # OpenCV Brown-Conrady: radtan = [k1, k2, p1, p2], opencv_brown = [..., k3].
+    import cv2
+    K = np.asarray(camera.intrinsics, dtype=np.float64).reshape(3, 3)
+    dist = np.asarray([float(c) for c in camera.distortion_coeffs], dtype=np.float64)
+    map_x, map_y = cv2.initUndistortRectifyMap(K, dist, None, K, (w, h), cv2.CV_32FC1)
+    return map_x, map_y
 
 
 def _is_noop(camera: Optional[Camera]) -> bool:
-    """True if undistortion would be the identity (zero / missing coeffs)."""
-    if camera is None or camera.distortion_model != "vicon_radial_2":
+    """True if undistortion would be the identity (zero / missing / unsupported)."""
+    if camera is None:
         return True
-    if len(camera.distortion_coeffs) < 5:
-        return True
-    _, _, rad_1, rad_2, rad_3 = camera.distortion_coeffs
-    return rad_1 == 0.0 and rad_2 == 0.0 and rad_3 == 0.0
+    model = getattr(camera, "distortion_model", None)
+    coeffs = tuple(float(c) for c in (getattr(camera, "distortion_coeffs", ()) or ()))
+    if model == "vicon_radial_2":
+        if len(coeffs) < 5:
+            return True
+        _, _, rad_1, rad_2, rad_3 = coeffs[:5]
+        return rad_1 == 0.0 and rad_2 == 0.0 and rad_3 == 0.0
+    if model in ("radtan", "opencv_brown"):
+        # radtan needs at least [k1,k2,p1,p2]; no-op when all coeffs are zero
+        # or the camera lacks an intrinsic matrix to undistort into.
+        if len(coeffs) < 4 or all(c == 0.0 for c in coeffs):
+            return True
+        return getattr(camera, "intrinsics", None) is None
+    return True  # unknown / unsupported distortion model
 
 
 def get_maps(camera: Camera) -> Optional[Tuple[np.ndarray, np.ndarray]]:

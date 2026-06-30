@@ -69,9 +69,15 @@ def visibility_loss(pts2ds: List[torch.Tensor], verts3d_preds_list: List[torch.T
 
 
 def proj_pts_loss(pts2d, pts3d_pred, intrinsics, extrinsics, loss='mse',
-                  per_point_weight=None, vis_clip_value=0.8, weight=1.):
+                  per_point_weight=None, vis_clip_value=0.8, occlusion_gating=None, weight=1.):
 
     res = 0
+    _occ_weights = None
+    # [optional] With occlusion_gating on, landmarks are falling toward zero for occluded views.
+    if occlusion_gating is not None and occlusion_gating.get("enabled", False) and per_point_weight is not None:
+        from utils.occlusion_gating import compute_occlusion_gates
+        _occ_weights = compute_occlusion_gates(per_point_weight, occlusion_gating)
+
     for cam_id in range(len(pts2d)):
         r, t = extrinsics[cam_id][:, :3, :3], extrinsics[cam_id][:, :3, 3].unsqueeze(1)
         pts3d_o2w = torch.matmul(pts3d_pred, r.permute((0,2,1))) + t
@@ -89,7 +95,11 @@ def proj_pts_loss(pts2d, pts3d_pred, intrinsics, extrinsics, loss='mse',
         pred_in_img = weight * pred_in_img
 
         if per_point_weight is not None:
-            pred_in_img = torch.clip(per_point_weight[cam_id][..., None], min=vis_clip_value)*pred_in_img
+            default_w = torch.clip(per_point_weight[cam_id][..., None], min=vis_clip_value)
+            if _occ_weights is not None:
+                pred_in_img = _occ_weights[cam_id][..., None] * pred_in_img
+            else:
+                pred_in_img = default_w * pred_in_img
 
         if loss == "mse":
             error = mse_loss(pts2d_proj[:,:,:2], pts2d[cam_id][...,:2], weight=pred_in_img, uncertainties=2*uncertainties)

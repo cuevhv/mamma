@@ -60,10 +60,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Camera names to include in standalone mode. Required "
                         "with --calibration so synthesis knows which cameras to write.")
     p.add_argument("--undistort", action="store_true",
-                   help="Apply Vicon-radial-2 undistortion to overlay-background "
-                        "frames before compositing the mesh. Reads coefficients "
-                        "from the per-camera NPZs loaded under --ma-cap-dir "
-                        "(or synthesized from --calibration). Default off.")
+                   help="Undistort overlay-background frames before compositing the "
+                        "mesh, using each camera's distortion model — OpenCV "
+                        "radtan/opencv_brown (k1,k2,p1,p2[,k3]) or Vicon "
+                        "vicon_radial_2. Coefficients come from the per-camera NPZs "
+                        "under --ma-cap-dir or from --calibration. Default off.")
     p.add_argument("--start-frame", "--start_frame", "--start", type=int,
                    default=None, dest="start_frame",
                    help="Standalone mode: first source-video frame to read "
