@@ -163,13 +163,20 @@ python -m inference run \\
                 ['data/download_mamma_multi_people.sh',  'Markerless Multi-People — 34 sequences, 3–6 people (32 cams)'],
                 ['data/download_mamma_iphone.sh',        'Markerless iPhone — 42 sequences indoors + outdoors (4 iPhones)'],
                 ['data/download_mamma_eval.sh',          'Evaluation set — GT, masks, markers, videos'],
-                ['data/download_mamma_syn_wd.sh',        'Synthetic training data (WebDataset) — used by landmarks/train.py'],
+                ['data/download_mamma_syn_hf.sh',        'Synthetic training data (WebDataset) from Hugging Face — default; used by landmarks/train.py'],
+                ['data/download_mamma_syn_wd.sh',        'Synthetic training data — MAMMA-account alternative to the Hugging Face download'],
               ]}
             />
             <p>
               Full catalog with sizes, asset types, and video-encoding tables is in{' '}
               <InlineCode>docs/DATASETS.md</InlineCode>. Each script also supports{' '}
               <InlineCode>--help</InlineCode>.
+            </p>
+            <p>
+              <Strong>Optional pose prior?</Strong>{' '}
+              <InlineCode>data/download_vposer.sh</InlineCode> fetches the VPoser v2.05 manifold
+              prior used by <Step name="ma_3d" /> only when <InlineCode>vposer_recon_loss</InlineCode>{' '}
+              is enabled (SMPL-X account; the default pipeline runs without it).
             </p>
             <p>
               <Strong>Running on your own footage?</Strong> See{' '}
