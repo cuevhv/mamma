@@ -42,8 +42,14 @@ if platform.system() == "Windows":
 
 
 def _log(level: str, message: str):
-    """Legacy wrapper — delegates to loguru."""
-    getattr(logger, level.lower(), logger.info)(message)
+    """Legacy wrapper — delegates to loguru.
+
+    Maps level aliases to loguru's method names (loguru exposes ``warning``, not
+    ``warn``) so ``_log("WARN", ...)`` isn't silently demoted to INFO.
+    """
+    lvl = {"WARN": "warning", "WARNING": "warning", "FATAL": "critical"}.get(
+        level.upper(), level.lower())
+    getattr(logger, lvl, logger.info)(message)
 
 
 # ---------------------------------------------------------------------------
@@ -381,29 +387,66 @@ def process_seq(
         effective_start_frame = start_frame
         effective_end_frame = end_frame
 
-    # Optional: attach per-camera undistortion to every cam_data so the
-    # downstream pipeline's frame_source_from_cam_data calls pick it up
-    # transparently. No-op when --undistort isn't set.
-    if undistort:
-        if not calibration_path:
+    # Optional calibration handling (--calibration). Two independent effects, both
+    # backed by the same loaded calibration:
+    #   1. Inject epipolar calibration (cam_int/cam_ext) into every cam_data that
+    #      lacks it, so cross-camera epipolar geometry works in video / image modes
+    #      WITHOUT needing --ma_cap_dir to discover NPZs. NPZ-sourced cam_data already
+    #      carries these, so we only fill gaps — never overwrite. cam.intrinsics /
+    #      cam.T_cam_world match the NPZ cam_int / cam_ext exactly (same convention,
+    #      verified), so the injected values are equivalent to the NPZ path.
+    #   2. --undistort: attach the per-camera Camera so frame_source_from_cam_data
+    #      undistorts frames transparently.
+    if calibration_path or undistort:
+        if undistort and not calibration_path:
             raise ValueError("process_seq(undistort=True) requires calibration_path")
         # capture/ lives in the superproject; this script is invoked
         # with cwd=segmentation/, so push the repo root onto sys.path.
-        import os as _os, sys as _sys
-        _repo_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        if _repo_root not in _sys.path:
-            _sys.path.insert(0, _repo_root)
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _repo_root not in sys.path:
+            sys.path.insert(0, _repo_root)
         from capture import load_calibration  # noqa: E402
         calib_cams = load_calibration(calibration_path).cameras
+
+        # 1. Epipolar calibration — fill only when absent (don't clobber NPZ).
+        n_inj = 0
         for cd in cam_data_list:
-            cam_name = str(cd.get('cam_name', ''))
-            cam = calib_cams.get(cam_name)
+            cam = calib_cams.get(str(cd.get('cam_name', '')))
             if cam is None:
-                _log("WARN", f"--undistort: no calibration for camera {cam_name!r}; skipping undistort")
                 continue
-            cd['_undistort_camera'] = cam
-            cd['_undistort'] = True
-        _log("INFO", f"--undistort: enabled for {sum(1 for cd in cam_data_list if cd.get('_undistort'))} of {len(cam_data_list)} cameras")
+            if 'cam_int' in cd and 'cam_ext' in cd:
+                continue
+            if not hasattr(cam, 'intrinsics') or not hasattr(cam, 'T_cam_world'):
+                continue
+            cd['cam_int'] = np.asarray(cam.intrinsics, dtype=np.float64)
+            cd['cam_ext'] = np.asarray(cam.T_cam_world, dtype=np.float64)
+            if getattr(cam, 'width', None) is not None:
+                cd.setdefault('cam_img_w', int(cam.width))
+            if getattr(cam, 'height', None) is not None:
+                cd.setdefault('cam_img_h', int(cam.height))
+            n_inj += 1
+        if n_inj:
+            _log("INFO", f"--calibration: injected epipolar calibration (cam_int/cam_ext) "
+                         f"into {n_inj} of {len(cam_data_list)} camera(s).")
+        # Cameras still lacking cam_int/cam_ext can't use epipolar geometry (not covered
+        # by the calibration file and no NPZ calibration) — they fall back to CLIP-only.
+        uncovered = [str(cd.get('cam_name', '')) for cd in cam_data_list
+                     if 'cam_int' not in cd or 'cam_ext' not in cd]
+        if uncovered:
+            _log("WARN", f"--calibration: no usable epipolar calibration for camera(s) "
+                         f"{uncovered} — they will use CLIP-only cross-camera matching.")
+
+        # 2. Undistortion (only when explicitly requested).
+        if undistort:
+            for cd in cam_data_list:
+                cam_name = str(cd.get('cam_name', ''))
+                cam = calib_cams.get(cam_name)
+                if cam is None:
+                    _log("WARN", f"--undistort: no calibration for camera {cam_name!r}; skipping undistort")
+                    continue
+                cd['_undistort_camera'] = cam
+                cd['_undistort'] = True
+            _log("INFO", f"--undistort: enabled for {sum(1 for cd in cam_data_list if cd.get('_undistort'))} of {len(cam_data_list)} cameras")
 
     n_cameras = len(cam_data_list)
     _log("INFO", f"Sequence: {data_folder} -> {seq_out_path}")

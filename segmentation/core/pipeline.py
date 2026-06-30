@@ -54,8 +54,15 @@ FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def _sam_log(level: str, message: str):
-    """Legacy wrapper — delegates to loguru."""
-    getattr(logger, level.lower(), logger.info)(message)
+    """Legacy wrapper — delegates to loguru.
+
+    Maps level aliases to loguru's actual method names. Notably loguru exposes
+    ``warning`` (not ``warn``); without this mapping ``_log_warn`` silently fell
+    back to ``logger.info``, demoting every pipeline warning to INFO.
+    """
+    lvl = {"WARN": "warning", "WARNING": "warning", "FATAL": "critical"}.get(
+        level.upper(), level.lower())
+    getattr(logger, lvl, logger.info)(message)
 
 
 DEFAULT_ASSIGNMENT_CONFIG = {
@@ -99,6 +106,15 @@ DEFAULT_ASSIGNMENT_CONFIG = {
         "discard_tiny_tracklets": True,
         "tiny_tracklet_min_area_ratio": 0.005,
         "tiny_tracklet_min_frame_ratio": 0.2,
+        # Cross-camera identity for non-init cameras. "auto" (default) is
+        # calibration- and backend-aware: track_then_match for SAM3-text detection
+        # (sam3_prompt_light) always, and for YOLO backends (sam2/sam3) when epipolar
+        # calibration (cam_int/cam_ext) is available — with geometry, track-then-match
+        # takes every backend to ~100% cross-camera id-accuracy. Falls back to
+        # match_then_track (legacy) for YOLO backends only when matching is CLIP-only
+        # (no calibration). See _cross_camera_strategy(). Override with an explicit
+        # strategy if desired.
+        "cross_camera_strategy": "auto",
     },
     "sam": {
         "propagate_reverse": True,
@@ -1093,6 +1109,18 @@ class SegmentMultipleFrames:
         if not np.isfinite(f).all():
             return None
         return f
+
+    def _has_epipolar_calibration(self, source_cam_data, target_cam_data):
+        """Cheap precondition: do both cam_data carry the keys needed for epipolar
+        geometry (cam_int/cam_ext)? Used to choose the cross-camera strategy without
+        building the fundamental matrix. _compute_fundamental_matrix still does the
+        full computation where the matrix is actually used (and may still return None
+        for degenerate calibration, in which case the remap falls back to CLIP-only)."""
+        return bool(
+            source_cam_data is not None and target_cam_data is not None
+            and "cam_int" in source_cam_data and "cam_int" in target_cam_data
+            and "cam_ext" in source_cam_data and "cam_ext" in target_cam_data
+        )
 
     def _mask_centroid_xy1(self, mask):
         ys, xs = np.where(mask > 0)
@@ -2593,7 +2621,7 @@ class SegmentMultipleFrames:
 
         return detected_ids, video_segments, best_frame
 
-    def _sam3_prompt_build_masks(self, frames, video_segments, id_remap, output_path):
+    def _build_masks_from_remap(self, frames, video_segments, id_remap, output_path):
         """Build save_masks dict, write per-frame mask PNGs and overlay images.
 
         Args:
@@ -2817,7 +2845,7 @@ class SegmentMultipleFrames:
             frames, video_segments, id_remap, best_frame, output_path, cam_name,
         )
 
-        save_masks = self._sam3_prompt_build_masks(frames, video_segments, id_remap, output_path)
+        save_masks = self._build_masks_from_remap(frames, video_segments, id_remap, output_path)
         if hasattr(video_segments, "close"):
             video_segments.close()
         if torch.cuda.is_available():
@@ -2891,13 +2919,13 @@ class SegmentMultipleFrames:
             self._log_warn(f"[{cam_name}] Failed to save pre-remap visualization: {exc}")
 
         # Step 2: Match SAM3 IDs to init camera IDs via CLIP + epipolar
-        id_remap = self._sam3_prompt_remap_ids(
+        id_remap = self._remap_tracklets_to_init(
             cam_name, frames, mask_data, detected_ids, video_segments, best_frame,
             source_cam_data=source_cam_data, target_cam_data=target_cam_data,
         )
 
         # Step 3: Build and save masks with remapped IDs
-        save_masks = self._sam3_prompt_build_masks(frames, video_segments, id_remap, output_path)
+        save_masks = self._build_masks_from_remap(frames, video_segments, id_remap, output_path)
         if hasattr(video_segments, "close"):
             video_segments.close()
         if torch.cuda.is_available():
@@ -2968,10 +2996,14 @@ class SegmentMultipleFrames:
         if added > 0:
             self._log_info(f"[{cam_name}] Updated feature bank: +{added} clean crops from this view.")
 
-    def _sam3_prompt_remap_ids(self, cam_name, frames, mask_data,
-                                sam3_ids, video_segments, best_frame,
-                                source_cam_data=None, target_cam_data=None):
-        """Match SAM3 auto-assigned IDs to init camera IDs using CLIP + epipolar.
+    def _remap_tracklets_to_init(self, cam_name, frames, mask_data,
+                                 local_ids, video_segments, best_frame,
+                                 source_cam_data=None, target_cam_data=None):
+        """Match per-camera tracklet IDs to init-camera IDs using CLIP + epipolar.
+
+        Backend-neutral (sam2 / sam3 / sam3_prompt_light / sam3_prompt). ``local_ids``
+        are the per-camera local tracklet ids (any id space); this consumes those
+        tracklets + the init-camera CLIP gallery and returns {local_id: init_id}.
 
         Samples person crops across multiple frames, builds weighted CLIP
         features, aggregates epipolar consistency across the same frame set,
@@ -2981,14 +3013,14 @@ class SegmentMultipleFrames:
             cam_name: Camera name for logging.
             frames: FrameSource for this camera.
             mask_data: Init camera mask data (for CLIP gallery + mask centroids).
-            sam3_ids: List of SAM3-assigned object IDs.
-            video_segments: {frame_idx: {sam3_id: mask}} from propagation.
+            local_ids: List of per-camera local tracklet IDs (any id space).
+            video_segments: {frame_idx: {local_id: mask}} from propagation.
             best_frame: Selected prompt frame for this camera.
             source_cam_data: Init camera's cam_data (for epipolar geometry).
             target_cam_data: This camera's cam_data (for epipolar geometry).
 
         Returns:
-            Dict mapping sam3_id -> init_camera_id.
+            Dict mapping local_id -> init_camera_id.
         """
         from scipy.optimize import linear_sum_assignment
 
@@ -3008,9 +3040,9 @@ class SegmentMultipleFrames:
         # Collect per-SAM3-ID features across frames, weighted by mask clarity.
         # Frames where a person overlaps less with others contribute more to the
         # averaged CLIP feature, reducing contamination from occluding people.
-        sam3_all_feats = {sid: [] for sid in sam3_ids}   # (feat, weight) pairs
-        sam3_centroids_by_frame = {}
-        sam3_valid_ids = []
+        local_all_feats = {sid: [] for sid in local_ids}   # (feat, weight) pairs
+        local_centroids_by_frame = {}
+        local_valid_ids = []
         image_area = float(frames.image_size[0] * frames.image_size[1]) if len(frames) > 0 else 0.0
 
         for fidx in sample_frame_idxs:
@@ -3030,7 +3062,7 @@ class SegmentMultipleFrames:
             frame_bboxes = {}
             frame_mask_areas = {}
             frame_centroids = {}
-            for sid in sam3_ids:
+            for sid in local_ids:
                 mask = video_segments[fidx].get(sid)
                 if mask is None:
                     continue
@@ -3046,12 +3078,12 @@ class SegmentMultipleFrames:
                     frame_centroids[sid] = centroid
 
             if frame_centroids:
-                sam3_centroids_by_frame[fidx] = frame_centroids
+                local_centroids_by_frame[fidx] = frame_centroids
 
             crops_this_frame = []
             sids_this_frame = []
             weights_this_frame = []
-            for sid in sam3_ids:
+            for sid in local_ids:
                 if sid not in frame_bboxes:
                     continue
                 x1, y1, x2, y2 = frame_bboxes[sid]
@@ -3085,12 +3117,12 @@ class SegmentMultipleFrames:
             if crops_this_frame:
                 feats = self._encode_clip_batch(crops_this_frame)
                 for sid, feat, w in zip(sids_this_frame, feats, weights_this_frame):
-                    sam3_all_feats[sid].append((feat.reshape(-1), w))
+                    local_all_feats[sid].append((feat.reshape(-1), w))
 
         # Weighted average of CLIP features across frames for each person
-        sam3_avg_feats = []
-        for sid in sam3_ids:
-            feat_weight_pairs = sam3_all_feats[sid]
+        local_avg_feats = []
+        for sid in local_ids:
+            feat_weight_pairs = local_all_feats[sid]
             if not feat_weight_pairs:
                 continue
             feats = torch.stack([f for f, _ in feat_weight_pairs])
@@ -3102,27 +3134,27 @@ class SegmentMultipleFrames:
                 weights = torch.ones_like(weights) / len(weights)
             avg_feat = (feats * weights.unsqueeze(1)).sum(dim=0)
             avg_feat = F.normalize(avg_feat.unsqueeze(0), dim=1).squeeze(0)
-            sam3_avg_feats.append(avg_feat)
-            sam3_valid_ids.append(sid)
+            local_avg_feats.append(avg_feat)
+            local_valid_ids.append(sid)
 
-        if not sam3_avg_feats:
+        if not local_avg_feats:
             self._log_warn(f"[{cam_name}] No valid crops for CLIP matching.")
-            return {sid: sid for sid in sam3_ids}
+            return {sid: sid for sid in local_ids}
 
         self._log_info(
             f"[{cam_name}] Multi-frame CLIP: {len(sample_frame_idxs)} frames sampled, "
-            f"{len(sam3_valid_ids)} people with features."
+            f"{len(local_valid_ids)} people with features."
         )
 
         # ── CLIP similarity ────────────────────────────────────────────────
-        sam3_feats = torch.stack(sam3_avg_feats, dim=0)
-        k, m = len(init_obj_ids), len(sam3_valid_ids)
+        local_feats = torch.stack(local_avg_feats, dim=0)
+        k, m = len(init_obj_ids), len(local_valid_ids)
         s_clip = np.zeros((k, m), dtype=np.float32)
         for row, oid in enumerate(init_obj_ids):
             gallery, _ = self._get_subject_gallery(mask_data, oid)
             if gallery is None:
                 continue
-            _, sims = cosine_knn(sam3_feats, gallery, topk=1)
+            _, sims = cosine_knn(local_feats, gallery, topk=1)
             s_clip[row] = sims.squeeze(1).cpu().numpy()
 
         # ── Epipolar scoring (if calibration available) ────────────────────
@@ -3146,11 +3178,11 @@ class SegmentMultipleFrames:
             has_any_epi = True
             for row, oid in enumerate(init_obj_ids):
                 for col in range(m):
-                    sid = sam3_valid_ids[col]
+                    sid = local_valid_ids[col]
                     epi_scores = []
                     for fidx in sample_frame_idxs:
                         ref_point = self._reference_point_from_mask_data(mask_data[oid], fidx)
-                        target_centroid = sam3_centroids_by_frame.get(fidx, {}).get(sid)
+                        target_centroid = local_centroids_by_frame.get(fidx, {}).get(sid)
                         if ref_point is None or target_centroid is None:
                             continue
                         epi_score, epi_dist = self._epipolar_score(
@@ -3166,7 +3198,15 @@ class SegmentMultipleFrames:
                         s_epi[row, col] = float(np.median(epi_scores))
                         has_epi[row, col] = True
         else:
-            self._log_info(f"[{cam_name}] No camera calibration — using CLIP only for ID remapping.")
+            if not getattr(self, "_clip_only_warned", False):
+                self._log_warn(
+                    f"[{cam_name}] No camera calibration (cam_int/cam_ext) — cross-camera ID "
+                    "remap is CLIP-only (appearance), which is markedly less accurate. Provide "
+                    "calibration to enable epipolar geometry."
+                )
+                self._clip_only_warned = True
+            else:
+                self._log_info(f"[{cam_name}] No camera calibration — using CLIP only for ID remapping.")
 
         # ── Combined score + Hungarian assignment ──────────────────────────
         if has_any_epi:
@@ -3187,28 +3227,28 @@ class SegmentMultipleFrames:
         remap_scores = {}
         for row, col in zip(row_ind, col_ind):
             init_id = init_obj_ids[row]
-            sam3_id = sam3_valid_ids[col]
+            local_id = local_valid_ids[col]
             clip_s = float(s_clip[row, col])
             epi_s = float(s_epi[row, col]) if has_any_epi and has_epi[row, col] else 0.0
             comb_s = float(combined[row, col])
             if comb_s < combined_min_score:
                 self._log_info(
-                    f"[{cam_name}] Rejecting weak remap candidate: SAM3 {sam3_id} -> {init_id} "
+                    f"[{cam_name}] Rejecting weak remap candidate: tracklet {local_id} -> {init_id} "
                     f"(combined={comb_s:.3f}, CLIP={clip_s:.3f}"
                     + (f", epipolar={epi_s:.3f})" if has_any_epi and has_epi[row, col] else ")")
                 )
                 continue
             self._log_info(
-                f"[{cam_name}] ID remap: SAM3 {sam3_id} -> {init_id} "
+                f"[{cam_name}] ID remap: tracklet {local_id} -> {init_id} "
                 f"(combined={comb_s:.3f}, CLIP={clip_s:.3f}"
                 + (f", epipolar={epi_s:.3f})" if has_any_epi and has_epi[row, col] else ")")
             )
-            id_remap[sam3_id] = init_id
-            remap_scores[sam3_id] = comb_s
+            id_remap[local_id] = init_id
+            remap_scores[local_id] = comb_s
 
         # Drop unmatched SAM3 IDs — only track people from the init camera.
         # Extra people detected in this camera but not in the init camera are ignored.
-        n_dropped = sum(1 for sid in sam3_valid_ids if sid not in id_remap)
+        n_dropped = sum(1 for sid in local_valid_ids if sid not in id_remap)
         if n_dropped > 0:
             self._log_info(
                 f"[{cam_name}] Dropped {n_dropped} extra person(s) not in init camera."
@@ -3363,22 +3403,204 @@ class SegmentMultipleFrames:
         self._cleanup_sanitized_video_dir(_runtime_video_dir, sam_source)
         return save_masks
 
-    def process_new_video(self, frames, mask_data, output_path, source_cam_data=None, target_cam_data=None, expected_subjects=None):
-        """Process a non-init camera by matching existing IDs to new detections.
+    def _cross_camera_strategy(self, calibration_available=None):
+        """Resolve the cross-camera identity strategy for non-init cameras.
+
+        'auto' (default) is calibration- and backend-aware, per the validation
+        campaign (re-verified 2026-06-29 with epipolar geometry active):
+          * SAM3-text detection (sam3_prompt_light) -> always 'track_then_match'.
+          * YOLO detection (sam2, sam3) -> 'track_then_match' WHEN epipolar
+            calibration (cam_int/cam_ext) is available: the remap's dominant,
+            backend-INDEPENDENT geometry term then drives every backend to ~100%
+            cross-camera id-accuracy (e.g. sam3 legacy 82.5% -> ttm 99.9% on
+            pass_clap; sam2 ~100% either way). Without calibration the remap falls
+            back to CLIP-only, where YOLO appearance crops are unreliable and
+            track-then-match regresses sam2 / is flat for sam3 -> keep the legacy
+            'match_then_track' path for the YOLO backends in that case only.
+        Explicit 'track_then_match' / 'match_then_track' override 'auto'.
+        (sam3_prompt uses its own track-then-match path and never consults this.)
 
         Args:
-            frames: FrameSource (or legacy str video_dir for backward compat).
-            mask_data: Dict of mask data from the init camera.
-            output_path: Directory for output masks.
-            source_cam_data: Init camera's cam_data (for epipolar geometry).
-            target_cam_data: This camera's cam_data.
-            expected_subjects: Expected number of people.
+            calibration_available: True if epipolar geometry can be computed for
+                this camera pair (cam_int/cam_ext present). None/False steers the
+                YOLO 'auto' fallback to legacy match-then-track.
         """
+        val = str(self.assignment_config.get("masks", {})
+                  .get("cross_camera_strategy", "auto")).strip().lower()
+        if val == "auto":
+            if self.sam_version in ("sam3_prompt_light", "sam3_prompt"):
+                val = "track_then_match"
+            elif calibration_available:
+                # YOLO backends reach sam3_prompt parity under track-then-match once
+                # the epipolar geometry term is available (it is backend-independent).
+                val = "track_then_match"
+            else:
+                # CLIP-only: appearance-only remap is unreliable for YOLO crops.
+                val = "match_then_track"
+        if val not in ("track_then_match", "match_then_track"):
+            self._log_warn(f"Unknown cross_camera_strategy '{val}'; using 'match_then_track'.")
+            val = "match_then_track"
+        return val
+
+    def _select_seed_frame(self, frames, frame_id=None, expected_subjects=None):
+        """Pick a clean seed frame for per-camera tracking and return its detections.
+
+        Backend-neutral (YOLO for sam2/sam3, SAM3-text for sam3_prompt_light via the
+        _collect_yolo_detections dispatch). Scores candidate frames by
+        ``n_det * mean_conf`` (×1.5 when n_det == expected_subjects), mirroring the
+        init-camera auto-selector, then caps to expected_subjects.
+
+        Returns (best_frame:int, detections:list[(crop, feat, bbox, score)]) or
+        (None, []) when nothing is detected.
+        """
+        n_frames = len(frames)
+        if n_frames == 0:
+            return None, []
+        cfg = self.assignment_config.get("matching", {})
+        yolo_conf = float(cfg.get("yolo_person_conf", 0.5))
+        sample_count = min(30, n_frames)
+        sampled = [int(f) for f in np.linspace(0, n_frames - 1, num=sample_count, dtype=int)]
+        candidate_frames = []
+        if frame_id is not None:
+            candidate_frames.append(min(int(frame_id), n_frames - 1))
+        candidate_frames += sampled
+        seen = set()
+        candidate_frames = [f for f in candidate_frames if not (f in seen or seen.add(f))]
+
+        best_score, best_frame, best_dets = -1.0, None, []
+        for cand in candidate_frames:
+            _img, dets = self._collect_yolo_detections(
+                frames.read_pil(cand), yolo_conf, include_clip_features=False)
+            if not dets:
+                continue
+            n_det = len(dets)
+            score = sum(float(d[3]) for d in dets)  # == n_det * mean_conf (n_det >= 1 here)
+            if expected_subjects and n_det == expected_subjects:
+                score *= 1.5
+            if score > best_score:
+                best_score, best_frame, best_dets = score, cand, dets
+
+        if best_frame is None:  # fallback: lower thresholds
+            for conf in (0.4, 0.25, 0.15):
+                for cand in candidate_frames:
+                    _img, dets = self._collect_yolo_detections(
+                        frames.read_pil(cand), conf, include_clip_features=False)
+                    if dets:
+                        best_frame, best_dets = cand, dets
+                        break
+                if best_frame is not None:
+                    break
+        if best_frame is None or not best_dets:
+            return None, []
+
+        if expected_subjects and expected_subjects > 0 and len(best_dets) > expected_subjects:
+            best_dets = sorted(best_dets, key=lambda x: float(x[3]), reverse=True)[:expected_subjects]
+        return best_frame, best_dets
+
+    def _detect_and_track_local(self, frames, output_path, frame_id=None, expected_subjects=None):
+        """Detect people on one seed frame, seed each as an arbitrary LOCAL obj id,
+        propagate forward+reverse, and post-process. Backend-neutral track step for
+        the track-then-match path (sam2 / sam3 / sam3_prompt_light) — no cross-camera
+        identity is committed here.
+
+        Returns (local_ids, video_segments, best_frame) or (None, None, None).
+        """
+        cam_name = frames.cam_name
+        sam_source = self._current_sam_video_source
+
+        best_frame, detections = self._select_seed_frame(
+            frames, frame_id=frame_id, expected_subjects=expected_subjects)
+        if not detections:
+            self._log_warn(f"[{cam_name}] No person detections for track-then-match seeding.")
+            return None, None, None
+        self._log_info(
+            f"[{cam_name}] Seeding {len(detections)} local tracklets on frame {best_frame} "
+            "(track-then-match)."
+        )
+
+        # Seed all detections on the single best_frame with arbitrary local ids 0..k-1.
+        # One conditioning frame inherently satisfies SAM3's joint-consolidation rule.
+        best_similarity = {
+            oid: (float(score), int(best_frame), crop, np.asarray(bbox, dtype=np.float32), crop)
+            for oid, (crop, _feat, bbox, score) in enumerate(detections)
+        }
+        anchor_matches = {
+            oid: [{
+                "score": float(score),
+                "frame_idx": int(best_frame),
+                "img_bbx": crop,
+                "bbox": np.asarray(bbox, dtype=np.float32),
+                "target_img_bbx": crop,
+            }]
+            for oid, (crop, _feat, bbox, score) in enumerate(detections)
+        }
+
+        inference_state, runtime_video_dir = self._init_state_with_fallback(
+            video_dir=sam_source,
+            frame_names=frames.frame_names,
+            output_path=output_path,
+            context_name=cam_name,
+        )
+        self.predictor.reset_state(inference_state)
+        try:
+            self.show_best_similarity_and_add_bboxes(
+                best_similarity,
+                frames=frames,
+                video_dir=runtime_video_dir,
+                inference_state=inference_state,
+                frame_names=frames.frame_names,
+                output_path=output_path,
+                anchor_matches=anchor_matches,
+            )
+            video_segments = self.run_propagation(inference_state, cam_name=cam_name)
+        except Exception as exc:
+            self._log_error(
+                f"[{cam_name}] track-then-match propagation failed: {exc}. Skipping camera.")
+            self._cleanup_sanitized_video_dir(runtime_video_dir, sam_source)
+            return None, None, None
+
+        self._cleanup_sanitized_video_dir(runtime_video_dir, sam_source)
+        local_ids = video_segments.all_obj_ids()
+        if not local_ids:
+            self._log_warn(f"[{cam_name}] track-then-match produced no tracklets.")
+            if hasattr(video_segments, "close"):
+                video_segments.close()
+            return None, None, None
+        return local_ids, video_segments, best_frame
+
+    def _process_new_video_track_then_match(self, frames, mask_data, output_path,
+                                            source_cam_data=None, target_cam_data=None,
+                                            expected_subjects=None):
+        """Track-then-match cross-camera identity. Propagate this camera
+        independently into clean local tracklets, then remap WHOLE tracklets to the
+        init-camera ids (multi-frame, occlusion-weighted CLIP + epipolar). Never
+        updates the feature bank — gallery stays init + multiview-bootstrap."""
+        cam_name = frames.cam_name
+        local_ids, video_segments, best_frame = self._detect_and_track_local(
+            frames, output_path, expected_subjects=expected_subjects)
+        if local_ids is None:
+            return mask_data
+
+        id_remap = self._remap_tracklets_to_init(
+            cam_name, frames, mask_data, local_ids, video_segments, best_frame,
+            source_cam_data=source_cam_data, target_cam_data=target_cam_data,
+        )
+        save_masks = self._build_masks_from_remap(frames, video_segments, id_remap, output_path)
+        if hasattr(video_segments, "close"):
+            video_segments.close()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return save_masks
+
+    def process_new_video(self, frames, mask_data, output_path, source_cam_data=None, target_cam_data=None, expected_subjects=None):
+        """Process a non-init camera. Dispatches on the resolved cross-camera strategy
+        (config 'cross_camera_strategy', default 'auto'): 'track_then_match' (propagate
+        independently, then remap whole tracklets) or the legacy 'match_then_track'
+        (commit identity at seed time). See _cross_camera_strategy()."""
         mask_filepath = os.path.join(output_path, "masks.npy")
         if os.path.exists(mask_filepath):
             self._log_info(f"Reusing existing masks cache: {mask_filepath}")
-            new_mask_data = np.load(mask_filepath, allow_pickle=True)[()]
-            return new_mask_data
+            return np.load(mask_filepath, allow_pickle=True)[()]
 
         os.makedirs(output_path, exist_ok=True)
 
@@ -3398,6 +3620,37 @@ class SegmentMultipleFrames:
                 camera_name=os.path.basename(output_path),
             )
 
+        # Epipolar geometry is the remap's dominant, backend-independent signal and
+        # it decides the 'auto' strategy for YOLO backends. Check availability cheaply
+        # (key presence — the remap builds the actual matrix where it's used) and warn
+        # loudly on the CLIP-only fallback: a silent INFO-level fallback here previously
+        # masked a large cross-camera accuracy loss.
+        calib_ok = self._has_epipolar_calibration(source_cam_data, target_cam_data)
+        if not calib_ok and not getattr(self, "_clip_only_warned", False):
+            self._log_warn(
+                "No camera calibration (cam_int/cam_ext) available for cross-camera ID "
+                "matching — falling back to CLIP-only (appearance) matching. This is "
+                "markedly less accurate for cross-camera identity, especially for the YOLO "
+                "backends (sam2/sam3). Provide calibration (e.g. run with --ma_cap_dir so "
+                "raw/IOI_*.npz is discovered) to enable epipolar geometry."
+            )
+            self._clip_only_warned = True
+
+        strategy = self._cross_camera_strategy(calibration_available=calib_ok)
+        cam_label = frames.cam_name  # frames is always a FrameSource here (str converted above)
+        self._log_info(
+            f"[{cam_label}] cross-camera strategy: {strategy} "
+            f"(epipolar geometry {'available' if calib_ok else 'UNAVAILABLE — CLIP-only'})."
+        )
+        if strategy == "track_then_match":
+            return self._process_new_video_track_then_match(
+                frames, mask_data, output_path, source_cam_data, target_cam_data, expected_subjects)
+        return self._process_new_video_match_then_track(
+            frames, mask_data, output_path, source_cam_data, target_cam_data, expected_subjects)
+
+    def _process_new_video_match_then_track(self, frames, mask_data, output_path, source_cam_data=None, target_cam_data=None, expected_subjects=None):
+        """Legacy cross-camera identity: match init ids to per-frame anchor detections
+        and seed the tracker with them before propagation (match-then-track)."""
         frame_names = frames.frame_names
         cam_name = frames.cam_name
         sam_source = self._current_sam_video_source

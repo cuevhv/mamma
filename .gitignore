@@ -66,3 +66,6 @@ gui/backend/__pycache__/
 
 # OS junk.
 .DS_Store
+
+# Experimental, throwaway scripts (not part of the pipeline).
+experimental_scripts/

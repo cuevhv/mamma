@@ -115,6 +115,22 @@ masks:
   tiny_tracklet_min_area_ratio: 0.005
   tiny_tracklet_min_frame_ratio: 0.2
 
+  # Cross-camera identity for non-init cameras:
+  #   auto (default) — calibration- and backend-aware: track_then_match for SAM3-text
+  #     detection (sam3_prompt_light) always, and for the YOLO backend (sam3) WHEN
+  #     epipolar calibration (cam_int/cam_ext) is available. With geometry active the
+  #     remap drives every backend to ~100% cross-camera id-accuracy (sam3 legacy
+  #     82.5% -> ttm 99.9% on pass_clap). Without calibration the remap is CLIP-only,
+  #     where YOLO appearance crops are unreliable, so YOLO falls back to legacy.
+  #   track_then_match — propagate each camera independently into clean tracklets,
+  #     then remap WHOLE tracklets to the init-camera ids (multi-frame,
+  #     occlusion-weighted CLIP + epipolar). Requires camera calibration for the
+  #     epipolar term to engage (else CLIP-only).
+  #   match_then_track (legacy) — match init ids to anchor detections and seed the
+  #     tracker before propagation (commits identity early).
+  # (sam3_prompt always uses track-then-match by construction, regardless of this.)
+  cross_camera_strategy: auto
+
 # ─── SAM propagation ─────────────────────────────────────────────────────────
 
 sam:

@@ -148,7 +148,7 @@ class TestSam3PromptDelegation:
 
         pipeline._sam3_prompt_detect_and_propagate = fake_detect
         pipeline._sam3_prompt_save_init_overview = lambda *args, **kwargs: None
-        pipeline._sam3_prompt_build_masks = lambda *args, **kwargs: {"ok": True}
+        pipeline._build_masks_from_remap = lambda *args, **kwargs: {"ok": True}
 
         result = pipeline.process_first_video_sam3_prompt(
             frames, frame_id=0, output_path=str(tmp_path), expected_subjects=None
@@ -167,8 +167,8 @@ class TestSam3PromptDelegation:
             return [3], {0: {3: np.ones((4, 4), dtype=np.uint8)}}, 0
 
         pipeline._sam3_prompt_detect_and_propagate = fake_detect
-        pipeline._sam3_prompt_remap_ids = lambda *args, **kwargs: {3: 5}
-        pipeline._sam3_prompt_build_masks = lambda *args, **kwargs: {"ok": True}
+        pipeline._remap_tracklets_to_init = lambda *args, **kwargs: {3: 5}
+        pipeline._build_masks_from_remap = lambda *args, **kwargs: {"ok": True}
 
         result = pipeline.process_new_video_sam3_prompt(
             frames, mask_data={5: {}}, output_path=str(tmp_path), expected_subjects=None

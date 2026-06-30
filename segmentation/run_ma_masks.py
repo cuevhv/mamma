@@ -95,7 +95,12 @@ SAM backends:
                              'Expected structure: images_root_dir/<cam_name>/<frame>.jpg. '
                              'Subdirectory names are used as camera names.')
     parser.add_argument('--calibration', default=None,
-                        help='Calibration file (yaml/xcp/json). Required when --undistort is set.')
+                        help='Calibration file (yaml/xcp/json). Injects camera intrinsics/'
+                             'extrinsics (cam_int/cam_ext) into cam_data, enabling cross-camera '
+                             'epipolar geometry for ID matching in --videos_dir / --images_root_dir '
+                             'modes (NPZ/--ma_cap_dir modes already carry calibration). Also '
+                             'required when --undistort is set. Existing NPZ calibration is not '
+                             'overwritten.')
     parser.add_argument('--undistort', action='store_true',
                         help='Undistort frames via Vicon-radial-2 coefficients '
                              '(from --calibration) before SAM / YOLO. Default off.')
@@ -143,6 +148,22 @@ SAM backends:
     parser.add_argument('--interactive', action='store_true',
                         help='Use interactive GUI to click on people instead of YOLO auto-detection. '
                              'Opens a tkinter window on the init camera. Requires a display.')
+    parser.add_argument('--cross-camera-strategy', '--cross_camera_strategy',
+                        dest='cross_camera_strategy', default=None,
+                        choices=['auto', 'track_then_match', 'match_then_track'],
+                        help='Cross-camera identity for non-init cameras. '
+                             'auto (default): calibration- and backend-aware — '
+                             'track_then_match for SAM3-text detection '
+                             '(sam3_prompt_light), and for YOLO backends (sam2/sam3) '
+                             'when epipolar calibration (cam_int/cam_ext) is available; '
+                             'otherwise match_then_track (the CLIP-only appearance remap '
+                             'is unreliable for YOLO crops). track_then_match: force '
+                             'per-camera track then whole-tracklet remap. '
+                             'match_then_track: legacy — commit identity at seed time. '
+                             '(sam3_prompt is always track-then-match regardless.)')
+    parser.add_argument('--legacy-cross-camera', '--legacy_cross_camera',
+                        dest='legacy_cross_camera', action='store_true',
+                        help='Shortcut for --cross-camera-strategy match_then_track.')
 
     # --- Configuration ---
     parser.add_argument('--cfg', '--assignment_cfg', default=None,
@@ -292,6 +313,21 @@ SAM backends:
         if assignment_config is None:
             assignment_config = {}
         assignment_config.setdefault("exports", {})["debug_full_masks_npy"] = True
+
+    if args.legacy_cross_camera and args.cross_camera_strategy not in (None, "match_then_track"):
+        logger.warning(
+            f"Both --legacy-cross-camera and --cross-camera-strategy "
+            f"{args.cross_camera_strategy!r} given; --legacy-cross-camera wins "
+            "(using match_then_track)."
+        )
+    strategy = "match_then_track" if args.legacy_cross_camera else args.cross_camera_strategy
+    if strategy:
+        if assignment_config is None:
+            assignment_config = {}
+        assignment_config.setdefault("masks", {})["cross_camera_strategy"] = strategy
+        if args.sam_version == "sam3_prompt" and strategy == "match_then_track":
+            logger.info("--cross-camera-strategy ignored for sam3_prompt "
+                        "(always track-then-match by construction).")
 
     process_seq(
         data_folder=data_folder,
