@@ -1564,6 +1564,93 @@ def _deep_merge(base, override):
     return base
 
 
+@app.route("/api/tasks/preview-commands", methods=["POST"])
+def preview_task_commands():
+    """Resolve the EXACT per-step shell command the runner would execute for
+    the current form selection — WITHOUT creating a task, writing a run
+    config, or running anything.
+
+    Same code path as a real run (``materialize_run_config`` -> ``get_builder``
+    -> ``engines.build_command``), so it's an accurate confirmation that the
+    user's flags landed. Per-step errors (e.g. a missing MAMMA_* asset or an
+    unresolved --weights) are returned inline so one bad step doesn't blank the
+    whole preview (and it doubles as a pre-flight check).
+    """
+    import shlex as _shlex
+    from inference.steps import get_builder
+    from inference.engines import build_command
+    from inference.runner import enabled_steps as _enabled_steps, topo_order, resolve_seq_names
+
+    data = request.json or {}
+    capture_json_path = os.path.join(MOUNT_POINT, data.get("captureJsonPath", ""))
+    preset_path = (
+        DEFAULT_PRESET_PATH
+        if not data.get("taskJsonPath")
+        else os.path.join(MOUNT_POINT, data["taskJsonPath"])
+    )
+    output_dir = os.path.join(DEFAULT_OUTPUT_DIR, data.get("outputDir", ""))
+    seq_names = data.get("seqNames")
+    cameras = data.get("cameras", [])
+    processes = data.get("processes", [])
+    output_id = (data.get("outputId") or "").strip()
+    task_overrides = data.get("taskOverrides") or {}
+    sequence_major = bool(data.get("sequenceMajor", False))
+
+    try:
+        proc_enum = [ProcessType[p] for p in processes]
+    except KeyError as e:
+        return jsonify({"error": f"Invalid process type: {e}"}), 400
+    if not capture_json_path or not preset_path or not seq_names:
+        return jsonify({"error": "Missing required parameters"}), 400
+
+    try:
+        task_data = materialize_run_config(
+            preset_path,
+            capture_json_path,
+            seq_names=seq_names,
+            cam_names=cameras,
+            out_dir=output_dir,
+            username=LOCAL_USER,
+            enabled_steps=[p.name for p in proc_enum],
+            overrides=task_overrides or None,
+            sequence_major=sequence_major,
+        )
+    except Exception as e:
+        return jsonify({"error": f"Failed to materialize run config: {e}"}), 400
+
+    # Representative sequence + output tag. The output_id is only known after
+    # task creation (it defaults to the DB row id when left blank), and it only
+    # affects the <tag> path segment in --out/--out_path — show a clearly
+    # symbolic placeholder so the user isn't surprised.
+    try:
+        resolved = resolve_seq_names(task_data)
+    except Exception:
+        resolved = seq_names
+    seq_name = (resolved or seq_names)[0]
+    tag = output_id or "<output_id>"
+
+    g = task_data.get("global", {})
+    commands = {}
+    for step_name in topo_order(task_data, _enabled_steps(task_data)):
+        step_cfg = task_data.get(step_name, {})
+        try:
+            builder = get_builder(step_name, step_cfg, g, tag)
+            cmd, cwd = build_command(builder, seq_name)
+            commands[step_name] = {
+                "command": " ".join(_shlex.quote(c) for c in cmd),
+                "cwd": cwd,
+                "engine": builder.engine,
+            }
+        except Exception as e:  # missing asset / unresolved weights / bad engine
+            commands[step_name] = {"error": str(e)}
+
+    return jsonify({
+        "commands": commands,
+        "seqName": seq_name,
+        "outputIdPlaceholder": None if output_id else tag,
+    })
+
+
 @app.route("/api/tasks", methods=["POST"])
 def start_task():
     data = request.json or {}
@@ -1931,6 +2018,8 @@ def get_task_preset_digest(name):
             # inference/steps/base.py). null = unset = process every frame.
             "startFrame": g.get("start_frame"),
             "endFrame": g.get("end_frame"),
+            # Signed world up axis; consumed by ma_3d + ma_vis. None = default (z).
+            "upAxis": g.get("up_axis"),
         },
         "steps": steps_out,
     })
@@ -2144,6 +2233,36 @@ def get_step_flags(step_name):
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 500
     return jsonify(data)
+
+
+@app.route("/api/steps/settings", methods=["GET"])
+def get_steps_settings():
+    """Curated per-step "common settings" schema for the preset editor's
+    friendly widgets (toggle/select/slider/number).
+
+    Static manifest + config-recipe choices resolved from disk. The full
+    argparse surface stays available via ``/api/steps/<step>/flags``. See
+    gui/backend/step_settings.py.
+    """
+    import step_settings  # local import to keep module-top fast
+    return jsonify(step_settings.build_settings())
+
+
+@app.route("/api/steps/<step_name>/recipe", methods=["GET"])
+def get_step_recipe(step_name):
+    """Raw contents of a config-recipe YAML shown in a step's dropdown
+    (ma_2d ``config_path`` / ma_3d ``config_file``), for the read-only "peek"
+    viewer. Path-safe: only files that are actual dropdown options are served.
+    """
+    import step_settings  # local import to keep module-top fast
+    rel = request.args.get("path") or ""
+    try:
+        path, text = step_settings.read_recipe(step_name, rel)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except (FileNotFoundError, OSError) as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify({"path": path, "text": text})
 
 
 @app.route("/api/settings/concurrency", methods=["GET"])

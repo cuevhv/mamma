@@ -21,7 +21,7 @@ import signal
 import subprocess
 import threading
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .steps.base import StepBuilder
 
@@ -102,8 +102,19 @@ def _open_logs(out_path: str, err_path: str):
 def _run(cmd: List[str], cwd: Optional[str], out_f, err_f) -> int:
     """Run cmd in its own process group, streaming output. Returns exit code."""
     global _current_proc
+    quoted = " ".join(shlex.quote(c) for c in cmd)
     log.info("cwd=%s", cwd or os.getcwd())
-    log.info("cmd=%s", " ".join(shlex.quote(c) for c in cmd))
+    log.info("cmd=%s", quoted)
+    # Also record the command at the top of the step's stdout log so it's
+    # visible after the fact (the GUI's `.out` viewer). The log.info above is
+    # dropped when the runner's root logging isn't configured (GUI runs), so
+    # this is the durable copy. Best-effort: logging the command must never
+    # break the run.
+    if out_f is not None:
+        try:
+            out_f.write(f"$ cd {cwd or os.getcwd()}\n$ {quoted}\n\n".encode("utf-8", "replace"))
+        except Exception:
+            pass
     proc = subprocess.Popen(
         cmd,
         cwd=cwd or None,
@@ -125,76 +136,48 @@ def _run(cmd: List[str], cwd: Optional[str], out_f, err_f) -> int:
             _current_proc = None
 
 
-def run_conda(
-    builder: StepBuilder,
-    seq_name: str,
-    out_path: str,
-    err_path: str,
-) -> int:
-    """``conda run -n <env> --no-capture-output --live-stream python <argv>``."""
-    argv = builder.build_argv(seq_name)
-    cmd = [
-        "conda",
-        "run",
-        "-n",
-        builder.conda_env,
-        "--no-capture-output",
-        "--live-stream",
-        "python",
-        *argv,
-    ]
-    out_f, err_f = _open_logs(out_path, err_path)
-    try:
-        return _run(cmd, builder.host_cwd(), out_f, err_f)
-    finally:
-        if out_f:
-            out_f.close()
-        if err_f:
-            err_f.close()
+def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optional[str]]:
+    """Return ``(cmd, cwd)`` — the exact argv + working directory that
+    :func:`dispatch` would ``Popen`` for this step, with **no side effects**
+    (no log dirs created, no process spawned).
 
-
-def run_apptainer(
-    builder: StepBuilder,
-    seq_name: str,
-    out_path: str,
-    err_path: str,
-) -> int:
-    """``apptainer run [--nv] --bind <list> <sif> <argv>``.
-
-    ``--nv`` is only passed when the step asks for a GPU
-    (``submit_cfg.gpus > 0``). Passing ``--nv`` to a CPU-only step makes
-    apptainer inject the host's GL libs into the container and can fail with
-    a glibc-version mismatch when the container's glibc is older.
+    Shared by the engine runners below and by the GUI's command-preview
+    endpoint, so a previewed command is byte-identical to what actually runs.
     """
-    sif = builder.sif_path
-    if not sif:
-        raise RuntimeError(
-            f"Step {builder.step_name!r} engine=apptainer but sif_path is empty"
+    engine = builder.engine
+    if engine not in ENGINES:
+        raise ValueError(
+            f"Unknown engine {engine!r} for step {builder.step_name!r}. "
+            f"Supported: {sorted(ENGINES)}"
         )
-    binds: List[str] = []
-    for b in builder.binds():
-        binds += ["--bind", b]
-    needs_gpu = int((builder.step_cfg.get("submit_cfg") or {}).get("gpus", 0) or 0) > 0
-    nv_flag = ["--nv"] if needs_gpu else []
     argv = builder.build_argv(seq_name)
-    cmd = ["apptainer", "run", *nv_flag, *binds, sif, *argv]
-    out_f, err_f = _open_logs(out_path, err_path)
-    try:
-        return _run(cmd, None, out_f, err_f)
-    finally:
-        if out_f:
-            out_f.close()
-        if err_f:
-            err_f.close()
 
+    if engine == "conda":
+        # conda run -n <env> --no-capture-output --live-stream python <argv>
+        cmd = [
+            "conda", "run", "-n", builder.conda_env,
+            "--no-capture-output", "--live-stream", "python", *argv,
+        ]
+        return cmd, builder.host_cwd()
 
-def run_docker(
-    builder: StepBuilder,
-    seq_name: str,
-    out_path: str,
-    err_path: str,
-) -> int:
-    """``docker run --rm --gpus all -v <list> -w /repo <image> python <argv>``."""
+    if engine == "apptainer":
+        # apptainer run [--nv] --bind <list> <sif> <argv>. ``--nv`` only when
+        # the step asks for a GPU (``submit_cfg.gpus > 0``); passing it to a
+        # CPU-only step injects the host GL libs and can fail on a glibc
+        # mismatch when the container's glibc is older.
+        sif = builder.sif_path
+        if not sif:
+            raise RuntimeError(
+                f"Step {builder.step_name!r} engine=apptainer but sif_path is empty"
+            )
+        binds: List[str] = []
+        for b in builder.binds():
+            binds += ["--bind", b]
+        needs_gpu = int((builder.step_cfg.get("submit_cfg") or {}).get("gpus", 0) or 0) > 0
+        nv_flag = ["--nv"] if needs_gpu else []
+        return ["apptainer", "run", *nv_flag, *binds, sif, *argv], None
+
+    # docker run --rm --gpus all -w /repo -v <list> <image> python <argv>
     image = builder.docker_image
     if not image:
         raise RuntimeError(
@@ -203,28 +186,39 @@ def run_docker(
     volumes: List[str] = []
     for b in builder.binds():
         volumes += ["-v", b]
-    argv = builder.build_argv(seq_name)
     cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--gpus",
-        "all",
-        "-w",
-        builder.container_cwd(),
-        *volumes,
-        image,
-        "python",
-        *argv,
+        "docker", "run", "--rm", "--gpus", "all",
+        "-w", builder.container_cwd(), *volumes, image, "python", *argv,
     ]
+    return cmd, None
+
+
+def _dispatch_run(builder: StepBuilder, seq_name: str, out_path: str, err_path: str) -> int:
+    """Build this step's exact command and run it, streaming to the log files."""
+    cmd, cwd = build_command(builder, seq_name)
     out_f, err_f = _open_logs(out_path, err_path)
     try:
-        return _run(cmd, None, out_f, err_f)
+        return _run(cmd, cwd, out_f, err_f)
     finally:
         if out_f:
             out_f.close()
         if err_f:
             err_f.close()
+
+
+def run_conda(builder: StepBuilder, seq_name: str, out_path: str, err_path: str) -> int:
+    """``conda run -n <env> --no-capture-output --live-stream python <argv>``."""
+    return _dispatch_run(builder, seq_name, out_path, err_path)
+
+
+def run_apptainer(builder: StepBuilder, seq_name: str, out_path: str, err_path: str) -> int:
+    """``apptainer run [--nv] --bind <list> <sif> <argv>``."""
+    return _dispatch_run(builder, seq_name, out_path, err_path)
+
+
+def run_docker(builder: StepBuilder, seq_name: str, out_path: str, err_path: str) -> int:
+    """``docker run --rm --gpus all -v <list> -w /repo <image> python <argv>``."""
+    return _dispatch_run(builder, seq_name, out_path, err_path)
 
 
 ENGINES = {

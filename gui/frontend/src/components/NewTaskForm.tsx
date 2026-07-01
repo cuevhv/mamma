@@ -11,6 +11,7 @@ import {
   HelpCircle,
   Info,
   Loader2,
+  Terminal,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -18,6 +19,10 @@ import { MultiSelectDropdown } from './MultiSelectDropdown';
 import { CalibrationStatus } from './CalibrationStatus';
 import { UpAxisValue } from './UpAxisToggle';
 import { PresetDigestCard, PresetDigest, PresetOverrides } from './PresetDigest';
+import type { StepSettingsSchema } from '../lib/flagModel';
+import { CommandPreviewModal, type CommandPreview } from './CommandPreviewModal';
+import { CaptureSelect } from './CaptureSelect';
+import { PresetPicker } from './PresetPicker';
 import { stepLabel } from './shared/stepLabels';
 
 const DEFAULT_CAMERAS = Array.from({ length: 33 }, (_, i) => `IOI_${String(i + 1).padStart(2, '0')}`);
@@ -37,6 +42,8 @@ interface CaptureSummary {
   captureName: string;
   jsonPath: string;
   seqNames: string[];
+  cams: string[];
+  thumbnailPath: string | null;
 }
 
 /** A previously-used Output ID for the picked capture. Powers the
@@ -192,6 +199,7 @@ export function NewTaskForm({ onSubmitted }: Props) {
 
   // --- preset (Step 2) ---
   const [presets, setPresets] = useState<PresetSummary[]>([]);
+  const [stepSettings, setStepSettings] = useState<StepSettingsSchema>({});
   const [presetName, setPresetName] = useState<string>('');
   const [digest, setDigest] = useState<PresetDigest | null>(null);
   const [stepEnabled, setStepEnabled] = useState<Record<string, boolean>>({});
@@ -240,6 +248,9 @@ export function NewTaskForm({ onSubmitted }: Props) {
       setPresets(list);
       if (list.length > 0 && !presetName) setPresetName(list[0].name);
     }).catch(() => {});
+    // Curated per-step "common settings" schema for the friendly widgets.
+    // Static catalogue, so fetch once; failures degrade to raw flags only.
+    fetch('/api/steps/settings').then(r => r.ok ? r.json() : {}).then(setStepSettings).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -558,6 +569,38 @@ export function NewTaskForm({ onSubmitted }: Props) {
     }
   };
 
+  // Command preview — resolve the exact per-step shell command from the
+  // backend (same materialize path as a real run; no task is created).
+  // Triggered by each step's "View command" button.
+  const [cmdPreview, setCmdPreview] = useState<{
+    open: boolean; loading: boolean; error: string | null;
+    data: CommandPreview | null; focusStep: string | null;
+  }>({ open: false, loading: false, error: null, data: null, focusStep: null });
+
+  const openCommandPreview = async (focusStep: string | null = null) => {
+    if (!digest) { toast.error('Pick a preset first'); return; }
+    if (selectedSeqNames.length === 0) { toast.error('Select at least one sequence'); return; }
+    if (!captureJsonPath) { toast.error('Pick or save a capture first to preview commands'); return; }
+    const processes = digest.steps.filter(s => stepEnabled[s.name]).map(s => s.name);
+    setCmdPreview({ open: true, loading: true, error: null, data: null, focusStep });
+    try {
+      const res = await fetch('/api/tasks/preview-commands', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          captureJsonPath, taskJsonPath: digest.path,
+          seqNames: selectedSeqNames, cameras: selectedCameras,
+          outputDir, outputId, processes,
+          taskOverrides: overrides, sequenceMajor,
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (res.ok) setCmdPreview(p => ({ ...p, loading: false, data: d }));
+      else setCmdPreview(p => ({ ...p, loading: false, error: d.error || `HTTP ${res.status}` }));
+    } catch {
+      setCmdPreview(p => ({ ...p, loading: false, error: 'Could not reach the server.' }));
+    }
+  };
+
   // --- derived ----------------------------------------------------------
 
   // Submit-ready when Step 1 is locked in (Pick-mode capture chosen or
@@ -672,21 +715,18 @@ export function NewTaskForm({ onSubmitted }: Props) {
         onHeaderClick={() => setActiveStep(2)}
       >
         <div className="space-y-3">
-          <select
-            value={presetName}
-            onChange={(e) => setPresetName(e.target.value)}
-            className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors"
-          >
-            {presets.length === 0 && <option value="">No presets in $MAMMA_INTERFACE_DIR/samples/presets/</option>}
-            {presets.map(p => (
-              <option key={p.path} value={p.name} className="bg-surface-2">
-                {p.displayName}{p.source === 'example' ? ' — example' : ''}
-              </option>
-            ))}
-          </select>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-foreground-subtle font-medium mb-1">Preset</div>
+            <p className="text-foreground-faint text-[11px] mb-2 leading-snug">
+              A preset is a reusable pipeline configuration: the engine, per-step flags and settings a run uses.
+              Pick one to start from; expand it below to review or edit, and optionally "Save as preset…".
+            </p>
+            <PresetPicker presets={presets} value={presetName} onPick={setPresetName} />
+          </div>
           <PresetDigestCard
             digest={digest}
             overrides={overrides}
+            stepSettings={stepSettings}
             onOverridesChange={setOverrides}
             onPresetSaved={(newName) => {
               fetch('/api/task-presets')
@@ -789,6 +829,18 @@ export function NewTaskForm({ onSubmitted }: Props) {
             </div>
           )}
 
+          {/* Camera-rig 3D preview — reuses the calibration preview (the
+              "Preview camera rig" button + Rerun viewer) so the user can eyeball
+              this capture's cameras in the 3D scene before running. */}
+          {captureJsonPath && (
+            <div className="flex items-start gap-4">
+              <div className="w-32 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <CalibrationStatus captureJsonPath={captureJsonPath} />
+              </div>
+            </div>
+          )}
+
           {/* Output dir + id */}
           <FieldRow label="Output dir">
             <div className="flex-1 relative">
@@ -868,7 +920,7 @@ export function NewTaskForm({ onSubmitted }: Props) {
               partially run, or run all). */}
           {digest && digest.steps.length > 0 && (
             <FieldRow label="Run steps">
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1.5">
                 {(() => {
                   const activeGroup = runGroups.find(g => g.outputId === outputId) ?? null;
                   return digest.steps.map(step => {
@@ -876,7 +928,7 @@ export function NewTaskForm({ onSubmitted }: Props) {
                     return (
                       <label
                         key={step.name}
-                        className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm cursor-pointer transition-colors ${
+                        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-xs cursor-pointer transition-colors ${
                           stepEnabled[step.name]
                             ? 'bg-primary-muted border-primary/40 text-primary'
                             : 'bg-surface-2 border-border text-foreground-muted hover:border-border-strong hover:text-foreground'
@@ -886,10 +938,10 @@ export function NewTaskForm({ onSubmitted }: Props) {
                           type="checkbox"
                           checked={!!stepEnabled[step.name]}
                           onChange={(e) => setStepEnabled(prev => ({ ...prev, [step.name]: e.target.checked }))}
-                          className="w-3.5 h-3.5 accent-primary"
+                          className="w-3 h-3 accent-primary"
                         />
                         <span>{stepLabel(step.name)}</span>
-                        <span className="text-xs opacity-60 font-mono">{step.name}</span>
+                        <span className="text-[10px] opacity-60 font-mono">{step.name}</span>
                         {status === 'all' && (
                           <span
                             className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider bg-status-completed-bg border border-status-completed/35 text-status-completed"
@@ -1010,7 +1062,17 @@ export function NewTaskForm({ onSubmitted }: Props) {
           )}
 
           {/* Submit */}
-          <div className="flex justify-end pt-1">
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => openCommandPreview()}
+              disabled={!digest}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-md text-sm font-medium border border-border text-foreground-muted hover:text-foreground hover:border-border-strong transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Preview the exact commands all enabled steps will run"
+            >
+              <Terminal className="w-4 h-4" />
+              View commands
+            </button>
             <button
               onClick={() => submit(false)}
               disabled={!canSubmit}
@@ -1021,6 +1083,15 @@ export function NewTaskForm({ onSubmitted }: Props) {
           </div>
         </div>
       </StepCard>
+
+      <CommandPreviewModal
+        open={cmdPreview.open}
+        loading={cmdPreview.loading}
+        error={cmdPreview.error}
+        data={cmdPreview.data}
+        focusStep={cmdPreview.focusStep}
+        onClose={() => setCmdPreview(p => ({ ...p, open: false }))}
+      />
     </div>
   );
 }
@@ -1349,23 +1420,7 @@ function PickCapturePanel({
 }) {
   return (
     <div className="space-y-2">
-      <select
-        value={captures.find(c => c.jsonPath === currentPath) ? currentPath : ''}
-        onChange={(e) => onPick(e.target.value)}
-        className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors"
-      >
-        <option value="">
-          {captures.length === 0
-            ? 'No captures yet — switch back to "Create new capture" to make one'
-            : 'Pick a capture…'}
-        </option>
-        {captures.map(c => (
-          <option key={c.id} value={c.jsonPath} title={c.jsonPath} className="bg-surface-2">
-            {c.captureName}
-            {c.seqNames.length > 0 ? ` · ${c.seqNames.length} seq${c.seqNames.length === 1 ? '' : 's'}` : ''}
-          </option>
-        ))}
-      </select>
+      <CaptureSelect captures={captures} value={currentPath} onPick={onPick} />
       {pathError && (
         <div className="flex items-center gap-1.5 text-status-failed text-xs">
           <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />

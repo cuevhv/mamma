@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Cpu, Box, Container, FileCode, Plus, X, RotateCcw, ChevronDown, ChevronRight, AlertTriangle, Pencil, Save, Trash2 } from 'lucide-react';
+import { Cpu, Box, Container, FileCode, Plus, X, RotateCcw, ChevronDown, ChevronRight, AlertTriangle, Pencil, Save, Trash2, Globe } from 'lucide-react';
 import { stepLabel } from './shared/stepLabels';
 import { FlagCatalogPopover } from './FlagCatalogPopover';
+import { StepSettings } from './StepSettings';
+import type { StepSetting, StepSettingsSchema } from '../lib/flagModel';
 
 export interface PresetStep {
   name: string;
@@ -31,6 +33,8 @@ export interface PresetDigest {
      *  --start/--end at runtime; downstream steps inherit it via the NPZ. */
     startFrame: number | null;
     endFrame: number | null;
+    /** Signed world up axis (consumed by ma_3d + ma_vis). null = preset default (z). */
+    upAxis?: string | null;
   };
   steps: PresetStep[];
 }
@@ -49,6 +53,7 @@ export interface PresetOverrides {
     // deep-merged into global.start_frame/end_frame on the backend.
     start_frame?: number | null;
     end_frame?: number | null;
+    up_axis?: string;
   };
   // Per-step overrides keyed by step name (ma_cap, ma_masks, ...).
   [stepName: string]: any;
@@ -65,6 +70,9 @@ interface Props {
   /** Called after a successful delete of the currently-shown user preset.
    *  Parent should refresh the preset list and pick a new selection. */
   onPresetDeleted?: (deletedName: string) => void;
+  /** Per-step "common settings" schema (GET /api/steps/settings). When
+   *  provided, each step card shows friendly widgets above the raw flags. */
+  stepSettings?: StepSettingsSchema;
 }
 
 /**
@@ -75,7 +83,7 @@ interface Props {
  * fields are sent to the backend, which deep-merges them on top of the
  * preset before the form-level fields (seq_ids, cam_names, ...) land.
  */
-export function PresetDigestCard({ digest, overrides, onOverridesChange, onPresetSaved, onPresetDeleted }: Props) {
+export function PresetDigestCard({ digest, overrides, onOverridesChange, onPresetSaved, onPresetDeleted, stepSettings }: Props) {
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDisplayName, setSaveDisplayName] = useState('');
@@ -119,7 +127,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
   const setOv = (next: PresetOverrides) => onOverridesChange?.(next);
   const reset = () => setOv({});
 
-  const setGlobalField = (key: 'dataset_name' | 'conda_env' | 'bind', value: any) => {
+  const setGlobalField = (key: 'dataset_name' | 'conda_env' | 'bind' | 'up_axis', value: any) => {
     const nextGlobal = { ...(ov.global ?? {}), [key]: value };
     setOv({ ...ov, global: nextGlobal });
   };
@@ -139,6 +147,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
     bind: ov.global?.bind ?? digest.global.bind,
     startFrame: ov.global?.start_frame !== undefined ? ov.global.start_frame : digest.global.startFrame,
     endFrame: ov.global?.end_frame !== undefined ? ov.global.end_frame : digest.global.endFrame,
+    upAxis: ov.global?.up_axis ?? digest.global.upAxis ?? 'z',
   };
   const frameRangeDirty = ov.global?.start_frame !== undefined || ov.global?.end_frame !== undefined;
   const frameRangeLabel = eff.startFrame == null && eff.endFrame == null
@@ -158,7 +167,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
           aria-controls="preset-digest-body"
           className="min-w-0 text-left flex-1 group"
         >
-          <div className="text-foreground text-sm font-medium flex items-center gap-2 flex-wrap">
+          <div className="text-foreground text-sm font-semibold flex items-center gap-2 flex-wrap">
             {bodyOpen
               ? <ChevronDown className="w-3.5 h-3.5 text-foreground-subtle group-hover:text-foreground transition-colors" />
               : <ChevronRight className="w-3.5 h-3.5 text-foreground-subtle group-hover:text-foreground transition-colors" />}
@@ -302,7 +311,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                 type="text"
                 value={saveName}
                 onChange={e => setSaveName(e.target.value.replace(/[^A-Za-z0-9_-]/g, ''))}
-                placeholder="my_horses_v2"
+                placeholder="fast_draft"
                 autoFocus
                 className="w-full bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-foreground text-xs font-mono focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint"
               />
@@ -313,7 +322,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                 type="text"
                 value={saveDisplayName}
                 onChange={e => setSaveDisplayName(e.target.value)}
-                placeholder="My horses, v2"
+                placeholder="Fast draft"
                 className="w-full bg-surface-2 border border-border rounded-md px-2.5 py-1.5 text-foreground text-xs focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint"
               />
             </div>
@@ -388,8 +397,11 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
               former is a property of the capture, not the preset, and
               per-step Conda env fields already cover the latter. */}
           {(showBind || editable) && (
-            <div className="space-y-2 bg-surface-1/50 border border-border-subtle rounded-md p-3">
-              <div className="text-foreground-subtle text-[11px] uppercase tracking-wider font-medium">Global</div>
+            <div className="space-y-3 bg-surface-1/50 border border-border-subtle rounded-md p-3.5">
+              <div className="flex items-center gap-2 text-[11px] font-semibold tracking-wide text-foreground-muted">
+                <Globe className="w-3.5 h-3.5 text-foreground-faint" />
+                Global
+              </div>
               <FrameRangeField
                 start={eff.startFrame}
                 end={eff.endFrame}
@@ -397,6 +409,8 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                 editable={editable}
                 onChange={setFrameRange}
               />
+              {/* Up axis widget hidden for now (plumbing kept: eff.upAxis +
+                  setGlobalField('up_axis') + digest.global.upAxis). */}
               {showBind && (
                 <ArrayField
                   label="Bind paths"
@@ -424,6 +438,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                 stepIndex={digest.steps.findIndex(s => s.name === step.name)}
                 stepOverride={ov[step.name] ?? {}}
                 editable={editable}
+                settings={stepSettings?.[step.name] ?? []}
                 onChange={(key, value) => setStepField(step.name, key, value)}
               />
             ))}
@@ -448,6 +463,7 @@ function StepCard({
   stepIndex,
   stepOverride,
   editable,
+  settings,
   onChange,
 }: {
   step: PresetStep;
@@ -456,9 +472,14 @@ function StepCard({
   stepIndex: number;
   stepOverride: Record<string, any>;
   editable: boolean;
+  /** Curated "common settings" for this step (may be empty). */
+  settings: StepSetting[];
   onChange: (key: string, value: any) => void;
 }) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Steps with no common-settings widgets show the raw flag editor open
+  // (it's the only flag UI); steps that have widgets keep it collapsed.
+  const [flagsOpen, setFlagsOpen] = useState(settings.length === 0);
 
   const eff = {
     engine: stepOverride.engine ?? step.engine,
@@ -471,6 +492,20 @@ function StepCard({
   };
   const dirty = (k: string) => stepOverride[k] !== undefined;
   const stepIsDirty = Object.keys(stepOverride).length > 0;
+
+  // Flags owned by a Common-settings widget are edited there; split them out
+  // so the raw "Advanced flags" list shows only the *extra* flags — the same
+  // flag never appears in both places. Widget edits still preserve these.
+  const managedFlagNames = new Set<string>();
+  for (const s of settings) {
+    if (s.target.kind === 'flag') managedFlagNames.add(s.target.flag);
+    else if (s.target.kind === 'flag_pair') { managedFlagNames.add(s.target.on); managedFlagNames.add(s.target.off); }
+    else if (s.target.kind === 'flags') s.target.flags.forEach(f => managedFlagNames.add(f));
+  }
+  const flagTokenName = (tok: string) => tok.trim().split(/\s+/)[0] ?? '';
+  const effFlags: string[] = eff.flags ?? [];
+  const managedFlags = effFlags.filter(f => managedFlagNames.has(flagTokenName(f)));
+  const unmanagedFlags = effFlags.filter(f => !managedFlagNames.has(flagTokenName(f)));
 
   const engineIcon = eff.engine === 'apptainer' ? <Container className="w-3.5 h-3.5" />
                     : eff.engine === 'docker'   ? <Box className="w-3.5 h-3.5" />
@@ -493,82 +528,63 @@ function StepCard({
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-status-pending" title="This step has overrides" />
         )}
       </div>
-      <div className="p-3 space-y-2 flex-1">
+      <div className="p-3.5 space-y-3 flex-1">
 
-      {/* Engine + engine-specific fields */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        {editable ? (
-          <SelectField
-            label="Engine"
-            value={eff.engine}
-            dirty={dirty('engine')}
-            onChange={v => onChange('engine', v)}
-            options={['conda', 'apptainer', 'docker']}
-            icon={engineIcon}
-          />
-        ) : (
-          <ReadOnlyField label="Engine" value={eff.engine} icon={engineIcon} />
-        )}
+      {/* Common settings — friendly widgets for this step's important flags
+          (from GET /api/steps/settings). Reads/writes the same flags/extras
+          as the raw editor below, so the two stay in sync. */}
+      <StepSettings
+        settings={settings}
+        stepName={step.name}
+        flags={step.flags}
+        extras={step.extras}
+        override={stepOverride}
+        editable={editable}
+        onChange={onChange}
+      />
 
-        {eff.engine === 'conda' && (
-          <Field
-            label="Conda env"
-            value={eff.condaEnv ?? ''}
-            dirty={dirty('conda_env')}
-            placeholder="(falls back to global)"
-            editable={editable}
-            onChange={v => onChange('conda_env', v)}
-            mono
-          />
-        )}
-        {eff.engine === 'apptainer' && (
-          <Field
-            label="SIF path"
-            value={eff.sifPath ?? ''}
-            dirty={dirty('sif_path')}
-            placeholder="/path/to/image.sif"
-            editable={editable}
-            onChange={v => onChange('sif_path', v)}
-            mono
-          />
-        )}
-        {eff.engine === 'docker' && (
-          <Field
-            label="Docker image"
-            value={eff.dockerImage ?? ''}
-            dirty={dirty('docker_image')}
-            placeholder="org/image:tag"
-            editable={editable}
-            onChange={v => onChange('docker_image', v)}
-            mono
-          />
-        )}
-      </div>
-
-      {/* Flags — with a "View available flags" popover when editing, so
-          the user can discover what the step's script actually accepts
-          instead of guessing or grepping run_ma_*.py. */}
-      <div>
-        <ArrayField
-          label="Flags"
-          values={eff.flags ?? []}
-          dirty={dirty('flags')}
-          editable={editable}
-          onChange={list => onChange('flags', list)}
-          placeholder="--flag value"
-          mono
-        />
-        {editable && (
-          <div className="mt-1.5">
-            <FlagCatalogPopover
-              stepName={step.name}
-              onInsert={(snippet) => onChange('flags', [...(eff.flags ?? []), snippet])}
-              alreadyPresent={new Set(
-                (eff.flags ?? [])
-                  .map(f => /^--?(\S+)/.exec(f)?.[1] || '')
-                  .filter(Boolean),
-              )}
+      {/* Advanced flags (raw) — the full free-text list + "View available
+          flags" catalog. Collapsed when the common-settings widgets above
+          already cover the usual knobs; both views edit the same flag list. */}
+      <div className="border-t border-border-subtle pt-2">
+        <button
+          type="button"
+          onClick={() => setFlagsOpen(o => !o)}
+          aria-expanded={flagsOpen}
+          className="inline-flex items-center gap-2 text-[11px] font-semibold tracking-wide text-foreground-muted hover:text-foreground transition-colors"
+        >
+          {flagsOpen ? <ChevronDown className="w-3.5 h-3.5 text-foreground-faint" /> : <ChevronRight className="w-3.5 h-3.5 text-foreground-faint" />}
+          Advanced flags
+          {unmanagedFlags.length > 0 && (
+            <span className="text-foreground-faint">({unmanagedFlags.length})</span>
+          )}
+          {dirty('flags') && <span className="inline-block w-1 h-1 rounded-full bg-status-pending" title="Modified from preset" />}
+        </button>
+        {flagsOpen && (
+          <div className="mt-2">
+            <ArrayField
+              label="Flags"
+              values={unmanagedFlags}
+              dirty={dirty('flags')}
+              editable={editable}
+              onChange={list => onChange('flags', [...managedFlags, ...list])}
+              placeholder="--flag value"
+              mono
+              hint={settings.length > 0 ? 'Flags shown as Common settings above are edited there and hidden from this list.' : undefined}
             />
+            {editable && (
+              <div className="mt-1.5">
+                <FlagCatalogPopover
+                  stepName={step.name}
+                  onInsert={(snippet) => onChange('flags', [...(eff.flags ?? []), snippet])}
+                  alreadyPresent={new Set(
+                    (eff.flags ?? [])
+                      .map(f => /^--?(\S+)/.exec(f)?.[1] || '')
+                      .filter(Boolean),
+                  )}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -579,36 +595,81 @@ function StepCard({
           <button
             type="button"
             onClick={() => setAdvancedOpen(o => !o)}
-            className="inline-flex items-center gap-1 text-[11px] text-foreground-subtle hover:text-foreground transition-colors"
+            className="inline-flex items-center gap-2 text-[11px] font-semibold tracking-wide text-foreground-muted hover:text-foreground transition-colors"
           >
-            {advancedOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-            Advanced
-            <AlertTriangle className="w-3 h-3 text-status-pending ml-1" />
+            {advancedOpen ? <ChevronDown className="w-3.5 h-3.5 text-foreground-faint" /> : <ChevronRight className="w-3.5 h-3.5 text-foreground-faint" />}
+            Engine
           </button>
           {advancedOpen && (
             <div className="mt-2 space-y-2">
-              <div className="text-[11px] text-status-pending bg-status-pending-bg border border-status-pending/30 rounded p-2 flex items-start gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                <span>Editing <code className="font-mono">script</code> or <code className="font-mono">repo_path</code> can silently break the run if the path doesn't exist.</span>
+              {/* Engine + engine-specific fields (conda env / SIF / docker image). */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {editable ? (
+                  <SelectField
+                    label="Engine"
+                    value={eff.engine}
+                    dirty={dirty('engine')}
+                    onChange={v => onChange('engine', v)}
+                    options={['conda', 'apptainer', 'docker']}
+                    icon={engineIcon}
+                  />
+                ) : (
+                  <ReadOnlyField label="Engine" value={eff.engine} icon={engineIcon} />
+                )}
+                {eff.engine === 'conda' && (
+                  <Field
+                    label="Conda env"
+                    value={eff.condaEnv ?? ''}
+                    dirty={dirty('conda_env')}
+                    placeholder="(falls back to global)"
+                    editable={editable}
+                    onChange={v => onChange('conda_env', v)}
+                    mono
+                  />
+                )}
+                {eff.engine === 'apptainer' && (
+                  <Field
+                    label="SIF path"
+                    value={eff.sifPath ?? ''}
+                    dirty={dirty('sif_path')}
+                    placeholder="/path/to/image.sif"
+                    editable={editable}
+                    onChange={v => onChange('sif_path', v)}
+                    mono
+                  />
+                )}
+                {eff.engine === 'docker' && (
+                  <Field
+                    label="Docker image"
+                    value={eff.dockerImage ?? ''}
+                    dirty={dirty('docker_image')}
+                    placeholder="org/image:tag"
+                    editable={editable}
+                    onChange={v => onChange('docker_image', v)}
+                    mono
+                  />
+                )}
               </div>
-              <Field
-                label="Script"
-                value={eff.script ?? ''}
-                dirty={dirty('script')}
-                placeholder="path/to/script.py"
-                editable={editable}
-                onChange={v => onChange('script', v)}
-                mono
-              />
-              <Field
-                label="Module dir path"
-                value={eff.repoPath ?? ''}
-                dirty={dirty('repo_path')}
-                placeholder="/path/to/module"
-                editable={editable}
-                onChange={v => onChange('repo_path', v)}
-                mono
-              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Field
+                  label="Script"
+                  value={eff.script ?? ''}
+                  dirty={dirty('script')}
+                  placeholder="path/to/script.py"
+                  editable={editable}
+                  onChange={v => onChange('script', v)}
+                  mono
+                />
+                <Field
+                  label="Module dir path"
+                  value={eff.repoPath ?? ''}
+                  dirty={dirty('repo_path')}
+                  placeholder="/path/to/module"
+                  editable={editable}
+                  onChange={v => onChange('repo_path', v)}
+                  mono
+                />
+              </div>
             </div>
           )}
         </div>
