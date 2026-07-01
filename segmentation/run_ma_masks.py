@@ -98,12 +98,15 @@ SAM backends:
                         help='Calibration file (yaml/xcp/json). Injects camera intrinsics/'
                              'extrinsics (cam_int/cam_ext) into cam_data, enabling cross-camera '
                              'epipolar geometry for ID matching in --videos_dir / --images_root_dir '
-                             'modes (NPZ/--ma_cap_dir modes already carry calibration). Also '
-                             'required when --undistort is set. Existing NPZ calibration is not '
-                             'overwritten.')
+                             'modes (NPZ/--ma_cap_dir modes already carry calibration). Also the '
+                             'preferred distortion source for --undistort; if omitted, --undistort '
+                             'falls back to the per-camera distortion in the ma_cap NPZ. Existing '
+                             'NPZ calibration is not overwritten.')
     parser.add_argument('--undistort', action='store_true',
-                        help='Undistort frames via Vicon-radial-2 coefficients '
-                             '(from --calibration) before SAM / YOLO. Default off.')
+                        help='Undistort frames (any supported lens model) before SAM / YOLO. '
+                             'Coefficients come from --calibration when given, else from the '
+                             'per-camera NPZ (chained --ma_cap_dir mode). No-op for cameras with '
+                             'no distortion data. Default off.')
 
     # --- SAM backend ---
     parser.add_argument('--sam_version', default='sam2',

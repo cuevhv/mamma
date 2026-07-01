@@ -211,6 +211,57 @@ def _cam_data_field(cam_data: dict, key: str):
     return v
 
 
+def _camera_from_cam_data(cam_data: dict) -> Optional[Camera]:
+    """Build a minimal :class:`Camera` for undistortion from a cam_data dict.
+
+    Reads the distortion fields ``ma_cap`` writes into each per-camera NPZ --
+    the generic ``distortion_model`` / ``distortion_coeffs`` pair first, falling
+    back to the legacy ``vicon_radial_2`` key. Intrinsics come from ``cam_int``
+    (needed for the OpenCV radtan / opencv_brown models; the Vicon pixel-space
+    model only needs width/height). ``T_cam_world`` / ``T_world_cam`` are not
+    used by undistortion, so identity placeholders are fine.
+
+    Returns ``None`` when no usable distortion information is present, so callers
+    can no-op gracefully. This is what lets ``ma_2d`` / ``ma_masks`` undistort
+    straight from an ``--ma_cap_dir`` NPZ without a separate ``--calibration``.
+    """
+    model: Optional[str] = None
+    coeffs: Optional[tuple] = None
+    dm = _cam_data_field(cam_data, 'distortion_model')
+    dc = cam_data.get('distortion_coeffs')
+    if dm is not None and dc is not None:
+        dc_arr = np.asarray(dc)
+        if dc_arr.ndim == 1 and dc_arr.size >= 4:
+            model = str(dm)
+            coeffs = tuple(float(v) for v in dc_arr.tolist())
+    if model is None:                                  # legacy NPZs
+        v2 = cam_data.get('vicon_radial_2')
+        if v2 is not None:
+            v2_arr = np.asarray(v2)
+            if v2_arr.shape == (5,):
+                model = 'vicon_radial_2'
+                coeffs = tuple(float(v) for v in v2_arr.tolist())
+    if model is None:
+        return None
+
+    K = cam_data.get('cam_int')
+    intrinsics = (
+        np.asarray(K, dtype=np.float64).reshape(3, 3) if K is not None else None
+    )
+    w = _cam_data_field(cam_data, 'cam_img_w')
+    h = _cam_data_field(cam_data, 'cam_img_h')
+    return Camera(
+        name=str(cam_data.get('cam_name', '')),
+        width=int(w) if w is not None else 0,
+        height=int(h) if h is not None else 0,
+        intrinsics=intrinsics,
+        distortion_model=model,
+        distortion_coeffs=coeffs,
+        T_cam_world=np.eye(4, dtype=np.float64),
+        T_world_cam=np.eye(4, dtype=np.float64),
+    )
+
+
 def frame_source_from_cam_data(
     cam_data: dict,
     *,
@@ -230,17 +281,31 @@ def frame_source_from_cam_data(
        canonical range, so the step inherits it automatically.
     3. ``cam_data['img_abs_path']`` — :class:`ImageFileSource`.
 
-    Pass ``camera`` + ``undistort=True`` to apply Vicon-radial-2
-    undistortion on every frame read. As a convenience for callers that
-    don't see the FrameSource construction site (e.g. ma_masks goes
-    through several layers of indirection), the same values may be
-    pre-stuffed into the ``cam_data`` dict under
-    ``_undistort_camera`` / ``_undistort``; explicit kwargs win when set.
+    Pass ``camera`` + ``undistort=True`` to undistort every frame read
+    (any supported lens model). As a convenience for callers that don't
+    see the FrameSource construction site (e.g. ma_masks goes through
+    several layers of indirection), the same values may be pre-stuffed
+    into the ``cam_data`` dict under ``_undistort_camera`` / ``_undistort``;
+    explicit kwargs win when set.
+
+    When ``undistort`` is requested but no ``camera`` is supplied, the
+    per-camera distortion that ma_cap wrote into the NPZ (``distortion_model``
+    / ``distortion_coeffs``, or the legacy ``vicon_radial_2`` key) is used via
+    :func:`_camera_from_cam_data`. If the dict carries no usable distortion,
+    undistortion is silently disabled (no-op) rather than raising.
     """
     if camera is None:
         camera = cam_data.get('_undistort_camera')
     if not undistort:
         undistort = bool(cam_data.get('_undistort', False))
+    # Fall back to the per-camera distortion the ma_cap NPZ carries when no
+    # explicit camera was supplied (e.g. --undistort without --calibration in
+    # chained --ma_cap_dir mode). If the dict has no usable distortion, disable
+    # undistortion rather than erroring downstream -- a graceful no-op.
+    if undistort and camera is None:
+        camera = _camera_from_cam_data(cam_data)
+        if camera is None:
+            undistort = False
     cam_name = str(cam_data.get('cam_name', ''))
 
     reader = cam_data.get('frame_reader')

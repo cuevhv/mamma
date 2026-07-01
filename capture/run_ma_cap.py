@@ -267,9 +267,15 @@ def _write_cam_npz(
         "frame_start": int(frame_start),
         "frame_end": int(frame_end),
         "video_path": np.array(video_path),  # empty string when image-sourced
-        # ``vicon_radial_2`` is only populated when the source format was
-        # Vicon XCP (5-param radial). Otherwise leave it None -- downstream
-        # consumers already handle the None case.
+        # Generic distortion contract -- carries every model (radtan /
+        # opencv_brown / vicon_radial_2). Downstream readers prefer these.
+        # The legacy ``vicon_radial_2`` key below is retained so older readers
+        # (which only know that key) keep working.
+        "distortion_model": np.array(cam.distortion_model),
+        "distortion_coeffs": np.array(cam.distortion_coeffs, dtype=np.float64),
+        # Legacy: only populated when the source format was Vicon XCP (5-param
+        # radial); otherwise None. Kept for back-compat -- downstream consumers
+        # that still read this key already handle the None case.
         "vicon_radial_2": (
             np.array(cam.distortion_coeffs, dtype=np.float64)
             if cam.distortion_model == "vicon_radial_2" else None

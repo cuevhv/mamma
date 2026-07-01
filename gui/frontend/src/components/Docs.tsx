@@ -250,7 +250,8 @@ python -m inference run \\
                 ['frame_start, frame_end',              'canonical range (inherited by every step)', 'canonical range'],
                 ['cam_int, cam_ext',                    '3x3 K, 4x4 world→cam',       '3x3 K, 4x4 world→cam'],
                 ['cam_img_w, cam_img_h, cam_portrait',  'frame dimensions',           'frame dimensions'],
-                ['vicon_radial_2',                      '5-float (XCP source) or None','5-float (XCP source) or None'],
+                ['distortion_model, distortion_coeffs', 'lens model + coeffs (radtan / opencv_brown / vicon_radial_2)', 'lens model + coeffs'],
+                ['vicon_radial_2 (legacy)',             '5-float (XCP source) or None','5-float (XCP source) or None'],
                 ['is_body_in_img',                      'bool[N], all True',          'bool[N], all True'],
               ]}
             />

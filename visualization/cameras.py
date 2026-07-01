@@ -10,6 +10,10 @@ The ``ma_cap`` step writes one ``<cam_name>.npz`` per camera into
 * ``img_abs_path`` ``(F,)`` strings — absolute frame paths
 * ``img_rel_path`` ``(F,)`` strings — frame paths relative to a dataset root
 * (optional) ``fps`` (int-like)
+* (optional) ``distortion_model`` (string-like) + ``distortion_coeffs``
+  ``(K,)`` float — generic lens distortion, one of ``radtan`` /
+  ``opencv_brown`` / ``vicon_radial_2``. Older NPZs instead carry the legacy
+  ``vicon_radial_2`` key (5-float array or None); both are read.
 
 Vendored and cleaned from the upstream ``engine/systems_mv.py::
 MultiViewSystem._load_cameras``. Differences:
@@ -198,11 +202,19 @@ def _load_one(npz_path: str) -> Optional[Camera]:
             except (ValueError, TypeError):
                 fps = None
 
-        # Distortion: ma_cap writes vicon_radial_2 as a 5-float array,
-        # or as None (stored as a 0-d object array) when not applicable.
+        # Distortion: ma_cap writes the generic ``distortion_model`` (str) +
+        # ``distortion_coeffs`` (float array) for every model. Older NPZs only
+        # carry the legacy ``vicon_radial_2`` key (5-float array or None) -- fall
+        # back to that. Default (no distortion fields) is radtan + zeros, a no-op.
         distortion_model = "radtan"
         distortion_coeffs: tuple = (0.0, 0.0, 0.0, 0.0)
-        if "vicon_radial_2" in files:
+        if "distortion_model" in files and "distortion_coeffs" in files:
+            dm = _to_str(data["distortion_model"])
+            dc = np.asarray(data["distortion_coeffs"])
+            if dm and dc.ndim == 1 and dc.size >= 4:
+                distortion_model = dm
+                distortion_coeffs = tuple(float(v) for v in dc.tolist())
+        elif "vicon_radial_2" in files:                  # legacy NPZs
             v2 = np.asarray(data["vicon_radial_2"])
             if v2.shape == (5,):
                 distortion_model = "vicon_radial_2"
