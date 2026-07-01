@@ -368,12 +368,15 @@ def parser():
     args.add_argument('--images_root_dir', type=str, default=None,
                       help='Standalone mode: directory of <cam_name>/*.{jpg,png} subdirectories.')
     args.add_argument('--calibration', type=str, default=None,
-                      help='Optional calibration file (yaml/xcp/json). Required when '
-                           '--undistort is set; otherwise accepted for CLI parity.')
+                      help='Optional calibration file (yaml/xcp/json). Overrides the '
+                           'distortion source for --undistort; if omitted, --undistort '
+                           'falls back to the per-camera distortion in the ma_cap NPZ '
+                           '(chained --ma_cap_dir mode).')
     args.add_argument('--undistort', action='store_true',
-                      help='Undistort frames via Vicon-radial-2 coefficients '
-                           '(from --calibration) before running the landmark '
-                           'network. Default off.')
+                      help='Undistort frames (any supported lens model) before running '
+                           'the landmark network. Coefficients come from --calibration '
+                           'when given, else from the per-camera NPZ. No-op for cameras '
+                           'with no distortion data. Default off.')
     args.add_argument('--start', type=int, default=None,
                       help='First frame index to process (0-based, inclusive). '
                            'Default: 0 (process from the beginning).')
@@ -391,10 +394,17 @@ def parser():
     args.add_argument('--mask_path', type=str, default=None, help='path to detectron2 mask model')
     args.add_argument('--video_fps', type=float, default=5.0, help='FPS for generated videos')
     args.add_argument('--cam_names', nargs='*', default=None, help='space-separated camera names (e.g., IOI_01 IOI_02)')
-    args.add_argument('--save_cam_output', action=argparse.BooleanOptionalAction, default=False,
-                      help='Debug only: write per-body viz frames + stitch a preview video. '
-                           'Off by default (these artifacts are not consumed downstream); '
-                           'pass --save_cam_output to enable for inspection.')
+    args.add_argument('--disable-visualizations', '--disable_visualizations',
+                      dest='disable_visualizations', action='store_true',
+                      help='Skip the per-body 2D-landmark viz frames + preview video. '
+                           'Visualizations are written by default; pass this to turn '
+                           'them off (they are not consumed by downstream steps).')
+    # Deprecated alias, kept so older presets / run-configs keep working:
+    # --save_cam_output (now the default) / --no-save_cam_output still toggle
+    # the same visualizations. Hidden from --help in favour of
+    # --disable-visualizations; default None = "not passed".
+    args.add_argument('--save_cam_output', action=argparse.BooleanOptionalAction,
+                      default=None, help=argparse.SUPPRESS)
     args.add_argument('--downsampled-verts', dest='downsampled_verts',
                       default='assets/verts_512.pkl',
                       help='Path to verts_512.pkl. Previously hard-coded to '
@@ -480,26 +490,34 @@ def _build_cam_sources(args, img_folder=None):
     ``args.images_root_dir`` must be set (the parser enforces this).
     Returns sources sorted by camera name (stable ordering).
 
-    When ``args.undistort`` is set, each source is configured to apply
-    Vicon-radial-2 undistortion on every frame read; the per-camera
-    :class:`Camera` is taken from ``args.calibration``.
+    When ``args.undistort`` is set, each source is configured to undistort
+    every frame read (any supported lens model). The per-camera distortion
+    comes from ``args.calibration`` when given; otherwise it falls back to the
+    distortion carried in the per-camera ma_cap NPZ (``frame_source`` builds it
+    from the cam_data dict and no-ops where absent).
     """
     sources = []
 
     calib_cams = None
-    if args.undistort:
-        if not args.calibration:
-            raise SystemExit("error: --undistort requires --calibration")
+    if args.undistort and args.calibration:
         from capture import load_calibration
         calib_cams = load_calibration(args.calibration).cameras
         logger.info(f"undistort: loaded calibration with {len(calib_cams)} cameras")
+    elif args.undistort:
+        # No explicit calibration: fall back to the per-camera distortion the
+        # ma_cap NPZ carries (works in chained --ma_cap_dir mode). frame_source
+        # builds the Camera from the cam_data dict and no-ops where absent
+        # (e.g. raw --videos_dir/--images_root_dir without an NPZ).
+        logger.info("undistort: no --calibration; using per-camera distortion "
+                    "from the NPZ where available (chained --ma_cap_dir mode)")
 
     def _cam_for(name):
         if calib_cams is None:
             return None
         cam = calib_cams.get(name)
         if cam is None:
-            logger.warning(f"--undistort: no calibration entry for camera {name!r}; skipping undistort for it")
+            logger.warning(f"--undistort: no calibration entry for camera {name!r}; "
+                           "falling back to NPZ distortion if present")
         return cam
 
     start, end = args.start, args.end
@@ -512,7 +530,7 @@ def _build_cam_sources(args, img_folder=None):
             cam_data = cam_data_from_video(vp, start=start, end=end)
             cam = _cam_for(str(cam_data['cam_name']))
             sources.append(frame_source_from_cam_data(
-                cam_data, camera=cam, undistort=args.undistort and cam is not None,
+                cam_data, camera=cam, undistort=args.undistort,
             ))
         return sources
 
@@ -524,7 +542,7 @@ def _build_cam_sources(args, img_folder=None):
             cam_data = cam_data_from_image_dir(cd, start=start, end=end)
             cam = _cam_for(str(cam_data['cam_name']))
             sources.append(frame_source_from_cam_data(
-                cam_data, camera=cam, undistort=args.undistort and cam is not None,
+                cam_data, camera=cam, undistort=args.undistort,
             ))
         return sources
 
@@ -560,7 +578,7 @@ def _build_cam_sources(args, img_folder=None):
         # For ad-hoc users who want a different slice, use --videos_dir
         # or --images_root_dir directly with --start/--end.
         sources.append(frame_source_from_cam_data(
-            cam_data, camera=cam, undistort=args.undistort and cam is not None,
+            cam_data, camera=cam, undistort=args.undistort,
         ))
     return sources
 
@@ -690,9 +708,14 @@ def main(args, out_folder, masks_folder, img_folder=None):
 
     sources = _build_cam_sources(args, img_folder=img_folder)
     logger.info(f"processing {len(sources)} cameras: {[s.cam_name for s in sources]}")
+    # Visualizations write by default; --disable-visualizations turns them off.
+    # The deprecated --save_cam_output/--no-save_cam_output still wins when passed.
+    save_viz = not args.disable_visualizations
+    if args.save_cam_output is not None:
+        save_viz = args.save_cam_output
     for source in sources:
         process_data(source, detector, device, forward, cfg, out_folder,
-                     args.save_cam_output, masks_folder,
+                     save_viz, masks_folder,
                      downsampled_verts_pth=args.downsampled_verts)
 
 
