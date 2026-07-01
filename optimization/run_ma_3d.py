@@ -603,6 +603,36 @@ def _apply_occlusion_gating(optim_cfg, enable_via_cli=False):
     return optim_cfg
 
 
+_VPOSER_DEFAULT_WEIGHT = 0.25
+
+
+def _apply_vposer(optim_cfg, enable_via_cli=False):
+    """Opt-in VPoser pose prior (the ``--use-vposer`` CLI flag).
+
+    Adds ``vposer_recon_loss`` (default weight 0.25) to every optimization
+    stage's ``losses`` that doesn't already define it, so the VPoser manifold
+    prior can be enabled on ANY recipe without editing YAML — the same loss the
+    ``*_occlusion_vposer`` recipe configures by hand. No-op when off or where a
+    stage already sets ``vposer_recon_loss``. Requires the VPoser weights
+    (``MAMMA_VPOSER_DIR``, default ``data/body_models/vposer/V02_05``).
+    """
+    if not enable_via_cli:
+        return optim_cfg
+    stages = optim_cfg.get("optim", {}) or {}
+    added = []
+    for name, run_cfg in stages.items():
+        if not isinstance(run_cfg, dict):
+            continue
+        losses = run_cfg.setdefault("losses", {})
+        if "vposer_recon_loss" not in losses:
+            losses["vposer_recon_loss"] = {"weight": _VPOSER_DEFAULT_WEIGHT}
+            added.append(name)
+    if added:
+        print(f"[vposer] VPoser pose prior ENABLED (weight={_VPOSER_DEFAULT_WEIGHT}) "
+              f"for stages {added} via --use-vposer.")
+    return optim_cfg
+
+
 def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: PathsConfig,
          pred_pth:str = None, hand_joints_pred_pth:str = None,
          out_fn:str = None, downsampled_verts_mat_path:str = None,
@@ -636,6 +666,11 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
     _apply_occlusion_gating(
         optim_cfg,
         enable_via_cli=bool(getattr(cli_args, "occlusion_aware_weights", False)),
+    )
+    # Opt-in VPoser pose prior: inject vposer_recon_loss into the stages.
+    _apply_vposer(
+        optim_cfg,
+        enable_via_cli=bool(getattr(cli_args, "use_vposer", False)),
     )
 
     body_ids = [i for i in range(n_people)]
@@ -890,6 +925,14 @@ def parser():
                            "Enables a hybrid soft-gate (tau=0.30) with keep_top_m=1 safety in "
                            "every optimization stage unless the config sets occlusion_gating "
                            "explicitly. Default off (behaviour unchanged).")
+    args.add_argument('--use-vposer', '--use_vposer', dest='use_vposer', action='store_true',
+                      help="Opt-in VPoser pose prior. Adds a gentle vposer_recon_loss "
+                           "(weight 0.25) to every optimization stage unless the config already "
+                           "sets it, so the VPoser manifold prior can be enabled on any recipe "
+                           "without editing YAML. Pulls the body pose toward VPoser's learned "
+                           "pose manifold (helps where 2D evidence is weak/occluded; can bias "
+                           "toward typical poses). Requires the VPoser weights "
+                           "(MAMMA_VPOSER_DIR, default data/body_models/vposer/V02_05). Default off.")
     return args.parse_args()
 
 
