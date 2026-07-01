@@ -70,8 +70,7 @@ differences are **VRAM** and **how long a clip each can process**:
   and OOMs around ~700 frames on a 24 GB GPU. Use `sam3_prompt_light` instead, which
   handles full-length clips at lower VRAM.
 - **No YOLO needed → `sam3_prompt` / `sam3_prompt_light`** (they detect via SAM3
-  text). One measured caveat: `sam3_prompt_light`'s cross-camera ID matching was
-  slightly less consistent than the other modes on a 4-person clip.
+  text).
 
 Per-camera memory is driven mainly by sequence length. `sam2`, `sam3` and
 `sam3_prompt_light` bound VRAM via CPU offload (`sam.offload_video_to_cpu`,
@@ -245,15 +244,15 @@ output/<seq_name>/
     run.log                      # full log file for this run
     subject_feature_bank.npy     # cached CLIP feature bank
     cross_camera_summary/        # per-person cross-camera consistency images
+    initialize/                  # init-camera subject initialization visuals
     <camera>/
         masks/                   # per-frame per-person binary mask PNGs
         masks.npy                # mask data + metadata cache
         masked_outputs/          # colored overlay video (MP4)
-        initialize/              # init-camera subject initialization visuals (all modes)
         pre_remap/               # raw SAM3 IDs before remapping (sam3_prompt)
         person_XX_crop_summary.png  # per-person crop samples across frames
-        anchor_report.json       # anchor frame details (sam2/sam3)
-        anchor_visualizations/   # prompt visualizations (sam2/sam3)
+        anchor_report.json       # seed-frame anchor details (init camera; not sam3_prompt)
+        anchor_visualizations/   # seed-frame prompt visuals (sam2 / sam3 / sam3_prompt_light)
 ```
 
 ## Project Structure
