@@ -238,13 +238,16 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
         Setting(
             id="use_vposer", label="Enable Pose Prior", widget="toggle",
             target=_flag("--use-vposer", valued=False), default=False,
-            help="A learned prior of realistic human poses — a fix for heavy occlusion, not a "
-                 "general quality boost. Turn it on only when too few 2D landmarks are visible to "
-                 "constrain a joint and limbs settle into implausible poses (e.g. a knee or elbow "
-                 "rotating the wrong way); it nudges those under-constrained joints back onto "
-                 "plausible ones. Leave it off otherwise — when the 2D evidence is good it can bias "
-                 "the fit toward generic poses and reduce accuracy. Requires the VPoser weights in "
-                 "data/body_models/vposer.",
+            help="A learned prior of realistic human poses; a fix for heavy occlusion, not a "
+                 "general quality boost. "
+                 # ""
+                 # "Turn it on only when too few 2D landmarks are visible to "
+                 # "constrain a joint and limbs settle into implausible poses (e.g. a knee or elbow "
+                 # "rotating the wrong way); it nudges those under-constrained joints back onto "
+                 # "plausible ones. Leave it off otherwise — when the 2D evidence is good it can bias "
+                 # "the fit toward generic poses and reduce accuracy. Requires the VPoser weights in "
+                 # "data/body_models/vposer."
+            ,
         ),
     ],
 

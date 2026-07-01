@@ -518,19 +518,6 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                       >
                         {formatTaskId(row.taskId)}
                       </button>
-                      {row.presetPath && (() => {
-                        const stem = row.presetPath.split('/').pop()?.replace(/\.(json|ya?ml)$/i, '') ?? '';
-                        return stem ? (
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); openPeek(row.taskId, 'preset'); }}
-                            className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono bg-surface-3/70 text-foreground-subtle border border-border-subtle align-middle mamma-cell-clickable"
-                            title={`View preset: ${row.presetPath}`}
-                          >
-                            {stem}
-                          </button>
-                        ) : null;
-                      })()}
                       </>)}
                     </td>
                     {showCapture && (
