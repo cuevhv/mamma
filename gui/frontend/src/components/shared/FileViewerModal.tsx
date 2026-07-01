@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Eye, Copy, Check, X, Info, Code2, Table as TableIcon, AlertCircle } from 'lucide-react';
 import { Skeleton } from './Skeleton';
+import { CodeBlock } from './CodeBlock';
 
 interface Props {
   /** File to load. When null, the modal is hidden. */
@@ -226,9 +227,11 @@ export function FileViewerModal({ file, onClose }: Props) {
           )}
 
           {!loading && jsonView && jsonView.ok && (
-            <pre className="text-foreground text-xs font-mono whitespace-pre-wrap bg-background border border-border-subtle p-4 rounded-md">
-              {jsonView.text}
-            </pre>
+            <CodeBlock
+              code={jsonView.text}
+              language="json"
+              className="text-foreground text-xs font-mono whitespace-pre-wrap bg-background border border-border-subtle p-4 rounded-md"
+            />
           )}
 
           {!loading && jsonView && !jsonView.ok && (
@@ -288,9 +291,17 @@ export function FileViewerModal({ file, onClose }: Props) {
           )}
 
           {!loading && !jsonView && !csvView && (
-            <pre className="text-foreground-muted text-xs font-mono whitespace-pre-wrap bg-background border border-border-subtle p-4 rounded-md">
-              {content || 'File is empty'}
-            </pre>
+            kind === 'yaml' && content ? (
+              <CodeBlock
+                code={content}
+                language="yaml"
+                className="text-foreground text-xs font-mono whitespace-pre-wrap bg-background border border-border-subtle p-4 rounded-md"
+              />
+            ) : (
+              <pre className="text-foreground-muted text-xs font-mono whitespace-pre-wrap bg-background border border-border-subtle p-4 rounded-md">
+                {content || 'File is empty'}
+              </pre>
+            )
           )}
         </div>
       </div>

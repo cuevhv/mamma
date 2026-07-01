@@ -301,28 +301,6 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     }
   };
 
-  /** Open the source preset a run was created from (same endpoint as the run
-   *  config; it also returns `presetPath`). Surfaced on the entry step. */
-  const openTaskPreset = async (taskId: string) => {
-    try {
-      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/config-path`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        toast.error(err.error || `Failed to locate preset (${res.status})`);
-        return;
-      }
-      const data = await res.json();
-      if (!data.presetPath) {
-        toast.error('No source preset was recorded for this run.');
-        return;
-      }
-      setTaskConfigViewer({ name: data.presetPath.split('/').pop() || 'preset.yaml', path: data.presetPath });
-    } catch (e) {
-      console.error(e);
-      toast.error('Failed to load preset. See console.');
-    }
-  };
-
   /** Launch the native Rerun viewer for a .rrd file via the backend.
    *  We use the native viewer (not the web embed) because GB-scale .rrd
    *  files routinely exceed browser memory limits. The Rerun process
@@ -878,25 +856,15 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       onOpenText={(path, name) => setTaskConfigViewer({ path, name })}
                       outLog={logsByStep.get(step)?.outFile}
                       errLog={logsByStep.get(step)?.errFile}
-                      headerExtras={step === 'ma_cap' && selectedTaskId ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() => openTaskPreset(selectedTaskId)}
-                            title="View the source preset this run was created from"
-                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
-                          >
-                            <FileJson className="w-3 h-3" /> preset
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => openTaskConfig(selectedTaskId)}
-                            title={`View the run config (run_${selectedTaskId}.json)`}
-                            className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
-                          >
-                            <FileJson className="w-3 h-3" /> task
-                          </button>
-                        </>
+                      headerExtras={selectedTaskId ? (
+                        <button
+                          type="button"
+                          onClick={() => openTaskConfig(selectedTaskId)}
+                          title={`View the run config (run_${selectedTaskId}.json)`}
+                          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
+                        >
+                          <FileJson className="w-3 h-3" /> task
+                        </button>
                       ) : undefined}
                     />
                   ))}

@@ -3,6 +3,7 @@ import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, AlertTriangle, Cl
 import { StatusBadge, statusKind, StatusKind, statusStyle, Dot } from './shared/StatusBadge';
 import { stepLabel } from './shared/stepLabels';
 import { formatTaskId } from './shared/formatTaskId';
+import { CodeBlock } from './shared/CodeBlock';
 
 export interface MatrixCell {
   processId: string;
@@ -471,7 +472,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
           </button>
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="overflow-auto max-h-[70vh]">
           <table className="w-full">
             <thead>
               <tr className="bg-surface-2/60 border-b border-border-subtle">
@@ -481,7 +482,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                 <Th title="Number of frames" center>#F</Th>
                 <Th title="Number of views (cameras)" center>#V</Th>
                 {steps.map(step => (
-                  <th key={step} className="px-4 py-3 text-center whitespace-nowrap">
+                  <th key={step} className="sticky top-0 z-20 bg-surface-2 px-4 py-3 text-center whitespace-nowrap">
                     <div className="text-foreground text-sm font-medium">{stepLabel(step)}</div>
                     <div className="text-foreground-faint text-[10px] font-mono mt-0.5 tracking-wide">{step}</div>
                   </th>
@@ -632,7 +633,11 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                         </td>
                       );
                     })}
-                    <td className="px-4 py-3 text-center">
+                    {/* whitespace-nowrap: keep durations like "2m 45s" on one line.
+                        Without it the narrow "Total" header lets the column collapse
+                        to its widest token and the value wraps; the w-full Sequence
+                        column yields the small bit of width instead. */}
+                    <td className="px-4 py-3 text-center whitespace-nowrap">
                       {view === 'timing' ? (() => {
                         const secs = rowDurationSecs(row.cells);
                         return secs != null && secs > 0 ? (
@@ -742,13 +747,14 @@ function ConfigPeekModal({
     return () => { cancelled = true; };
   }, [path]);
 
-  // Pretty-print JSON when we recognise it; fall back to raw text otherwise.
-  const display = useMemo(() => {
+  // Pretty-print JSON when we recognise it (run configs); fall back to the raw
+  // text otherwise (YAML presets). Carry the language for syntax highlighting.
+  const display = useMemo<{ text: string; lang: 'json' | 'yaml' } | null>(() => {
     if (content == null) return null;
     try {
-      return JSON.stringify(JSON.parse(content), null, 2);
+      return { text: JSON.stringify(JSON.parse(content), null, 2), lang: 'json' };
     } catch {
-      return content;
+      return { text: content, lang: 'yaml' };
     }
   }, [content]);
 
@@ -785,9 +791,11 @@ function ConfigPeekModal({
             <div className="text-foreground-muted text-sm">Loading…</div>
           )}
           {!error && display != null && (
-            <pre className="text-foreground text-xs font-mono whitespace-pre leading-relaxed">
-              {display}
-            </pre>
+            <CodeBlock
+              code={display.text}
+              language={display.lang}
+              className="text-foreground text-xs font-mono whitespace-pre leading-relaxed"
+            />
           )}
         </div>
       </div>
@@ -796,9 +804,13 @@ function ConfigPeekModal({
 }
 
 function Th({ children, sticky, title, center, grow }: { children: React.ReactNode; sticky?: string; title?: string; center?: boolean; grow?: boolean }) {
-  const stickyCls = sticky ? `sticky ${sticky} bg-surface-2` : '';
+  // The header row sticks to the top of the scroll viewport; the frozen "Task"
+  // column also sticks left, so its header is the corner cell (highest z).
+  const stickyCls = sticky
+    ? `sticky top-0 ${sticky} z-30 bg-surface-2`
+    : 'sticky top-0 z-20 bg-surface-2';
   return (
-    <th title={title} className={`${stickyCls} px-4 py-3 ${center ? 'text-center' : 'text-left'} ${grow ? 'w-full' : ''} text-foreground-muted text-[11px] font-semibold uppercase tracking-wider z-10`}>
+    <th title={title} className={`${stickyCls} px-4 py-3 ${center ? 'text-center' : 'text-left'} ${grow ? 'w-full' : ''} text-foreground-muted text-[11px] font-semibold uppercase tracking-wider`}>
       {children}
     </th>
   );
