@@ -1,9 +1,9 @@
-# quick — smoke test: a ~2 s frame slice with the same efficient settings as `full`.
-# Same pipeline as full, just a short window — use it to validate setup fast. Runs
-# on any machine. For all frames use `full`; to inspect overlays/viz use `debug`.
+# quick — smoke test: a ~2 s frame slice (frames 60-120) with visualizations on.
+# Same pipeline as `full`, just a short window — use it to validate setup fast.
+# For all frames, use `full`.
 global:
   version: 1.0
-  description: 'Smoke test: a ~2 s frame slice with the same efficient settings as full.'
+  description: 'Smoke test — a ~2 s frame slice (frames 60-120) with visualizations on, for a quick pipeline sanity check.'
   username: ''
   out_dir: output
   jobs_log_dir: output/logs/jobs
@@ -27,8 +27,6 @@ ma_masks:
   repo_path: segmentation
   flags:
   - --sam_version sam2
-  - --skip_masked_outputs
-  - --lazy-frames
   undistort: false
 ma_2d:
   engine: conda

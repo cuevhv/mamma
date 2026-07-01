@@ -1,10 +1,9 @@
-# full — production preset: ALL frames, memory-efficient, runs on any machine.
-# ma_masks skips overlay rendering (overlays are viz-only, not consumed by ma_2d/ma_3d)
-# and bounds host RAM via lazy frame loading, so long videos run without OOM. For extra
-# 2D speed on an NVIDIA host with torch-tensorrt installed, use full_tensorrt.
+# full — production preset: ALL frames with visualizations on. ma_masks runs in
+# low-memory mode (lazy frame loading + memory-state pruning) so long sequences
+# stay within memory.
 global:
   version: 1.0
-  description: 'All frames, memory-efficient, runs on any machine (overlays off + lazy frame loading).'
+  description: 'Full sequence with all visualizations on.'
   username: ''
   out_dir: output
   jobs_log_dir: output/logs/jobs
@@ -26,8 +25,8 @@ ma_masks:
   repo_path: segmentation
   flags:
   - --sam_version sam2
-  - --skip_masked_outputs
   - --lazy-frames
+  - --prune-memory
   undistort: false
 ma_2d:
   engine: conda

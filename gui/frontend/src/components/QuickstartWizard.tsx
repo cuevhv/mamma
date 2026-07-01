@@ -501,10 +501,8 @@ function Step2Presets({
   onSelect: (name: string) => void;
 }) {
   const presetBlurb = (displayName: string): string => {
-    if (displayName === 'quick') return '~5 min · 4 cams · ~2 s slice · efficient · SAM2';
-    if (displayName === 'full') return 'slower · all cams · all frames · efficient · SAM2';
-    if (displayName === 'debug') return 'overlays + visualizations on · short slice · SAM2';
-    if (displayName === 'full_tensorrt') return 'all cams · all frames · TensorRT 2D (NVIDIA only) · SAM2';
+    if (displayName === 'quick') return '~5 min · 4 cams · ~2 s slice · SAM2';
+    if (displayName === 'full') return 'slower · all cams · all frames · SAM2';
     return '';
   };
   return (
