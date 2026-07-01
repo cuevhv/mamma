@@ -187,6 +187,14 @@ masks:
   #     tracker before propagation (commits identity early).
   cross_camera_strategy: auto
 
+  # Seed selection for track_then_match seeds EVERY detected person on the seed frame
+  # and lets the cross-camera remap prune surplus by identity (CLIP + epipolar), instead
+  # of pre-trimming to the expected subject count by raw detection confidence — which
+  # would drop a partner-occluded real subject in favour of a cleaner-looking outsider.
+  # max_seed_tracklets is a generous safety ceiling for pathological bystander-heavy
+  # scenes (logged when hit).
+  max_seed_tracklets: 20
+
 # ─── SAM propagation ─────────────────────────────────────────────────────────
 
 sam:

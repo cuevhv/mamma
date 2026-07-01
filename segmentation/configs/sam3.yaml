@@ -131,6 +131,15 @@ masks:
   # (sam3_prompt always uses track-then-match by construction, regardless of this.)
   cross_camera_strategy: auto
 
+  # Seed selection for track_then_match seeds EVERY detected person on the seed frame
+  # and lets the cross-camera remap prune surplus by identity (CLIP + epipolar), instead
+  # of pre-trimming to the expected subject count by raw detection confidence — which
+  # would drop a partner-occluded real subject in favour of a cleaner-looking outsider.
+  # max_seed_tracklets is a generous safety ceiling for pathological bystander-heavy
+  # scenes (logged when hit).
+  # (sam3_prompt already seeds all detections; this governs sam2/sam3/sam3_prompt_light.)
+  max_seed_tracklets: 20
+
 # ─── SAM propagation ─────────────────────────────────────────────────────────
 
 sam:

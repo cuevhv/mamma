@@ -115,6 +115,13 @@ DEFAULT_ASSIGNMENT_CONFIG = {
         # (no calibration). See _cross_camera_strategy(). Override with an explicit
         # strategy if desired.
         "cross_camera_strategy": "auto",
+        # Seed selection for track-then-match seeds every detected person on the seed frame
+        # and lets the cross-camera remap prune surplus by identity (CLIP + epipolar), rather
+        # than pre-trimming to the expected subject count by raw detection confidence — which
+        # would drop a partner-occluded real subject in favour of a cleaner-looking outsider.
+        # max_seed_tracklets is a generous safety ceiling for pathological bystander-heavy
+        # scenes (logged when hit).
+        "max_seed_tracklets": 20,
     },
     "sam": {
         "propagate_reverse": True,
@@ -3448,7 +3455,8 @@ class SegmentMultipleFrames:
         Backend-neutral (YOLO for sam2/sam3, SAM3-text for sam3_prompt_light via the
         _collect_yolo_detections dispatch). Scores candidate frames by
         ``n_det * mean_conf`` (×1.5 when n_det == expected_subjects), mirroring the
-        init-camera auto-selector, then caps to expected_subjects.
+        init-camera auto-selector, then returns every detection (the cross-camera
+        remap prunes surplus by identity).
 
         Returns (best_frame:int, detections:list[(crop, feat, bbox, score)]) or
         (None, []) when nothing is detected.
@@ -3475,6 +3483,11 @@ class SegmentMultipleFrames:
                 continue
             n_det = len(dets)
             score = sum(float(d[3]) for d in dets)  # == n_det * mean_conf (n_det >= 1 here)
+            # Prefer frames with exactly the expected subject count: these are the
+            # cleanest (all real subjects, no splits/spurious). Rewarding n_det > expected
+            # instead steers toward over-detecting frames (splits) and regresses tracking
+            # (measured); seeding all detections already handles genuine extra people
+            # (outsiders) via the remap without needing to bias frame choice.
             if expected_subjects and n_det == expected_subjects:
                 score *= 1.5
             if score > best_score:
@@ -3493,8 +3506,18 @@ class SegmentMultipleFrames:
         if best_frame is None or not best_dets:
             return None, []
 
-        if expected_subjects and expected_subjects > 0 and len(best_dets) > expected_subjects:
-            best_dets = sorted(best_dets, key=lambda x: float(x[3]), reverse=True)[:expected_subjects]
+        # Seed EVERY detection and let _remap_tracklets_to_init prune surplus by identity —
+        # a partner-occluded real subject must not be dropped for a cleaner outsider that
+        # merely detects at higher confidence. A generous max_seed_tracklets ceiling only
+        # bounds pathological many-bystander scenes, and is logged (never a silent truncation).
+        max_seed = int(self.assignment_config.get("masks", {}).get("max_seed_tracklets", 20) or 0)
+        if max_seed > 0 and len(best_dets) > max_seed:
+            self._log_warn(
+                f"Seed cap: {len(best_dets)} detections exceed max_seed_tracklets={max_seed}; "
+                f"keeping the {max_seed} highest-confidence detections (bystander-heavy frame?). "
+                "Raise masks.max_seed_tracklets if real subjects are being lost."
+            )
+            best_dets = sorted(best_dets, key=lambda x: float(x[3]), reverse=True)[:max_seed]
         return best_frame, best_dets
 
     def _detect_and_track_local(self, frames, output_path, frame_id=None, expected_subjects=None):
