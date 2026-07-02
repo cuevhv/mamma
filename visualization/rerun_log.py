@@ -161,7 +161,11 @@ def _ensure_h264(src_path, width, height, frame_start, frame_end, crf):
     # normalise + fully specify the colour signalling for cross-browser playback.
     vf.append(f"scale={int(width)}:{int(height)}:out_color_matrix=bt709")
     vf.append("format=yuv420p")
-    tmp = out + ".tmp.mp4"
+    # Unique tmp per process: two concurrent ma_vis runs can share a cache key
+    # (same sequence, different out-tags); a shared tmp path would interleave
+    # two ffmpeg writers and os.replace() could publish a corrupt file that the
+    # size>0 cache hit-check above then reuses forever.
+    tmp = f"{out}.tmp.{os.getpid()}.mp4"
     subprocess.run(
         [_ffmpeg_bin(), "-y", "-i", src_path, "-vf", ",".join(vf), "-an",
          # WebCodecs (the browser decoder) is far stricter than the native one:
@@ -180,6 +184,9 @@ def _ensure_h264(src_path, width, height, frame_start, frame_end, crf):
          "-movflags", "+faststart", tmp],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True,
     )
+    if os.path.getsize(tmp) == 0:
+        os.remove(tmp)
+        raise RuntimeError(f"ffmpeg produced an empty re-encode for {src_path}")
     os.replace(tmp, out)
     return out
 

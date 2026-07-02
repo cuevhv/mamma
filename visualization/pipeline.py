@@ -135,12 +135,17 @@ def run_visualization(
 
     # ---- Rerun scene log ----------------------------------------------
     # The H.264 video backdrop (rerun_video) is the default; it needs an ffmpeg
-    # binary, so when none is reachable we transparently fall back to the legacy
-    # per-frame JPEG path rather than failing the run.
-    use_video = bool(rerun_video) and ffmpeg_available()
+    # binary AND at least one camera with a source video. Image-sourced captures
+    # (GUI image layouts, --images_root_dir runs) have no video_path, so without
+    # this check the video branch would silently skip every camera and the JPEG
+    # branch would never run — a scene.rrd with no backdrops at all.
+    any_video = any(getattr(c, "video_path", None) for c in cameras)
+    use_video = bool(rerun_video) and ffmpeg_available() and any_video
     if rerun_video and not use_video:
-        log.warning("--rerun-video is on but no ffmpeg binary was found "
-                    "(system or imageio-ffmpeg); falling back to the JPEG backdrop")
+        reason = ("no camera has a source video (image-sourced capture)"
+                  if not any_video else
+                  "no ffmpeg binary was found (system or imageio-ffmpeg)")
+        log.warning("--rerun-video is on but %s; falling back to the JPEG backdrop", reason)
     # image_long_edge drives a per-camera display scale so Pinhole, 2D landmarks,
     # and the backdrop all land on the same downscaled pixel grid. The video path
     # uses its own (higher) long-edge default since H.264 makes resolution cheap.
