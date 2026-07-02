@@ -109,11 +109,20 @@ def get_maps(camera: Camera) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     """Return cached (map_x, map_y) for ``camera``, or ``None`` if no-op."""
     if _is_noop(camera):
         return None
+    # The key must include the actual distortion parameters (and K, which the
+    # OpenCV models undistort into): a long-lived process (GUI backend) can load
+    # two rigs whose cameras share a name/model/resolution but differ in optics —
+    # name alone would silently reuse the wrong maps.
+    coeffs = tuple(float(c) for c in (getattr(camera, "distortion_coeffs", ()) or ()))
+    K = getattr(camera, "intrinsics", None)
+    k_key = None if K is None else tuple(np.asarray(K, dtype=np.float64).ravel().tolist())
     key = (
         camera.name,
         camera.distortion_model,
         int(camera.width),
         int(camera.height),
+        coeffs,
+        k_key,
     )
     with _CACHE_LOCK:
         cached = _CACHE.get(key)
