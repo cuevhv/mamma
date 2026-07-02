@@ -1585,12 +1585,25 @@ class SegmentMultipleFrames:
         import threading
         save_masks_lock = threading.Lock()
 
+        def _overlay_half_color(obj_id):
+            # Reproduces show_mask_cv2's per-pixel addend exactly: the colored
+            # mask it built is (bool_mask * cmap_color * 255).astype(uint8)
+            # * 0.5 — i.e. a CONSTANT half-valued vector wherever the mask is
+            # set. uint8 integers + exact halves are exactly representable in
+            # float32, so accumulating in float32 over the mask ROI is
+            # bit-identical to the old full-frame float64 path at a fraction
+            # of the cost (no per-object full-frame temporaries).
+            import matplotlib.pyplot as plt
+            cmap = plt.get_cmap("tab10")
+            c = (np.array(cmap(0 if obj_id is None else obj_id)[:3]) * 255).astype(np.uint8)
+            return c.astype(np.float32) * 0.5
+
         def _process_frame(frame_idx):
             if frame_idx not in video_segments:
                 return
             image = _frame_uint8(frame_idx)
             image = cv2.resize(image, (w_original, h_original))
-            masked_img = image.copy() if not skip_overlays else None
+            masked_img = image.astype(np.float32) if not skip_overlays else None
             frame_samples = []
 
             for out_obj_id, out_mask in video_segments[frame_idx].items():
@@ -1599,8 +1612,14 @@ class SegmentMultipleFrames:
                 if frame_idx % vis_frame_stride == 0:
                     frame_samples.append((out_obj_id, image, mask_bw, frame_idx))
                 if not skip_overlays:
-                    colored_mask = show_mask_cv2(out_mask, obj_id=out_obj_id)[:, :, :3]
-                    masked_img = masked_img + colored_mask * 0.5
+                    if mask.dtype == np.bool_:
+                        x, y, bw, bh = cv2.boundingRect(mask_bw)
+                        if bw and bh:
+                            roi = masked_img[y:y + bh, x:x + bw]
+                            roi[mask[y:y + bh, x:x + bw]] += _overlay_half_color(out_obj_id)
+                    else:  # non-boolean masks: keep the original exact path
+                        colored_mask = show_mask_cv2(out_mask, obj_id=out_obj_id)[:, :, :3]
+                        masked_img = masked_img + colored_mask * 0.5
                 cv2.imwrite(os.path.join(mask_folder, f"mask_{frame_idx:04d}_{(int(out_obj_id)+1):02d}.png"), mask_bw)
 
             if not skip_overlays:
