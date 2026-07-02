@@ -76,6 +76,39 @@ class CameraOverlayResult:
 # pyrender wrapper
 # ---------------------------------------------------------------------------
 
+def _create_offscreen_renderer(pyrender, width: int, height: int):
+    """OffscreenRenderer with EGL device fallback.
+
+    EGL device 0 is not always usable: inside containers (apptainer binds the
+    host ``/dev/dri``, so mesa enumerates the physical GPU first) the GPU's
+    EGL vendor stack may be unreachable and ``eglInitialize`` fails, while a
+    later enumerated device (mesa's software renderer) works fine. When the
+    default choice fails and the user hasn't pinned ``EGL_DEVICE_ID``, probe
+    the other device ids before giving up.
+    """
+    make = lambda: pyrender.OffscreenRenderer(  # noqa: E731
+        viewport_width=width, viewport_height=height, point_size=1.0)
+    try:
+        return make()
+    except Exception:
+        if (os.environ.get("PYOPENGL_PLATFORM") != "egl"
+                or "EGL_DEVICE_ID" in os.environ):
+            raise
+    last_exc: Optional[Exception] = None
+    for dev in range(1, 8):
+        os.environ["EGL_DEVICE_ID"] = str(dev)
+        try:
+            renderer = make()
+            log.warning(
+                "default EGL device failed to initialize; using "
+                "EGL_DEVICE_ID=%d (likely the software renderer)", dev)
+            return renderer
+        except Exception as e:  # try the next device
+            last_exc = e
+    os.environ.pop("EGL_DEVICE_ID", None)
+    raise last_exc
+
+
 class OverlayRenderer:
     """Render multiple SMPL-X meshes onto a background image plane.
 
@@ -106,9 +139,7 @@ class OverlayRenderer:
             ) from e
 
         try:
-            self._renderer = pyrender.OffscreenRenderer(
-                viewport_width=width, viewport_height=height, point_size=1.0
-            )
+            self._renderer = _create_offscreen_renderer(pyrender, width, height)
         except Exception as e:
             backend = os.environ.get("PYOPENGL_PLATFORM", "<unset>")
             device = os.environ.get("EGL_DEVICE_ID", "<unset>")
