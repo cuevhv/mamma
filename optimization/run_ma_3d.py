@@ -672,6 +672,15 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
         optim_cfg,
         enable_via_cli=bool(getattr(cli_args, "use_vposer", False)),
     )
+    # Preflight: if any stage (via --use-vposer OR a yaml recipe like
+    # *_occlusion_vposer) uses the VPoser prior, verify the optional package
+    # and weights NOW — failing seconds in beats a ModuleNotFoundError after
+    # re-ID and triangulation have already burned minutes.
+    if any("vposer_recon_loss" in (rc.get("losses") or {})
+           for rc in (optim_cfg.get("optim", {}) or {}).values()
+           if isinstance(rc, dict)):
+        from utils.vposer import check_available as _vposer_check
+        _vposer_check()
 
     body_ids = [i for i in range(n_people)]
 

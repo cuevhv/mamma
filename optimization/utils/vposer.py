@@ -22,12 +22,42 @@ _DEFAULT_VPOSER_DIR = os.environ.get(
 _VPOSER_CACHE = {}
 
 
+_INSTALL_HINT = (
+    "The VPoser pose prior needs the optional 'human_body_prior' package. "
+    "Install it with:\n"
+    "    pip install -r requirements/requirements-vposer.txt\n"
+    "and fetch the V02_05 weights with: bash data/download_vposer.sh"
+)
+
+
+def check_available(expr_dir=None):
+    """Preflight for the VPoser prior: importable package + weights on disk.
+
+    Call this BEFORE the fit starts so a missing optional dependency fails in
+    seconds with an actionable message, not minutes in (after re-ID and
+    triangulation) with a bare ModuleNotFoundError.
+    """
+    expr_dir = expr_dir or _DEFAULT_VPOSER_DIR
+    try:
+        import human_body_prior  # noqa: F401
+    except ImportError as exc:
+        raise RuntimeError(_INSTALL_HINT) from exc
+    if not os.path.isdir(expr_dir):
+        raise RuntimeError(
+            f"VPoser weights not found at '{expr_dir}'. "
+            "Fetch them with: bash data/download_vposer.sh "
+            "(or set $MAMMA_VPOSER_DIR).")
+
+
 def _get_vposer(expr_dir, device):
     key = (expr_dir, str(device))
     vp = _VPOSER_CACHE.get(key)
     if vp is None:
-        from human_body_prior.tools.model_loader import load_model
-        from human_body_prior.models.vposer_model import VPoser
+        try:
+            from human_body_prior.tools.model_loader import load_model
+            from human_body_prior.models.vposer_model import VPoser
+        except ImportError as exc:
+            raise RuntimeError(_INSTALL_HINT) from exc
         vp, _ = load_model(expr_dir, model_code=VPoser,
                            remove_words_in_model_weights='vp_model.',
                            disable_grad=True,

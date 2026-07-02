@@ -126,7 +126,7 @@ Then edit the preset to use SAM 3: change `ma_masks.flags` to `- --sam_version s
 
 ### TensorRT for `ma_2d` (optional, NVIDIA-only)
 
-The `ma_2d --tensorrt` flag (used by the `full_tensorrt.yaml` preset) compiles the landmark
+The `ma_2d --tensorrt` flag (add it to `ma_2d.flags` in your preset) compiles the landmark
 network to a TensorRT FP16 engine for a ~5× faster forward. It's optional and
 NVIDIA-only — without it the flag falls back to plain PyTorch, so configs stay portable.
 
@@ -136,6 +136,20 @@ pip install -r requirements/requirements-tensorrt.txt
 
 The compiled engine is cached to disk on first run (keyed by weights/shape/precision/GPU),
 so subsequent runs load it in ~2 s. See [`docs/CONFIGS.md`](CONFIGS.md#common-per-step-flags) for `--tensorrt` / `--tensorrt-fp32`.
+
+### VPoser pose prior for `ma_3d` (optional)
+
+`run_ma_3d.py --use-vposer` and the bundled occlusion+VPoser recipe
+(`config_..._occlusion_vposer.yaml`) need the optional `human_body_prior`
+package **and** the VPoser `V02_05` weights:
+
+```bash
+pip install -r requirements/requirements-vposer.txt
+bash data/download_vposer.sh          # or use the GUI's dataset panel
+```
+
+Not required for the core pipeline; without it, VPoser-enabled runs stop at
+startup with an install hint.
 
 ### Backbones for training only (skip for inference)
 

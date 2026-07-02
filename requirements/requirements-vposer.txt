@@ -1,0 +1,12 @@
+# Optional: enables the ma_3d VPoser pose prior — `run_ma_3d.py --use-vposer`
+# and the bundled occlusion+VPoser config
+# (config_real_gmf_small_vals_detr_exp_no_vtemplate_occlusion_vposer.yaml).
+# Not required for the core pipeline.
+#
+#   pip install -r requirements/requirements-vposer.txt
+#
+# The V02_05 weights are fetched separately: bash data/download_vposer.sh
+# (or via the GUI's dataset panel).
+#
+# Pinned to the upstream commit validated with torch 2.5.1.
+human_body_prior @ git+https://github.com/nghorbani/human_body_prior@78c86eae5ed518ae22bf197fd74211bbfa45551a
