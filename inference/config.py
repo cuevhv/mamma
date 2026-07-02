@@ -349,7 +349,20 @@ def materialize_run_config(
                 if calib:
                     calib_path = calib if os.path.isabs(calib) else os.path.normpath(
                         os.path.join(os.path.dirname(capture_path), calib))
-                    g["up_axis"] = detect_up_axis(load_calibration(calib_path))[0]
+                    axis, conf = detect_up_axis(load_calibration(calib_path))
+                    # Only trust a confident detection. An ambiguous rig
+                    # (overhead-looking / heavily rolled cameras) can produce a
+                    # low-confidence *wrong signed axis* that would silently
+                    # reorient ma_3d/ma_vis output; below the threshold, leave
+                    # up_axis unset so the steps keep their 'z' default.
+                    if conf >= 0.8:
+                        g["up_axis"] = axis
+                    else:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            "up-axis auto-detect is ambiguous (%s at confidence "
+                            "%.2f < 0.8); keeping the default 'z'. Set up_axis "
+                            "explicitly in capture.json to override.", axis, conf)
         except Exception:
             pass
 
