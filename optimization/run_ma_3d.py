@@ -942,11 +942,20 @@ def parser():
                            "pose manifold (helps where 2D evidence is weak/occluded; can bias "
                            "toward typical poses). Requires the VPoser weights "
                            "(MAMMA_VPOSER_DIR, default data/body_models/vposer/V02_05). Default off.")
+    args.add_argument('--tf32', action='store_true',
+                      help="Opt-in: allow TF32 tensor-core math for matmul/cudnn during the "
+                           "fit (Ampere+). Faster optimization at reduced matmul precision — "
+                           "results change at the sub-millimetre level; keep off for "
+                           "bit-reproducibility. Default off.")
     return args.parse_args()
 
 
 if __name__ == "__main__":
     args = parser()
+    if getattr(args, "tf32", False):
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("[tf32] TF32 tensor-core math ENABLED for this fit (--tf32).")
     paths = PathsConfig.from_args(args)
     seq_name = args.seq_name
 
