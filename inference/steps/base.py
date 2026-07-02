@@ -62,7 +62,11 @@ class StepBuilder:
 
     @property
     def sif_path(self) -> str:
-        return self._expand(self.step_cfg.get("sif_path", "") or "")
+        # Anchored like repo_path: a relative sif_path in a preset must
+        # resolve against the repo root, not whatever cwd the runner (or the
+        # GUI backend) happens to have.
+        val = self._expand(self.step_cfg.get("sif_path", "") or "")
+        return self._anchor(val) if val else ""
 
     @property
     def docker_image(self) -> str:
@@ -129,12 +133,18 @@ class StepBuilder:
     def binds(self) -> List[str]:
         """Bind list for apptainer/docker engines.
 
-        ``repo_path`` is bound at ``/repo`` (matches cluster convention) plus
-        every entry from ``step_cfg["bind"]`` and ``global_cfg["bind"]``.
+        The **repo root** is bound at ``/repo`` and the step runs with
+        ``container_cwd()`` = ``/repo/<step subdir>`` — the same shape as the
+        conda engine (cwd = ``<root>/<step subdir>``), so step scripts that
+        import their own package through the repo root (``run_ma_cap.py``
+        does ``from capture import …``) work identically in containers.
+        Extra entries come from ``step_cfg["bind"]`` and
+        ``global_cfg["bind"]``.
         """
         binds: List[str] = []
         if self.repo_path:
-            binds.append(f"{self.repo_path}:/repo")
+            from ..env import repo_root
+            binds.append(f"{repo_root()}:/repo")
         for b in self.step_cfg.get("bind", []) or []:
             binds.append(self._expand(b))
         for b in self.global_cfg.get("bind", []) or []:
@@ -245,7 +255,20 @@ class StepBuilder:
         return [a.replace("{seq_name}", seq_name) if isinstance(a, str) else a for a in argv]
 
     def container_cwd(self) -> str:
-        """Working dir inside the container for apptainer/docker engines."""
+        """Working dir inside the container for apptainer/docker engines.
+
+        ``/repo`` is the repo root (see :meth:`binds`); the step runs from
+        its subdir under it, mirroring the conda engine's
+        ``cwd = <root>/<step subdir>``.
+        """
+        if self.repo_path:
+            from ..env import repo_root
+            try:
+                rel = os.path.relpath(self.repo_path, str(repo_root()))
+            except ValueError:
+                rel = ""
+            if rel and rel != "." and not rel.startswith(".."):
+                return f"/repo/{rel}"
         return "/repo"
 
     def host_cwd(self) -> str:

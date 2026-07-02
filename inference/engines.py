@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -173,11 +174,28 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
         binds: List[str] = []
         for b in builder.binds():
             binds += ["--bind", b]
-        needs_gpu = int((builder.step_cfg.get("submit_cfg") or {}).get("gpus", 0) or 0) > 0
-        nv_flag = ["--nv"] if needs_gpu else []
-        return ["apptainer", "run", *nv_flag, *binds, sif, *argv], None
+        submit_cfg = builder.step_cfg.get("submit_cfg") or {}
+        needs_gpu = int(submit_cfg.get("gpus", 0) or 0) > 0
+        nv_flag: List[str] = []
+        if needs_gpu:
+            # Legacy --nv injects the host's full GL/glvnd stack, which
+            # crashes containers whose glibc is older than the host's (cv2
+            # import dies on GLIBC_x not found). --nvccli delegates to
+            # nvidia-container-cli (same mechanism docker uses): only real
+            # driver libs are injected and the container's own glvnd serves
+            # GL. Auto-enabled when the CLI exists; override with
+            # submit_cfg.nvccli: true|false (HPC hosts without the toolkit
+            # keep the legacy behavior).
+            nvccli = submit_cfg.get("nvccli")
+            if nvccli is None:
+                nvccli = shutil.which("nvidia-container-cli") is not None
+            nv_flag = ["--nv", "--nvccli"] if nvccli else ["--nv"]
+        # --pwd mirrors docker's -w: the step runs from its subdir under the
+        # /repo (repo root) bind, same as the conda engine's cwd.
+        return ["apptainer", "run", *nv_flag, "--pwd", builder.container_cwd(),
+                *binds, sif, *argv], None
 
-    # docker run --rm --gpus all -w /repo -v <list> <image> python <argv>
+    # docker run --rm --gpus all --user <uid>:<gid> -w /repo -v <list> <image> python <argv>
     image = builder.docker_image
     if not image:
         raise RuntimeError(
@@ -186,8 +204,16 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
     volumes: List[str] = []
     for b in builder.binds():
         volumes += ["-v", b]
+    # Run as the invoking user: docker defaults to root, which would leave
+    # every output file root-owned on the host — breaking resume/DONE checks
+    # and any later conda/GUI run over the same output tree. HOME=/tmp gives
+    # tools that want a writable home (ultralytics settings, torch caches) a
+    # container-local scratch dir. (apptainer already runs as the caller.)
+    user_flags: List[str] = []
+    if hasattr(os, "getuid"):
+        user_flags = ["--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp"]
     cmd = [
-        "docker", "run", "--rm", "--gpus", "all",
+        "docker", "run", "--rm", "--gpus", "all", *user_flags,
         "-w", builder.container_cwd(), *volumes, image, "python", *argv,
     ]
     return cmd, None
@@ -217,7 +243,7 @@ def run_apptainer(builder: StepBuilder, seq_name: str, out_path: str, err_path: 
 
 
 def run_docker(builder: StepBuilder, seq_name: str, out_path: str, err_path: str) -> int:
-    """``docker run --rm --gpus all -v <list> -w /repo <image> python <argv>``."""
+    """``docker run --rm --gpus all --user <uid>:<gid> -v <list> -w /repo <image> python <argv>``."""
     return _dispatch_run(builder, seq_name, out_path, err_path)
 
 
