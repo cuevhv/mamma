@@ -267,6 +267,7 @@ def process_seq(
             "path to the YOLOv12-X weights — see --yolo-checkpoint on run_ma_masks.py. "
             "The MAMMA inference runner injects this from MAMMA_YOLO_CHECKPOINT / .env.local."
         )
+    from core.exceptions import CameraProcessingError
     from core.pipeline import SegmentMultipleFrames
     from core.logging import enable_file_logging
 
@@ -530,19 +531,35 @@ def process_seq(
         pipeline.save_subject_feature_bank(feature_bank_cache)
 
     # --- Process remaining cameras ---
+    # A single camera failing (e.g. transient CUDA OOM mid-propagation) must not
+    # kill the whole multi-camera run: record it, keep going, and fail loudly at
+    # the end. The failed camera writes no masks.npy, so a re-run reuses the
+    # successful cameras' caches and retries only the failed ones.
+    failed_cameras = []
     for idx, cam_data in enumerate(remaining, start=2):
         cam_label = str(cam_data.get('cam_name', f'cam_{idx}'))
         _log("INFO", f"[{idx}/{n_cameras}] Processing camera: {cam_label}")
-        if use_gt_bbox:
-            masks = pipeline.process_multi_video_using_gt_bboxes(cam_data=cam_data)
-        else:
-            masks = pipeline.process_multi_video_auto(
-                cam_data=cam_data, frame_id=init_frame, masks=masks,
-                reference_cam_data=init_cam_data, expected_subjects=expected_subjects,
-            )
+        try:
+            if use_gt_bbox:
+                masks = pipeline.process_multi_video_using_gt_bboxes(cam_data=cam_data)
+            else:
+                masks = pipeline.process_multi_video_auto(
+                    cam_data=cam_data, frame_id=init_frame, masks=masks,
+                    reference_cam_data=init_cam_data, expected_subjects=expected_subjects,
+                )
+        except CameraProcessingError as exc:
+            _log("ERROR", f"[{idx}/{n_cameras}] Camera {cam_label} failed: {exc.reason}")
+            failed_cameras.append(cam_label)
+            continue
         if not use_gt_bbox and masks is not None:
             pipeline.save_subject_feature_bank(feature_bank_cache)
         _log("INFO", f"[{idx}/{n_cameras}] Done: {cam_label}")
+
+    if failed_cameras:
+        raise RuntimeError(
+            f"ma_masks failed for {len(failed_cameras)} camera(s): "
+            f"{', '.join(failed_cameras)}. No outputs were written for them; "
+            "re-run to retry (successful cameras' caches are reused).")
 
     # --- Cross-camera consistency check (debug viz) ---
     # Stacks the per-person crop-summary PNGs across cameras; those PNGs are only

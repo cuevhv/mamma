@@ -15,6 +15,7 @@ from ultralytics import YOLO
 import open_clip
 
 from core.logging import logger
+from core.exceptions import CameraProcessingError
 from core.mask_store import MaskStore
 from core.predictor_factory import build_video_predictor
 from core.frame_source import ImageFileSource, VideoSource, frame_source_from_cam_data
@@ -2884,7 +2885,11 @@ class SegmentMultipleFrames:
             cam_name, sam_source, len(frames), expected_subjects=expected_subjects, frames=frames,
         )
         if detected_ids is None:
-            return mask_data
+            # Same contract as track-then-match: an empty truthful result, not
+            # the init camera's mask_data (which would poison this camera's
+            # masks.npy resume cache).
+            self._log_warn(f"[{cam_name}] SAM3 text-detect found no people; writing empty masks for this camera.")
+            return {}
 
         # Save pre-remap visualization (SAM3's raw IDs before CLIP matching)
         try:
@@ -3578,9 +3583,12 @@ class SegmentMultipleFrames:
             video_segments = self.run_propagation(inference_state, cam_name=cam_name)
         except Exception as exc:
             self._log_error(
-                f"[{cam_name}] track-then-match propagation failed: {exc}. Skipping camera.")
+                f"[{cam_name}] track-then-match propagation failed: {exc}.")
             self._cleanup_sanitized_video_dir(runtime_video_dir, sam_source)
-            return None, None, None
+            # Never degrade to a silent skip: the caller must not cache anything
+            # for this camera (a transient failure would otherwise become a
+            # sticky masks.npy that resume trusts forever).
+            raise CameraProcessingError(cam_name, f"track-then-match propagation failed: {exc}") from exc
 
         self._cleanup_sanitized_video_dir(runtime_video_dir, sam_source)
         local_ids = video_segments.all_obj_ids()
@@ -3602,7 +3610,12 @@ class SegmentMultipleFrames:
         local_ids, video_segments, best_frame = self._detect_and_track_local(
             frames, output_path, expected_subjects=expected_subjects)
         if local_ids is None:
-            return mask_data
+            # No tracklets in this camera (nothing detected/tracked). Return a
+            # truthful empty result — never the init camera's mask_data, which
+            # the caller would cache as this camera's masks.npy and resume
+            # would then trust forever.
+            self._log_warn(f"[{cam_name}] no tracklets; writing empty masks for this camera.")
+            return {}
 
         id_remap = self._remap_tracklets_to_init(
             cam_name, frames, mask_data, local_ids, video_segments, best_frame,

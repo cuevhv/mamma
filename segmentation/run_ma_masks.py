@@ -201,8 +201,17 @@ SAM backends:
     # YOLO is required only for the YOLO-based backends; sam3_prompt and
     # sam3_prompt_light detect via SAM3 text.
     if args.sam_version not in ("sam3_prompt", "sam3_prompt_light") and not args.yolo_checkpoint:
-        logger.error(f"--yolo_checkpoint is required for --sam_version {args.sam_version}.")
-        return
+        # parser.error exits 2, matching the old argparse required=True behavior —
+        # automation must not see a "successful" run that produced nothing.
+        parser.error(f"--yolo_checkpoint is required for --sam_version {args.sam_version}.")
+
+    if args.prune_memory and args.sam_version in ("sam3", "sam3_prompt_light"):
+        # The prune targets the SAM2 predictor's per-object memory; the sam3
+        # tracker keeps its state in a consolidated output_dict it never touches.
+        logger.warning(
+            f"--prune-memory currently has no effect for --sam_version {args.sam_version} "
+            "(it bounds the SAM2 predictor's memory only) — expect memory to still "
+            "grow on long clips.")
 
     # Auto-select config based on sam_version if not specified
     if args.cfg is None:
