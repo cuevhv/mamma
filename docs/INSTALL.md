@@ -151,6 +151,22 @@ bash data/download_vposer.sh          # or use the GUI's dataset panel
 Not required for the core pipeline; without it, VPoser-enabled runs stop at
 startup with an install hint.
 
+### Docker / Apptainer instead of conda (optional)
+
+Every pipeline step can also run inside a container (`engine: docker` or
+`engine: apptainer` per step in the preset) — the host then needs no conda
+env or CUDA toolkit for those steps, only an NVIDIA driver plus the NVIDIA
+Container Toolkit (docker) or Apptainer ≥ 1.1. One unified image covers all
+five steps:
+
+```bash
+docker build -f docker/Dockerfile -t mamma:v1.1.0 .        # docker
+apptainer build mamma.sif docker/mamma_from_docker.def     # apptainer, from it
+```
+
+Build details, preset configuration (`docker_image` / `sif_path` / `bind`),
+and GUI usage: [`docker/README.md`](../docker/README.md).
+
 ### Backbones for training only (skip for inference)
 
 Skip this section unless you intend to retrain.

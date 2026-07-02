@@ -282,5 +282,11 @@ Pass `--force` to ignore DONE sentinels and re-run everything.
 | Engine    | When to use | Notes |
 |-----------|-------------|-------|
 | `conda`   | Default for local runs. | Each step's `repo_path` becomes the working directory; `python <script>` runs in `<conda_env>`. |
-| `apptainer` | Mirrors the cluster setup. | Requires `sif_path` per step. `repo_path` is bind-mounted at `/repo`. |
-| `docker`  | Same shape as apptainer for non-HPC machines. | Requires `docker_image` per step. Always passes `--gpus all`. |
+| `apptainer` | Mirrors the cluster setup. | Requires `sif_path` per step (relative = resolved against the repo root). The repo root is bind-mounted at `/repo` and the step runs from `/repo/<step subdir>` (`--pwd`); add `submit_cfg: { gpus: 1 }` on GPU steps for `--nv` (`--nvccli` is added automatically when `nvidia-container-cli` exists; override with `submit_cfg.nvccli`). |
+| `docker`  | Same shape as apptainer for non-HPC machines. | Requires `docker_image` per step. Always passes `--gpus all`. Add an identity mount of the repo root to `global.bind` (e.g. `"/abs/mamma:/abs/mamma"`) so the absolute weight/output paths in the command resolve inside the container. |
+
+The unified image that runs **all five steps** (and how to build/configure it
+for both engines, CLI and GUI) is documented in
+[`docker/README.md`](../docker/README.md); build files:
+[`docker/Dockerfile`](../docker/Dockerfile), [`docker/mamma.def`](../docker/mamma.def).
+Engines mix freely across steps in one preset.

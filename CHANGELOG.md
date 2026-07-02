@@ -56,6 +56,12 @@
 - **Calibration UI.** Calibration status, camera-rig 3D preview (`.rrd` in the Rerun viewer), and up-axis controls; clearer Rerun hints (Chromium-only backdrop note, fresh-layout open).
 - **Performance & polish.** Cache-first thumbnails fix the slow Captures/Results loads; higher surface/border contrast, friendlier path/error wording (muted, not red), and a soft in-app reload on Capture detail.
 
+### Containers
+
+- **Unified Docker/Apptainer image for the whole pipeline.** `docker/Dockerfile` + `docker/mamma.def` build one image (Python 3.11, CUDA 12.4, torch 2.5.1 — the same pinned env as `requirements/`) that runs all five steps via the per-step `engine: docker` / `engine: apptainer` preset keys; usable from both the CLI and the GUI (select a preset that sets the engine; the command preview shows the exact `docker run` / `apptainer run` line). Setup + preset examples in `docker/README.md`.
+- **Runner-contract fixes for the standalone ma_masks image.** `segmentation/Dockerfile` no longer sets `ENTRYPOINT ["python"]` (the runner passes `python` itself, so pipeline invocations became `python python …`); `segmentation/mamma_masks.def`'s runscript now prefers the bind-mounted `/repo` over the baked copy, so pipeline runs execute the checked-out code.
+- A relative `sif_path` in a preset now resolves against the repo root (was: against the runner's cwd).
+
 ### Datasets & assets
 
 - **MammaSyn from Hugging Face.** The synthetic dataset now downloads from the (gated) HF dataset by default; docs updated for `hf auth login`.
