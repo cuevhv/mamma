@@ -2073,6 +2073,12 @@ def delete_task(task_id):
     if not task:
         return jsonify({"error": f"Task {task_id} not found"}), 404
 
+    # A queued task has no runnerPid yet, but the coordinator holds its spawn
+    # kwargs in memory and would still launch it after the DB rows are gone —
+    # an invisible GPU run with no Tasks row and no Stop button. Drop it from
+    # the queue first (no-op if already popped), same as stop_task does.
+    _task_queue.cancel_queued(task_id)
+
     pid = task.get("runnerPid")
     if pid:
         try:
@@ -2110,6 +2116,19 @@ def delete_task_sequence(task_id):
     task = db.get_task_by_id(task_id)
     if not task:
         return jsonify({"error": f"Task {task_id} not found"}), 404
+
+    # A queued task has no runnerPid, but the coordinator will still run ALL
+    # its sequences (the task JSON on disk drives enumeration) — deleting one
+    # sequence's rows now would leave that sequence running invisibly. Unlike
+    # the whole-task delete we can't just cancel_queued (that would cancel the
+    # task's *other* sequences too), so refuse until the task is stopped.
+    if _task_queue.queue_position(task_id) is not None:
+        return jsonify({
+            "error": (
+                f"Task {task_id} is still queued; its sequences have not run "
+                "yet. Stop the task first, then delete."
+            ),
+        }), 409
 
     pid = task.get("runnerPid")
     if pid:
@@ -2578,6 +2597,7 @@ def open_rrd():
         )
     except OSError as e:
         return jsonify({"error": f"Failed to launch {rerun_bin}: {e}"}), 500
+    _reap_detached(proc)
 
     return jsonify({"ok": True, "pid": proc.pid, "path": path,
                     "binary": rerun_bin, "layout_reset": layout_reset})
@@ -2641,6 +2661,7 @@ def open_file_native():
         )
     except OSError as e:
         return jsonify({"error": f"Failed to launch {player}: {e}"}), 500
+    _reap_detached(proc)
     return jsonify({"ok": True, "pid": proc.pid, "path": path, "binary": player})
 
 
@@ -3408,18 +3429,18 @@ def serve_image_file():
 # Entry point
 # ---------------------------------------------------------------------------
 
-def _reap_children(signum=None, frame=None):
-    """Reap any finished runner subprocess children so they don't pile up
-    as zombies. Flask never calls wait() on the runners we spawn, so each
-    completed task would otherwise leave a <defunct> entry in the process
-    table until the backend itself exits."""
-    try:
-        while True:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
-            if pid <= 0:
-                break
-    except ChildProcessError:
-        pass
+def _reap_detached(proc):
+    """Reap one fire-and-forget child (native viewer / video player / example
+    downloader) via a dedicated wait() thread, so it never lingers as a zombie.
+
+    Deliberately NOT a global SIGCHLD ``waitpid(-1)`` handler: that races every
+    other thread's ``Popen.wait()``/``poll()`` (task runners, the exporter, the
+    dataset downloader, the example script). When the handler won the race,
+    the loser got ECHILD, which CPython maps to returncode 0 — a *failed*
+    Blender export or download was then reported as success. Runners are
+    reaped by TaskQueue._wait_and_release; other subprocesses by their own
+    wait()/poll(); only detached children need this helper."""
+    threading.Thread(target=proc.wait, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -3459,10 +3480,11 @@ if _BUILD_DIR.is_dir():
 
 db.initialize_database()
 db.test_database_connection()
-# Auto-reap finished runners on SIGCHLD. SIG_IGN would also work on
-# Linux but interferes with subprocess.Popen.wait() which Werkzeug's
-# auto-reloader relies on; an explicit handler keeps both happy.
-signal.signal(signal.SIGCHLD, _reap_children)
+# NOTE: no SIGCHLD handler on purpose. Every child is reaped by an owner:
+# task runners by TaskQueue._wait_and_release, exporter/downloader/example
+# subprocesses by their own wait()/poll(), detached viewer launches by
+# _reap_detached. A global waitpid(-1) handler used to race those wait()s
+# and turn failures into ECHILD -> returncode 0 (reported as success).
 # Start the task-queue coordinator. Hydrates from DB (any rows still
 # in 'Queued' status from a previous Flask process), then spawns
 # runners one at a time (or N, per the concurrency_limit setting).
