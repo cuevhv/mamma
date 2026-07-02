@@ -79,7 +79,14 @@ From: nvidia/cuda:12.6.2-cudnn-runtime-ubuntu22.04
     scripts /opt/masks/scripts
 
 %runscript
-    cd /opt/masks
+    # Pipeline runner (inference/engines.py): binds the repo root at /repo
+    # and passes --pwd /repo/segmentation, so the live checkout's code runs
+    # and the cwd is already correct — don't cd in that case. Standalone
+    # runs whose cwd doesn't contain the script fall back to the copy baked
+    # at build time (the original behavior).
+    if [ ! -e "${1:-run_ma_masks.py}" ] && [ -d /opt/masks ]; then
+        cd /opt/masks
+    fi
     exec python "$@"
 
 %help

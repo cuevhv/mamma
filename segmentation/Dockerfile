@@ -63,4 +63,9 @@ COPY scripts /opt/masks/scripts
 
 WORKDIR /opt/masks
 
-ENTRYPOINT ["python"]
+# No ENTRYPOINT on purpose. The pipeline runner (inference/engines.py) invokes
+#   docker run … -w /repo -v <segmentation>:/repo <image> python <script> <args>
+# i.e. it passes `python` itself — an ENTRYPOINT ["python"] would turn that
+# into `python python <script>` and break every pipeline run. Standalone use:
+#   docker run --rm --gpus all <image> python run_ma_masks.py --help
+CMD ["python", "--version"]
