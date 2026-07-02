@@ -172,8 +172,12 @@ sam:
   lazy_frame_window: 8
 
   # Memory-state pruning: drop per-frame mask-memory SAM no longer attends to, so
-  # stored state stays bounded on long clips. Byte-identical. Off by default.
-  # sam2/sam3-tracker / sam3_prompt_light only. (issue #14)
+  # stored state stays bounded on long clips. GT-equivalent (edge-pixel), off by
+  # default. NOTE: currently effective for the SAM2 predictor only — the sam3
+  # tracker backends (sam3 / sam3_prompt_light) keep their memory in a
+  # consolidated output_dict that this prune does not touch, so their state
+  # still grows on long clips (sam3_prompt has its own sam3_prune_cache_window
+  # below). (issue #14)
   prune_memory_state: false
   memory_keep_window: 32
 

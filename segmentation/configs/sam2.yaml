@@ -232,8 +232,10 @@ sam:
   # Memory-state pruning: drop the per-frame mask-memory SAM no longer attends to
   # (everything outside a window around the current frame and around anchors), so
   # the stored state stays bounded on long clips instead of growing ~linearly.
-  # Byte-identical (only drops state the model would never read again). Off by
-  # default. memory_keep_window must be >= the model's attention reach (16). (issue #14)
+  # GT-equivalent, NOT byte-identical: the reverse propagation pass can still
+  # reach pruned frames, so masks may differ by edge pixels (measured mean IoU
+  # >=0.999 vs eager). Off by default. memory_keep_window must be >= the model's
+  # attention reach (16). (issue #14)
   prune_memory_state: false
   memory_keep_window: 32
 

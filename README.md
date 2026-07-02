@@ -91,7 +91,7 @@ Three things are needed:
 
 1. A **calibration file** ([how to make one](docs/YOUR-DATA.md#2-author-the-calibration-file))
 2. A **folder with your sequence** ([how to set it up](docs/YOUR-DATA.md#1-lay-out-your-footage))
-3. A **preset** — use a shipped one: [`quick.yaml`](configs/examples/presets/quick.yaml) (~2 s smoke test), [`full.yaml`](configs/examples/presets/full.yaml) (all frames, memory-efficient, runs anywhere), [`debug.yaml`](configs/examples/presets/debug.yaml) (short slice with all overlays/visualizations on for inspection), or [`full_tensorrt.yaml`](configs/examples/presets/full_tensorrt.yaml) (`full` + a TensorRT 2D network for extra speed; NVIDIA + torch-tensorrt). See [`docs/CONFIGS.md`](docs/CONFIGS.md) to modify or author your own.
+3. A **preset** — use a shipped one: [`quick.yaml`](configs/examples/presets/quick.yaml) (~2 s smoke test, frames 60–120) or [`full.yaml`](configs/examples/presets/full.yaml) (all frames, low-memory `ma_masks`, runs anywhere). Both keep visualizations on. One-off tweaks (TensorRT, extra debug output) are plain per-step flags — see [`docs/CONFIGS.md`](docs/CONFIGS.md) to modify or author your own.
 
 Then:
 
@@ -115,21 +115,23 @@ python -m inference run \
 
 ### Faster runs
 
-Most speedups are **automatic and universal** — `full.yaml` already runs efficiently
-with no special hardware: on-GPU crop preprocessing, skipping the unused detector in
-mask mode, **overlay rendering off** (`ma_masks --skip_masked_outputs` — overlays are
-visualization only, not used downstream), and **lazy frame loading**
-(`ma_masks --lazy-frames`) so long videos don't run out of host RAM. (Use `debug.yaml`
-if you *do* want the overlays + extra visualizations.)
+Most speedups are **automatic and universal** — no special hardware needed: on-GPU
+crop preprocessing and skipping the unused detector in mask mode are always on, and
+`full.yaml` ships `ma_masks` in **low-memory mode** (`--lazy-frames --prune-memory`)
+so long videos don't run out of host RAM. Visualizations stay on by default; if you
+want a leaner/faster run, add `--skip_masked_outputs` to `ma_masks.flags` (overlays
+are visualization only, not used downstream) and `--disable-visualizations` to
+`ma_2d.flags`.
 
 One further speedup is **opt-in and hardware-dependent**:
 
-- **`full_tensorrt.yaml`** — `full.yaml` plus a TensorRT-compiled 2D landmark network
-  (`ma_2d --tensorrt`). ~5× FP16 landmark forward; on a 6-person / 32-camera capture
-  `ma_2d` drops from ~159 min to ~51 min. **NVIDIA-only** — install once with
-  `pip install -r requirements/requirements-tensorrt.txt`; without it the flag falls
-  back to plain PyTorch (same outputs), so the preset stays safe to run anywhere. The
-  compiled engine is cached, so it pays off most on long / many-camera runs.
+- **`ma_2d --tensorrt`** — add it to `ma_2d.flags` in your preset for a
+  TensorRT-compiled 2D landmark network. ~5× FP16 landmark forward; on a 6-person /
+  32-camera capture `ma_2d` drops from ~159 min to ~51 min. **NVIDIA-only** — install
+  once with `pip install -r requirements/requirements-tensorrt.txt`; without it the
+  flag falls back to plain PyTorch (same outputs), so it is safe to leave in the
+  preset. The compiled engine is cached, so it pays off most on long / many-camera
+  runs.
 
 Per-step flag reference (including `--tensorrt`, `--overlay-num-workers`): [`docs/CONFIGS.md`](docs/CONFIGS.md#common-per-step-flags).
 

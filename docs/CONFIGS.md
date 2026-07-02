@@ -100,11 +100,16 @@ Source: [`landmarks/run_ma_2d.py`](../landmarks/run_ma_2d.py).
   optional dep in [`requirements/requirements-tensorrt.txt`](../requirements/requirements-tensorrt.txt).
 - `--tensorrt-fp32` — with `--tensorrt`, use the near-exact FP32 engine (~2×) instead
   of FP16 (~5×).
-- `--save_cam_output` — write per-body debug viz frames + a preview video. **Off by
-  default** (these artifacts aren't consumed downstream); pass it to enable inspection.
-  `--no-save_cam_output` is the explicit off.
+- `--disable-visualizations` — turn off the per-body debug viz frames + preview video.
+  Visualizations are **on by default** (they aren't consumed downstream — purely for
+  inspection). The old `--save_cam_output` / `--no-save_cam_output` pair is kept as a
+  deprecated alias.
 - `--video_fps F` — FPS for generated viz videos (default 5).
-- `--undistort` — undistort frames before landmark inference.
+- `--undistort` — undistort frames before landmark inference. **Usually not what you
+  want for the fit**: the landmark network was trained on distorted frames, so
+  undistorted input is out-of-distribution and measurably *worsens* the 3D fit even
+  though the geometry is correct. Use undistortion on the ma_vis side (overlays)
+  instead.
 
 #### `ma_3d`
 

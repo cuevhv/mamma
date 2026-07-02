@@ -262,10 +262,9 @@ python -m inference run \\
             <ul className="space-y-3">
               <Bullet label="Preset" color="primary">
                 Capture-independent template. Says which steps run, which engine, which flags, which weights.
-                Shipped: <InlineCode>presets/full.yaml</InlineCode> (all frames, memory-efficient),{' '}
-                <InlineCode>presets/quick.yaml</InlineCode> (~2 s smoke slice),{' '}
-                <InlineCode>presets/debug.yaml</InlineCode> (overlays + visualizations on), and{' '}
-                <InlineCode>presets/full_tensorrt.yaml</InlineCode> (full + TensorRT 2D, NVIDIA-only).
+                Shipped: <InlineCode>presets/full.yaml</InlineCode> (all frames, low-memory ma_masks) and{' '}
+                <InlineCode>presets/quick.yaml</InlineCode> (~2 s smoke slice). One-off tweaks like
+                TensorRT live in the New-Task step settings, not separate presets.
               </Bullet>
               <Bullet label="Capture" color="completed">
                 JSON manifest: <InlineCode>capture_root</InlineCode>, <InlineCode>calib</InlineCode>,{' '}

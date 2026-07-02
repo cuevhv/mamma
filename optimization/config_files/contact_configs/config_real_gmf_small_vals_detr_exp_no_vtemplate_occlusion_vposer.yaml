@@ -5,7 +5,8 @@
 #   2. vposer_recon_loss (gentle, w=0.25) pins the evidence-starved legs to the
 #      VPoser pose manifold (distance-from-manifold; needs data/body_models/vposer/V02_05).
 # This is the validated winner. The gate applies to all landmarks; the prior does
-# the leg-anchoring, so no lower-body mask/scoping is needed. See CHANGES_occlusion_vposer.md.
+# the leg-anchoring, so no lower-body mask/scoping is needed. See CHANGELOG.md
+# ("Optimization (ma_3d)") and docs/CONFIGS.md for the flags.
 n_betas: 16
 use_v_template: False
 use_bun_model: False

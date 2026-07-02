@@ -13,8 +13,8 @@
 ### Landmarks (ma_2d)
 
 - **Opt-in TensorRT FP16 backend (~5×).** `--tensorrt` runs the ma_2d forward pass through a disk-cached TensorRT engine.
-- **GPU-side crop preprocessing.** Warp / blur / normalize moved onto the GPU (kornia), with blur restricted to the crop ROI.
-- **Faster by default.** Skips the unused ViTDet detector build in mask mode; ma_2d debug visualizations now default off.
+- **GPU-side crop preprocessing.** Warp / blur / normalize moved onto the GPU (kornia).
+- **Faster by default.** Skips the unused ViTDet detector build in mask mode. Visualizations stay on by default — `--disable-visualizations` turns them off (`--save_cam_output` kept as a deprecated alias).
 
 ### Optimization (ma_3d)
 
@@ -44,7 +44,7 @@
 
 ### Presets & performance
 
-- **Preset refactor.** Example presets are now `debug` / `quick` / `full` / `full_tensorrt`, plus a `fast` preset bundling the speed flags (ma_2d `--tensorrt`, parallel overlays, ma_3d `--use-gt`).
+- **Preset refactor.** Example presets consolidated to `quick` (~2 s smoke test) + `full` (all frames, low-memory `ma_masks`). Speed knobs are ordinary per-step flags instead of dedicated presets: ma_2d `--tensorrt`, ma_vis `--overlay-num-workers`, ma_masks `--lazy-frames` / `--prune-memory`, ma_3d `--use-gt`.
 - **Regression harness.** Output-regression tests and a metrics ledger to track end-to-end timings.
 
 ### GUI

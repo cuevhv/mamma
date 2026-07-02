@@ -38,6 +38,25 @@ mask-area-based scoring, then propagates from that frame.
 
 The **Hungarian algorithm** makes the final one-to-one ID assignment across cameras - no duplicate IDs.
 
+**Strategy (v1.1.0): track-then-match by default.** Each non-init camera is first
+propagated *independently* into clean local tracklets; whole tracklets are then
+remapped to the init camera's ids using the CLIP + epipolar signals above
+(multi-frame, occlusion-weighted). This replaces the legacy behavior of committing
+identity at seed time and lets the remap drop bystanders/outsiders. Control it with
+`--cross-camera-strategy {auto,track_then_match,match_then_track}` (default `auto`:
+track-then-match whenever epipolar calibration is available; `sam3_prompt` always
+tracks-then-matches) or the shortcut `--legacy-cross-camera`.
+
+**Long-clip memory flags** (both off by default; see `configs/sam2.yaml` for the
+matching config keys):
+
+- `--lazy-frames` — bound host RAM by loading frames on demand instead of all at
+  once. Image/frame input is byte-identical; mp4 input streams via cv2
+  (near-identical, ~0.99 IoU, ~+24% wall).
+- `--prune-memory` — bound SAM2's growing per-frame memory state (GT-equivalent,
+  edge-pixel differences possible). Currently effective for the SAM2 predictor
+  only; the sam3 tracker backends keep their memory elsewhere.
+
 > **Note**: If SAM’s tracker deteriorates or fails to maintain identity consistency partway through a sequence in a
 > single camera view, for example under severe occlusion, the pipeline does not explicitly detect or correct such
 > failures. These may include identity swaps, track fragmentation, or complete loss of a subject in a given view.
