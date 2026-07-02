@@ -91,7 +91,12 @@ class _LazyEvictingFrameLoader:
 
     def __init__(self, img_paths, load_fn, image_size, img_mean, img_std,
                  compute_device, offload_video_to_cpu, window):
+        import threading
         from collections import OrderedDict
+        # The mask-export stage reads frames from a ThreadPoolExecutor (see
+        # save_images_from_video); OrderedDict move_to_end/popitem are not
+        # thread-safe, so serialize like _VideoStreamFrameLoader does.
+        self._lock = threading.Lock()
         self._paths = img_paths
         self._load = load_fn
         self._size = image_size
@@ -111,18 +116,20 @@ class _LazyEvictingFrameLoader:
         return len(self._paths)
 
     def __getitem__(self, idx):
-        cached = self._cache.get(idx)
-        if cached is not None:
-            self._cache.move_to_end(idx)
-            return cached
+        with self._lock:
+            cached = self._cache.get(idx)
+            if cached is not None:
+                self._cache.move_to_end(idx)
+                return cached
         img, self.video_height, self.video_width = self._load(self._paths[idx], self._size)
         img = img.to(self._mean.dtype)
         if not self._offload:
             img = img.to(self._device)
         img = (img - self._mean) / self._std
-        self._cache[idx] = img
-        while len(self._cache) > self._window:
-            self._cache.popitem(last=False)  # evict least-recently-used
+        with self._lock:
+            self._cache[idx] = img
+            while len(self._cache) > self._window:
+                self._cache.popitem(last=False)  # evict least-recently-used
         return img
 
 
