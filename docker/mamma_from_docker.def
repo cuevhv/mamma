@@ -1,0 +1,27 @@
+# Build the pipeline .sif FROM the locally built docker image (identical env,
+# no duplicate 20-minute build):
+#
+#   docker build -f docker/Dockerfile -t mamma:v1.1.0 .
+#   apptainer build mamma.sif docker/mamma_from_docker.def
+#
+# Why not `apptainer build mamma.sif docker-daemon://mamma:v1.1.0` directly?
+# That conversion adopts the docker image's ENTRYPOINT (the NVIDIA base
+# image's nvidia_entrypoint.sh) as the runscript, which exec's its args
+# verbatim — but the pipeline runner invokes
+# `apptainer run <sif> <script> <args…>` and expects the runscript to prepend
+# `python` (see inference/engines.py). This wrapper keeps the image layers
+# and swaps in the correct runscript.
+#
+# No docker on the host? Build docker/mamma.def directly instead.
+
+Bootstrap: docker-daemon
+From: mamma:v1.1.0
+
+%runscript
+    # Pipeline contract: the runner passes --pwd /repo/<step subdir> and
+    # `<script> <args…>`; cwd is already correct here.
+    exec python "$@"
+
+%help
+    MAMMA unified pipeline image (built from the local mamma:v1.1.0 docker
+    image). See docker/README.md for preset configuration and usage.

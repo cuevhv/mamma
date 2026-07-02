@@ -1,0 +1,118 @@
+# MAMMA unified pipeline image — Apptainer definition.
+#
+# Prefer building the .sif FROM THE DOCKER IMAGE when docker is available
+# (guaranteed byte-identical env, no duplicate 20-minute build):
+#
+#   docker build -f docker/Dockerfile -t mamma:v1.1.0 .
+#   apptainer build mamma.sif docker-daemon://mamma:v1.1.0
+#
+# This .def is the docker-free alternative (e.g. building directly on an HPC
+# login node with --fakeroot):
+#
+#   apptainer build --fakeroot mamma.sif docker/mamma.def
+#
+# Runner contract (inference/engines.py): the pipeline invokes
+#
+#   apptainer run [--nv] --bind <step repo_path>:/repo [--bind ...] mamma.sif \
+#       <script> <args...>
+#
+# The %runscript below cd's into /repo and execs `python "$@"`. `--nv` is
+# added when the step's submit_cfg.gpus > 0 — set it in the preset for every
+# GPU step. Apptainer auto-binds $HOME and the cwd, so absolute host paths
+# under your home usually resolve without extra binds; add `global.bind`
+# entries for anything else. See docker/README.md for a preset example.
+#
+# NOTE: keep this file in sync with docker/Dockerfile (same base, same
+# pinned layers) — the Dockerfile is the reference.
+
+Bootstrap: docker
+From: nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+%labels
+    Title       MAMMA pipeline
+    Description Markerless multi-person motion capture — unified env for all pipeline steps
+
+%environment
+    export PYTHONUNBUFFERED=1
+    export PIP_NO_CACHE_DIR=1
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+    export PATH=/opt/micromamba/envs/mamma/bin:/opt/micromamba/bin:$PATH
+    # pyrender/EGL offscreen rendering; headless matplotlib.
+    export PYOPENGL_PLATFORM=egl
+    export MPLBACKEND=Agg
+
+%post
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    # System deps: build tools for the CUDA-kernel pip layer; ffmpeg for
+    # video IO; EGL/GL runtime libs for pyrender offscreen.
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        bash git curl wget ca-certificates bzip2 \
+        build-essential ninja-build \
+        ffmpeg \
+        libgl1 libglib2.0-0 libegl1 libgles2 libglvnd0 \
+        libsm6 libxext6
+    rm -rf /var/lib/apt/lists/*
+
+    # micromamba
+    mkdir -p /opt/micromamba
+    curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+        | tar -xj -C /usr/local/bin/ --strip-components=1 bin/micromamba
+    export MAMBA_ROOT_PREFIX=/opt/micromamba
+
+    # Env spec mirrors requirements/mamma_conda.yaml minus host-only extras.
+    micromamba create -y -n mamma -c conda-forge python=3.11 pip "numpy<2" wget
+    micromamba clean --all -y
+    export PATH=/opt/micromamba/envs/mamma/bin:/opt/micromamba/bin:$PATH
+
+    # Torch layer first (pinned, cu124) — later layers need torch at
+    # install time.
+    python -m pip install --upgrade pip "setuptools<81" wheel
+    python -m pip install \
+        --extra-index-url https://download.pytorch.org/whl/cu124 \
+        torch==2.5.1 torchvision==0.20.1 decord
+
+    # Main dependency layer (docs/INSTALL.md §1c, first half).
+    python -m pip install -r /opt/mamma/requirements/requirements.txt
+
+    # CUDA-kernel layer (detectron2, pytorch_sdf): no GPU visible at build
+    # time — force the compile and pick the target architectures.
+    CUDA_HOME=/usr/local/cuda \
+    FORCE_CUDA=1 \
+    TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" \
+    python -m pip install --no-build-isolation \
+        -r /opt/mamma/requirements/requirements_no_build_isolation.txt
+
+    # Optional VPoser prior for ma_3d (small — bake it in).
+    python -m pip install -r /opt/mamma/requirements/requirements-vposer.txt
+
+%files
+    requirements/requirements.txt /opt/mamma/requirements/requirements.txt
+    requirements/requirements_no_build_isolation.txt /opt/mamma/requirements/requirements_no_build_isolation.txt
+    requirements/requirements-vposer.txt /opt/mamma/requirements/requirements-vposer.txt
+
+%runscript
+    # Pipeline contract: the runner binds the repo root at /repo and passes
+    # `--pwd /repo/<step subdir>` plus `<script> <args...>` — the working
+    # directory is already correct when this runs. Standalone runs keep the
+    # caller's cwd (apptainer default), so launch from the step's directory.
+    exec python "$@"
+
+%help
+    MAMMA unified pipeline image — runs every step (ma_cap, ma_masks, ma_2d,
+    ma_3d, ma_vis) of the markerless motion-capture pipeline.
+
+    Pipeline use: set per step in a preset —
+        engine: apptainer
+        sif_path: /abs/path/to/mamma.sif
+        submit_cfg: { gpus: 1 }        # adds --nv for GPU steps
+    then run `python -m inference run --cfg <preset> ...` or pick the preset
+    in the GUI. See docker/README.md.
+
+    Standalone example:
+        apptainer run --nv mamma.sif run_ma_masks.py --help
+    (run from the step's directory, e.g. segmentation/)

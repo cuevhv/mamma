@@ -1,0 +1,6 @@
+# The unified image (docker/Dockerfile) only COPYs requirements/ — whitelist
+# it so `docker build .` from the repo root doesn't ship data/, output/,
+# node_modules/, .git/ (hundreds of GB) as build context.
+*
+!requirements
+!docker
