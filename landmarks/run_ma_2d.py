@@ -376,7 +376,10 @@ def parser():
                       help='Undistort frames (any supported lens model) before running '
                            'the landmark network. Coefficients come from --calibration '
                            'when given, else from the per-camera NPZ. No-op for cameras '
-                           'with no distortion data. Default off.')
+                           'with no distortion data. Default off. CAUTION: the network '
+                           'was trained on distorted frames, so undistorted input is '
+                           'out-of-distribution and measurably worsens the 3D fit — '
+                           'prefer undistorting on the ma_vis (overlay) side.')
     args.add_argument('--start', type=int, default=None,
                       help='First frame index to process (0-based, inclusive). '
                            'Default: 0 (process from the beginning).')
@@ -680,7 +683,14 @@ def main(args, out_folder, masks_folder, img_folder=None):
     # falls back to eager on any failure (non-NVIDIA host, missing torch-tensorrt,
     # unsupported op) so the flag never breaks a run.
     forward = model
-    if getattr(args, "tensorrt", False):
+    if getattr(args, "tensorrt", False) and masks_folder is None:
+        # The engine is compiled with a mask *tensor* example input; standalone
+        # (no-mask) mode calls forward(img, None), which the compiled module
+        # rejects at runtime — and the try/except below only covers compile
+        # failures. Refuse up front and run eager instead of crashing mid-run.
+        logger.warning("ma_2d: --tensorrt is only supported in mask mode "
+                       "(standalone mode passes mask=None); using the PyTorch forward.")
+    elif getattr(args, "tensorrt", False):
         try:
             forward = _build_tensorrt_forward(model, cfg, device, fp16=not args.tensorrt_fp32,
                                               weights_path=args.weights)
