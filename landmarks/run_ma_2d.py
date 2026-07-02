@@ -162,10 +162,31 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
     mean_t = torch.tensor(DEFAULT_MEAN, device=device).view(1, 3, 1, 1).float()
     std_t = torch.tensor(DEFAULT_STD, device=device).view(1, 3, 1, 1).float()
 
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _load_frame_inputs(frame_n):
+        # Runs on the single prefetch worker: decode the frame and read this
+        # frame's mask PNGs while the MAIN thread is still computing the
+        # previous frame. One worker + in-order submission keeps the video
+        # decoder strictly sequential; values and their consumption order are
+        # unchanged, so outputs stay bit-identical.
+        frame_rgb = frame_source.read_rgb(frame_n)
+        frame_masks = None
+        if masks_path is not None:
+            frame_masks = {}
+            for pid in people_ids:
+                p = os.path.join(masks_path, camera_id, "masks", f"mask_{frame_n:04d}_{pid:02d}.png")
+                frame_masks[pid] = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) if os.path.exists(p) else None
+        return frame_rgb, frame_masks
+
+    _prefetcher = ThreadPoolExecutor(max_workers=1)
+    _next_inputs = _prefetcher.submit(_load_frame_inputs, 0) if n_frames > 0 else None
     for frame_n in tqdm.tqdm(range(n_frames)):
         # Decode the frame once and upload it to the GPU once; every body warps
         # its crop from this resident RGB tensor (the network's input order).
-        frame_rgb = frame_source.read_rgb(frame_n)
+        frame_rgb, frame_masks = _next_inputs.result()
+        _next_inputs = (_prefetcher.submit(_load_frame_inputs, frame_n + 1)
+                        if frame_n + 1 < n_frames else None)
         frame_t = torch.from_numpy(np.ascontiguousarray(frame_rgb)).to(device).permute(2, 0, 1).float()[None]
         for body_id in people_ids:
             folder_path = body_dirs[body_id]
@@ -195,14 +216,9 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
                     valid_scores = valid_scores[np.argmin(box2center_dist)][None]
             else:
                 masks_path_person = os.path.join(masks_path, camera_id, "masks", f"mask_{frame_n:04d}_{body_id:02d}.png")
-                if not os.path.exists(masks_path_person):
-                    body_verts.append(np.zeros((1, cfg.num_joints, 3)))
-                    body_vis.append(np.zeros((1, cfg.num_joints)))
-                    body_contact.append(np.zeros((1, cfg.num_joints)))
-                    body_floor_contact.append(np.zeros((1, cfg.num_joints)))
-                    continue
-
-                mask = cv2.imread(str(masks_path_person), cv2.IMREAD_GRAYSCALE)
+                # Read on the prefetch worker; None covers both missing-file
+                # and failed-read (the two zero-fill branches were identical).
+                mask = frame_masks.get(body_id)
                 if mask is None:
                     body_verts.append(np.zeros((1, cfg.num_joints, 3)))
                     body_vis.append(np.zeros((1, cfg.num_joints)))
@@ -221,8 +237,11 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
                     body_floor_contact.append(np.zeros((1, cfg.num_joints)))
                     continue
                 else:
-                    ys, xs = np.where(mask)
-                    x1, y1, x2, y2 = xs.min(), ys.min(), xs.max(), ys.max()
+                    # cv2.boundingRect is ~100x cheaper than np.where + min/max
+                    # over a 4K mask and returns the same tight box:
+                    # x2 = x + w - 1 == xs.max(), y2 = y + h - 1 == ys.max().
+                    x, y, bw, bh = cv2.boundingRect(mask)
+                    x1, y1, x2, y2 = x, y, x + bw - 1, y + bh - 1
                     boxes = np.array([[x1, y1, x2, y2]])
                     valid_scores = np.array([1.0])
 
