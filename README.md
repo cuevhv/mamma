@@ -123,7 +123,14 @@ want a leaner/faster run, add `--skip_masked_outputs` to `ma_masks.flags` (overl
 are visualization only, not used downstream) and `--disable-visualizations` to
 `ma_2d.flags`.
 
-One further speedup is **opt-in and hardware-dependent**:
+Two further speedups are **opt-in**, each with a stated cost (in the GUI they are
+plain toggles under *New Task → Step 2 → Common settings*, with the trade-off in
+each toggle's help text):
+
+- **`ma_3d --tf32`** — ~2.5× faster SMPL-X optimization on modern NVIDIA GPUs
+  (tensor-core math). The fit lands on a slightly different result (~5 mm vs the
+  exact math; ≈ +1.6 mm against ground truth in our eval) — use it for previews
+  and iteration, keep it off for final fits.
 
 - **`ma_2d --tensorrt`** — add it to `ma_2d.flags` in your preset for a
   TensorRT-compiled 2D landmark network. ~5× FP16 landmark forward; on a 6-person /

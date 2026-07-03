@@ -210,13 +210,19 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
         Setting(
             id="tensorrt", label="TensorRT", widget="toggle",
             target=_flag("--tensorrt", valued=False), default=False,
-            help="Compile the landmark net to TensorRT (~5x FP16 forward, NVIDIA only).",
+            help="Compile the landmark net to TensorRT: ~5x faster on the network itself, "
+                 "biggest on long / many-camera captures. NVIDIA-only and needs a one-time "
+                 "extra install (requirements-tensorrt.txt); the first run compiles for "
+                 "~1 minute, then it's cached. Accuracy is unchanged (verified against "
+                 "ground truth); without the install the run safely falls back to normal "
+                 "speed, so it never breaks anything.",
         ),
         Setting(
             id="save_visualizations", label="Save visualizations", widget="toggle",
             target=_flag("--disable-visualizations", valued=False, invert=True), default=True,
             help="Write per-body 2D-landmark viz frames + a preview video for inspection. "
-                 "On by default; turning it off passes --disable-visualizations.",
+                 "Viz-only — nothing downstream reads them. On by default; turn off for "
+                 "faster runs and less disk when you don't need to eyeball the landmarks.",
         ),
     ],
 
@@ -228,6 +234,15 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             note="Manage the config YAML files in optimization/config_files/contact_configs/.",
             help="The optimization config (betas, contact, iterations, loss weights). "
                  "The main ma_3d quality lever.",
+        ),
+        Setting(
+            id="tf32", label="Fast fits (TF32)", widget="toggle",
+            target=_flag("--tf32", valued=False), default=False,
+            help="~2.5x faster optimization on modern NVIDIA GPUs (tensor-core math). "
+                 "The trade-off: the fit settles on a slightly different result "
+                 "(~5 mm vs the exact math; about +1.6 mm against ground truth in our "
+                 "eval). Great for previews and iterating on settings; keep it off for "
+                 "final, best-quality fits.",
         ),
         Setting(
             id="occlusion_aware_weights", label="Heavy occlusion-aware", widget="toggle",
@@ -260,7 +275,9 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
         Setting(
             id="skip_overlay", label="Skip overlay videos", widget="toggle",
             target=_flag("--skip-overlay", valued=False), default=False,
-            help="Skip the pyrender overlay videos (faster).",
+            help="Skip the per-camera mesh-over-footage overlay videos — the slowest part "
+                 "of visualization. The interactive 3D scene (.rrd) is still produced; you "
+                 "only lose the ready-made overlay MP4s.",
         ),
         Setting(
             id="rerun_light", label="Light .rrd", widget="toggle",
