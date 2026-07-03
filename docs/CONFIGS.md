@@ -126,6 +126,11 @@ Source: [`optimization/run_ma_3d.py`](../optimization/run_ma_3d.py).
   ground-truth SMPL-X poses in `<ma_cap_dir>/<seq>/gt/global.npz` (e.g. the
   `mamma_eval_dance` sequences). **Off by default** — normal in-the-wild captures
   have no GT.
+- `--tf32` — allow TF32 tensor-core math during the fit (Ampere+ GPUs). Measured
+  ~2.5× faster optimization, but the iterative fit lands in a nearby different
+  optimum: ~5–6 mm vs the FP32 result, +1.6 mm MPJPE against ground truth on the
+  eval sequence. **Off by default** — good for iteration/preview runs; keep FP32
+  for release-quality fits.
 
 #### `ma_vis`
 
