@@ -113,35 +113,6 @@ python -m inference run \
   --out-tag run01 -v
 ```
 
-### Faster runs
-
-Most speedups are **automatic and universal** — no special hardware needed: on-GPU
-crop preprocessing and skipping the unused detector in mask mode are always on, and
-`full.yaml` ships `ma_masks` in **low-memory mode** (`--lazy-frames --prune-memory`)
-so long videos don't run out of host RAM. Visualizations stay on by default; if you
-want a leaner/faster run, add `--skip_masked_outputs` to `ma_masks.flags` (overlays
-are visualization only, not used downstream) and `--disable-visualizations` to
-`ma_2d.flags`.
-
-Two further speedups are **opt-in**, each with a stated cost (in the GUI they are
-plain toggles under *New Task → Step 2 → Common settings*, with the trade-off in
-each toggle's help text):
-
-- **`ma_3d --tf32`** — ~2.5× faster SMPL-X optimization on modern NVIDIA GPUs
-  (tensor-core math). The fit lands on a slightly different result (~5 mm vs the
-  exact math; ≈ +1.6 mm against ground truth in our eval) — use it for previews
-  and iteration, keep it off for final fits.
-
-- **`ma_2d --tensorrt`** — add it to `ma_2d.flags` in your preset for a
-  TensorRT-compiled 2D landmark network. ~5× FP16 landmark forward; on a 6-person /
-  32-camera capture `ma_2d` drops from ~159 min to ~51 min. **NVIDIA-only** — install
-  once with `pip install -r requirements/requirements-tensorrt.txt`; without it the
-  flag falls back to plain PyTorch (same outputs), so it is safe to leave in the
-  preset. The compiled engine is cached, so it pays off most on long / many-camera
-  runs.
-
-Per-step flag reference (including `--tensorrt`, `--overlay-num-workers`): [`docs/CONFIGS.md`](docs/CONFIGS.md#common-per-step-flags).
-
 ---
 
 ## GUI
