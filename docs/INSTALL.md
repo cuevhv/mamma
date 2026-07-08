@@ -134,7 +134,7 @@ NVIDIA-only — without it the flag falls back to plain PyTorch, so configs stay
 pip install -r requirements/requirements-tensorrt.txt
 ```
 
-The compiled engine is cached to disk on first run (keyed by weights/shape/precision/GPU),
+The compiled engine is cached to disk on first run (keyed by weight contents/shape/precision/GPU),
 so subsequent runs load it in ~2 s. See [`docs/CONFIGS.md`](CONFIGS.md#common-per-step-flags) for `--tensorrt` / `--tensorrt-fp32`.
 
 ### VPoser pose prior for `ma_3d` (optional)

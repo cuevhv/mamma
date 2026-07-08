@@ -172,11 +172,12 @@ so the model is export-friendly — the usual TensorRT risk (ONNX conversion) di
 not bite here.
 
 **Engine caching (done).** The compiled engine is cached next to the weights
-(`.trt_cache/`, keyed by weights+shape+precision+GPU+TRT version). A 1-cam smoke
-went **32 s (build+cache) → 10 s (cached load)** — the ~2 s load replaces the
-rebuild, so TensorRT now helps short/repeated runs too, and any change to the key
-inputs auto-rebuilds. Loaded engine output is bit-identical to the freshly built
-one (Δ 0.0).
+(`.trt_cache/`, keyed by weight **contents** (hash)+shape+precision+GPU+TRT
+version). A 1-cam smoke went **32 s (build+cache) → 10 s (cached load)** — the
+~2 s load replaces the rebuild, so TensorRT now helps short/repeated runs too,
+and swapping in a different checkpoint (even at the same path/size/mtime) changes
+the content hash and rebuilds. Loaded engine output is bit-identical to the
+freshly built one (Δ 0.0).
 
 ## ma_vis — parallel overlay rendering (preset opt-in)
 The per-camera overlay render defaulted to serial (`--overlay-num-workers 1`).
@@ -187,7 +188,7 @@ no EGL/renderer failure, same overlay outputs. Enabled in the example presets
 ## TensorRT at scale — measured (32-camera, 6-person, 743-frame)
 The headline scale validation: the full 32-camera MultiMama capture
 (6 people, 743 frames/cam) through `ma_2d --tensorrt`, run clean and uncontended
-on the RTX 4090. This is the real measurement behind `full_tensorrt.yaml`.
+on the RTX 4090. This is the real measurement behind `ma_2d --tensorrt`.
 
 | 32-cam `ma_2d` (6 ppl, 743 f) | wall time | peak CPU RSS | backend |
 |---|---:|---:|---|

@@ -93,9 +93,10 @@ Source: [`segmentation/run_ma_masks.py`](../segmentation/run_ma_masks.py).
 Source: [`landmarks/run_ma_2d.py`](../landmarks/run_ma_2d.py).
 
 - `--tensorrt` — compile the landmark network to a TensorRT engine for a faster
-  forward (~5× FP16). **Opt-in, NVIDIA-only**; falls back to plain PyTorch when
+  forward (~5× FP16). **Opt-in, NVIDIA-only** (the FP16 speedup needs a Volta-or-newer
+  GPU with tensor cores); falls back to plain PyTorch when
   `torch-tensorrt` is unavailable, so configs stay portable. The compiled engine is
-  cached to disk (keyed by weights/shape/precision/GPU), so after the first run it
+  cached to disk (keyed by weight contents/shape/precision/GPU), so after the first run it
   loads in ~2 s — it pays off most on long / many-camera sequences. Needs the
   optional dep in [`requirements/requirements-tensorrt.txt`](../requirements/requirements-tensorrt.txt).
 - `--tensorrt-fp32` — with `--tensorrt`, use the near-exact FP32 engine (~2×) instead

@@ -434,7 +434,8 @@ def parser():
                            'this from MAMMA_DOWNSAMPLED_VERTS_PKL.')
     args.add_argument('--tensorrt', action='store_true',
                       help='Compile the landmark network to a TensorRT engine for a faster '
-                           'forward (~5x FP16). NVIDIA-only; falls back to PyTorch when '
+                           'forward (~5x FP16). NVIDIA-only, and the FP16 speedup needs a '
+                           'Volta-or-newer GPU (tensor cores); falls back to PyTorch when '
                            'torch-tensorrt is unavailable. Best for long / many-camera runs '
                            '(the one-time engine build amortizes over all frames).')
     args.add_argument('--tensorrt-fp32', dest='tensorrt_fp32', action='store_true',
@@ -610,11 +611,12 @@ def _build_tensorrt_forward(model, cfg, device, fp16=True, weights_path=None):
     with the same ``(img, mask) -> dict`` contract as the eager model.
 
     NVIDIA-only opt-in fast path. The compiled engine is cached to disk (next to
-    the weights), keyed by weights + input shape + precision + GPU + TRT version,
-    so the first run pays the ~minute build and later runs load it in ~2 s; any
-    change to those inputs auto-rebuilds. The single forward call site is
-    unchanged — this just swaps what ``model`` points at, so there is no
-    duplicated inference code.
+    the weights), keyed by the weight *contents* (hash) + input shape + precision
+    + GPU + TRT version, so the first run pays the ~minute build and later runs
+    load it in ~2 s; swapping in a different checkpoint -- even at the same path,
+    size and mtime -- changes the content hash and rebuilds. The single forward
+    call site is unchanged — this just swaps what ``model`` points at, so there is
+    no duplicated inference code.
     """
     import torch_tensorrt
     import hashlib
@@ -634,10 +636,18 @@ def _build_tensorrt_forward(model, cfg, device, fp16=True, weights_path=None):
 
     cache_path = None
     if weights_path:
-        st = os.stat(weights_path)
+        # Key on the weight *contents* (streamed hash), not path+size+mtime, so a
+        # checkpoint swapped in at the same path -- even with size and mtime
+        # preserved (rsync -a / cp -p / tar) -- yields a different key and rebuilds
+        # instead of silently loading a stale engine. The full read is cheap next
+        # to the ~minute engine build.
+        wh = hashlib.md5()
+        with open(weights_path, "rb") as _wf:
+            for _chunk in iter(lambda: _wf.read(1 << 20), b""):
+                wh.update(_chunk)
         gpu = torch.cuda.get_device_name(device) if torch.cuda.is_available() else "cpu"
         key = hashlib.md5(
-            f"{weights_path}|{st.st_size}|{int(st.st_mtime)}|{h}x{w}|"
+            f"{wh.hexdigest()}|{h}x{w}|"
             f"{'fp16' if fp16 else 'fp32'}|{gpu}|trt{torch_tensorrt.__version__}".encode()
         ).hexdigest()[:16]
         cache_dir = os.path.join(os.path.dirname(os.path.abspath(weights_path)), ".trt_cache")
@@ -659,12 +669,20 @@ def _build_tensorrt_forward(model, cfg, device, fp16=True, weights_path=None):
             truncate_double=True, min_block_size=1,
         )
         if cache_path:
+            # Atomic publish: write to a private temp file then rename, so a
+            # concurrent cold-cache run can never read a half-written .ep.
+            tmp_path = f"{cache_path}.tmp.{os.getpid()}"
             try:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                torch_tensorrt.save(engine, cache_path, arg_inputs=example)
+                torch_tensorrt.save(engine, tmp_path, arg_inputs=example)
+                os.replace(tmp_path, cache_path)
                 logger.info(f"ma_2d: cached TensorRT engine to {cache_path}")
             except Exception as e:
                 logger.warning(f"ma_2d: could not cache TensorRT engine ({e}).")
+                try:
+                    os.path.exists(tmp_path) and os.remove(tmp_path)
+                except Exception:
+                    pass
 
     def forward(img, mask):
         return dict(zip(keys, engine(img, mask)))
