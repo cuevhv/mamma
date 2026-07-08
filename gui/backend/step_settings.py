@@ -238,11 +238,8 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
         Setting(
             id="tf32", label="Fast fits (TF32)", widget="toggle",
             target=_flag("--tf32", valued=False), default=False,
-            help="~2.5x faster optimization on modern NVIDIA GPUs (tensor-core math). "
-                 "The trade-off: the fit settles on a slightly different result "
-                 "(~5 mm vs the exact math; about +1.6 mm against ground truth in our "
-                 "eval). Great for previews and iterating on settings; keep it off for "
-                 "final, best-quality fits.",
+            help="Faster optimization on modern NVIDIA GPUs; however it might give worse results. "
+                 "Keep it off for final, best-quality fits.",
         ),
         Setting(
             id="occlusion_aware_weights", label="Heavy occlusion-aware", widget="toggle",

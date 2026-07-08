@@ -943,10 +943,8 @@ def parser():
                            "toward typical poses). Requires the VPoser weights "
                            "(MAMMA_VPOSER_DIR, default data/body_models/vposer/V02_05). Default off.")
     args.add_argument('--tf32', action='store_true',
-                      help="Opt-in: allow TF32 tensor-core math for matmul/cudnn during the "
-                           "fit (Ampere+). Faster optimization at reduced matmul precision — "
-                           "results change at the sub-millimetre level; keep off for "
-                           "bit-reproducibility. Default off.")
+                      help="Faster optimization on modern NVIDIA GPUs; however it might give worse results. "
+                           "Keep it off for final, best-quality fits.")
     return args.parse_args()
 
 
