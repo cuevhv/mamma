@@ -188,7 +188,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
                   ) : job.outputs.length > 0 ? (
                     <ul className="mt-2 space-y-0.5">
                       {job.outputs.map(o => (
-                        <li key={o} className="flex items-center gap-1.5 text-foreground-faint text-xs font-mono"><FolderOpen className="w-3 h-3 flex-shrink-0" /> {o}</li>
+                        <li key={o} className="flex items-start gap-1.5 text-foreground-faint text-xs font-mono"><FolderOpen className="w-3 h-3 flex-shrink-0 mt-0.5" /><span className="min-w-0 break-all">{o}</span></li>
                       ))}
                     </ul>
                   ) : null}
@@ -196,7 +196,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
               );
             })()}
             {job.state === 'running' && job.log_tail.length > 0 && (
-              <pre className="mt-2 text-[11px] text-foreground-faint font-mono max-h-32 overflow-auto whitespace-pre-wrap">{job.log_tail.slice(-8).join('\n')}</pre>
+              <pre className="mt-2 text-[11px] text-foreground-faint font-mono max-h-32 overflow-auto whitespace-pre-wrap break-all">{job.log_tail.slice(-8).join('\n')}</pre>
             )}
           </div>
         )}
