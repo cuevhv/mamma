@@ -168,17 +168,29 @@ def write_contact_rrd(out_path, points_world, contact, floor_contact,
         allpts = allpts[np.isfinite(allpts).all(axis=1)]
         plane = [a for a in (0, 1, 2) if a != up_idx]
         if allpts.shape[0] >= 2:
-            lo, hi = allpts.min(0), allpts.max(0)
+            # Robust extent: a handful of degenerate triangulations can land
+            # hundreds of metres away (finite, so NOT caught by the NaN mask).
+            # Size the scene from a percentile box so those flyers can't blow up
+            # the diagonal, the sphere radii and the ground quad — otherwise the
+            # viewer auto-fits to a ~km scene and every subject merges into one
+            # dot. Centre/height are taken from the in-box (inlier) points.
+            lo = np.percentile(allpts, 1.0, axis=0)
+            hi = np.percentile(allpts, 99.0, axis=0)
+            inlier = np.all((allpts >= lo) & (allpts <= hi), axis=1)
+            inpts = allpts[inlier] if inlier.any() else allpts
             bb = hi - lo
             diag = float(np.linalg.norm(bb)) or 1.0
-            floor_h = float(np.percentile(allpts @ up_vec, 2))   # signed up projection
+            floor_h = float(np.percentile(inpts @ up_vec, 2))   # signed up projection
             xy_extent = float(max(bb[plane[0]], bb[plane[1]]))
             half = 0.5 * xy_extent + max(0.75, 0.3 * xy_extent)   # span subjects + margin
             c0 = float((lo[plane[0]] + hi[plane[0]]) * 0.5)
             c1 = float((lo[plane[1]] + hi[plane[1]]) * 0.5)
         else:
             diag, floor_h, half, c0, c1 = 1.0, 0.0, 1.0, 0.0, 0.0
-        r_min, r_max = 0.004 * diag, 0.016 * diag
+        # Radii track the (robust) scene but are hard-capped so no residual
+        # outlier can inflate the point spheres past a human scale.
+        r_min, r_max = 0.004 * diag, min(0.016 * diag, 0.05)
+        r_min = min(r_min, r_max)
 
         rr.init("mamma_contact", spawn=False)
         rr.save(str(out_path))
