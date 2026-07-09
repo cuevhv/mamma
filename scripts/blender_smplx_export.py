@@ -60,6 +60,46 @@ def _select(objs, active):
     bpy.context.view_layer.objects.active = active
 
 
+def _bake_shape_betas(mesh):
+    """Bake the static Shape### (beta) shape keys into the mesh points, keeping
+    the animated Pose*/Exp* keys intact as deltas. The betas are weights outside
+    [0,1] and Blender's USD *importer* clamps blendshape weights to [0,1], which
+    reverts the body toward the template (feet float by a per-subject amount);
+    with the shape baked there is nothing left to clamp. Mutates the rig, so the
+    USD export must stay last in the format order."""
+    keys = mesh.data.shape_keys
+    if not keys:
+        return
+    kb = keys.key_blocks
+    shape = [k for k in kb if k.name.startswith("Shape")]
+    if not shape:
+        return
+    import numpy as np
+    n = len(mesh.data.vertices)
+    basis = np.empty(n * 3)
+    kb[0].data.foreach_get("co", basis)
+    offset = np.zeros(n * 3)
+    for k in shape:
+        if k.value == 0.0:
+            continue
+        co = np.empty(n * 3)
+        k.data.foreach_get("co", co)
+        offset += k.value * (co - basis)
+    for k in shape:
+        mesh.shape_key_remove(k)
+    # Shift Basis + all remaining keys by the same offset: every key's delta to
+    # its relative key is preserved, so the Pose correctives keep working.
+    for k in kb:
+        co = np.empty(n * 3)
+        k.data.foreach_get("co", co)
+        k.data.foreach_set("co", co + offset)
+    co = np.empty(n * 3)
+    mesh.data.vertices.foreach_get("co", co)
+    mesh.data.vertices.foreach_set("co", co + offset)
+    mesh.data.update()
+    print(f"[blender_export] baked {len(shape)} Shape keys into the mesh for USD")
+
+
 def main():
     a = _args()
     formats = [f.strip().lower() for f in a.formats.split(",") if f.strip()]
@@ -132,6 +172,7 @@ def main():
                                 global_scale=scale)
 
     def _usd():
+        _bake_shape_betas(mesh)
         _select([mesh, arm], mesh)
         usd_kw = dict(filepath=out + ".usd", selected_objects_only=True, export_animation=True)
         if cm:
