@@ -359,10 +359,11 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
             folder_path = body_dirs[body_id]
             create_video_from_images(folder_path, f"{folder_path}/{camera_id}.mp4", img_format="img_%04d.jpg")
 
-    landmarks = np.stack(all_verts, axis=1)
-    visibilities = np.stack(all_vis, axis=1)
-    contacts = np.stack(all_contact, axis=1)
-    floor_contacts = np.stack(all_floor_contact, axis=1)
+    # Pin the output dtype due to the zero-fill placeholders for missing detections
+    landmarks = np.stack(all_verts, axis=1).astype(np.float32, copy=False)
+    visibilities = np.stack(all_vis, axis=1).astype(np.float32, copy=False)
+    contacts = np.stack(all_contact, axis=1).astype(np.float32, copy=False)
+    floor_contacts = np.stack(all_floor_contact, axis=1).astype(np.float32, copy=False)
 
     # GT contacts are written only when provided (evaluation runs); omitted during
     # normal inference instead of being stored as empty pickled None placeholders.
