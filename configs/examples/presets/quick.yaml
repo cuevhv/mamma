@@ -27,7 +27,6 @@ ma_masks:
   repo_path: segmentation
   flags:
   - --sam_version sam2
-  undistort: false
 ma_2d:
   engine: conda
   enabled: true
@@ -38,7 +37,6 @@ ma_2d:
   config_path: configs/train/models_2d/config_mammanet_mask_512.yaml
   weights: data/weights/ma_2d/mamma_mask_full_cvpr.ckpt
   flags: []
-  undistort: false
 ma_3d:
   engine: conda
   enabled: true
@@ -60,4 +58,3 @@ ma_vis:
   # default is 1 (serial) to stay safe where parallel pyrender/EGL is finicky;
   # lower this if a host struggles with concurrent offscreen rendering.
   flags: ["--overlay-num-workers 4"]
-  undistort: false
