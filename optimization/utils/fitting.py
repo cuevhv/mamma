@@ -66,13 +66,14 @@ def load_frames_in_parallel(dat_args):
     try:
         pts2d_np, pts2d_vis_np, contacts_np, floor_contacts_np = process_2d_pred(body_id, pred_fns, smplx_out, cam_metadata, batch_size, i)
     except Exception as e:
-        print("Error loading 2D predictions for camera", cam_id)
+        print(f"ma_3d: {cam_id}: could not load 2D predictions for body {body_id} "
+              f"({type(e).__name__}: {e}): zero-filling, this camera won't constrain body {body_id}. "
+              f"An IndexError just means the 2D file has fewer body slots: subject not visible in this view.")
         # pts2d_np, pts2d_vis_np, contacts_np, floor_contacts_np = None, None, None, None
         pts2d_np = np.zeros((batch_size, 512, 3), np.float32)
         pts2d_vis_np = np.zeros((batch_size, 512), dtype=np.float32)
         contacts_np = np.zeros((batch_size, 512), dtype=np.float32)
         floor_contacts_np = np.zeros((batch_size, 512), dtype=np.float32)
-        print(e)
 
 
     img_h = int(cam_metadata["cam_img_h"])
