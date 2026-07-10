@@ -18,6 +18,29 @@ from .overlay import _reencode_to_h264
 log = logging.getLogger(__name__)
 
 
+def _fit_tile(frame, tile_w: int, tile_h: int):
+    """Aspect-preserving resize + centered black padding onto a tile canvas.
+
+    Mixed-orientation rigs (portrait + landscape overlays) share one tile
+    size, so a plain resize would stretch every source whose aspect differs
+    from the tile's — letterbox/pillarbox instead.
+    """
+    import cv2
+
+    h, w = frame.shape[:2]
+    if (h, w) == (tile_h, tile_w):
+        return frame
+    scale = min(tile_w / w, tile_h / h)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((tile_h, tile_w, 3), dtype=frame.dtype)
+    x0 = (tile_w - new_w) // 2
+    y0 = (tile_h - new_h) // 2
+    canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
+    return canvas
+
+
 def _grid_shape(n: int) -> Tuple[int, int]:
     if n <= 1:
         return 1, 1
@@ -129,8 +152,7 @@ def make_preview_collage(
                     if not ok or frame is None:
                         tiles = None
                         break
-                    if frame.shape[:2] != (tile_h, tile_w):
-                        frame = cv2.resize(frame, (tile_w, tile_h))
+                    frame = _fit_tile(frame, tile_w, tile_h)
                     cv2.putText(
                         frame, cam_name, (10, 28), cv2.FONT_HERSHEY_SIMPLEX,
                         0.8, label_color, 2, cv2.LINE_AA,
