@@ -1,12 +1,4 @@
 # Occlusion-aware lower-body fix (for example legs occluded in most views (not all) behind a table).
-# = config_real_gmf_small_vals_detr_exp_no_vtemplate.yaml + two additions:
-#   1. occlusion_gating (hybrid gate over all landmarks) replaces the vis_clip_value
-#      clamp so occluded views stop out-voting the one view that sees a part.
-#   2. vposer_recon_loss (gentle, w=0.25) pins the evidence-starved legs to the
-#      VPoser pose manifold (distance-from-manifold; needs data/body_models/vposer/V02_05).
-# This is the validated winner. The gate applies to all landmarks; the prior does
-# the leg-anchoring, so no lower-body mask/scoping is needed. See CHANGELOG.md
-# ("Optimization (ma_3d)") and docs/CONFIGS.md for the flags.
 n_betas: 16
 use_v_template: False
 use_bun_model: False
