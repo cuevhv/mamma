@@ -173,7 +173,7 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             target=_flag("--cam_init"), default=None, omit_when_default=True,
             placeholder="e.g. IOI_09",
             note="Camera whose view seeds the people's IDs — every person you want "
-                 "tracked must be visible in it at least for a few frames. Leave blank to pick the first camera.",
+                 "tracked must be visible in that view at least for a few frames. Leave blank to pick the first camera.",
             help="Camera used to initialize person identities.",
         ),
         Setting(
@@ -209,12 +209,9 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
         Setting(
             id="tensorrt", label="TensorRT", widget="toggle",
             target=_flag("--tensorrt", valued=False), default=False,
-            help="Compile the landmark net to TensorRT: ~5x faster on the network itself, "
-                 "biggest on long / many-camera captures. NVIDIA-only and needs a one-time "
-                 "extra install (requirements-tensorrt.txt); the first run compiles for "
-                 "~1 minute, then it's cached. Accuracy is unchanged (verified against "
-                 "ground truth); without the install the run safely falls back to normal "
-                 "speed, so it never breaks anything.",
+            help="Faster MammaNet inference on NVIDIA GPUs, but it may reduce accuracy. "
+                 "Needs a one-time install (requirements-tensorrt.txt); the first run compiles for ~1 min "
+                 "(cached after). Falls back to normal inference if unavailable.",
         ),
         Setting(
             id="save_visualizations", label="Save visualizations", widget="toggle",
@@ -247,7 +244,7 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
                  "across the majority of camera views.",
         ),
         Setting(
-            id="use_vposer", label="Enable Pose Prior", widget="toggle",
+            id="use_vposer", label="Enable Pose Prior (VPoser)", widget="toggle",
             target=_flag("--use-vposer", valued=False), default=False,
             help="A learned prior of realistic human poses; a fix for heavy occlusion, not a "
                  "general quality boost. It can bias the fit toward generic poses and reduce accuracy."
