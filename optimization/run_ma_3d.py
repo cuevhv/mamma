@@ -359,6 +359,37 @@ def process_results(smplx_out_gt, smplx_out_pred, body_id, out_fn, cameras_metad
     print("done processing results")
 
 
+def _pair_files_with_cameras(files, cameras_metadata_fns, kind, required=False):
+    """Order per-camera ``files`` to match ``cameras_metadata_fns`` by camera
+    name (exact basename stem, else substring), so predictions and calibration
+    can never pair up positionally misaligned regardless of how either list was
+    globbed or sorted. Returns (aligned_files, kept_cameras_metadata_fns).
+
+    A camera with no matching file is dropped with a loud warning (or raises
+    when ``required``); a camera matching several files raises.
+    """
+    aligned, kept = [], []
+    for meta_fn in cameras_metadata_fns:
+        cam = os.path.splitext(os.path.basename(meta_fn))[0]
+        matches = [f for f in files if os.path.splitext(os.path.basename(f))[0] == cam]
+        if not matches:
+            matches = [f for f in files if cam in os.path.basename(f)]
+        if len(matches) > 1:
+            raise ValueError(f"{kind}: camera '{cam}' matches multiple files: {matches}")
+        if not matches:
+            msg = f"{kind}: no file found for camera '{cam}'"
+            if required:
+                raise ValueError(msg)
+            print(f"WARNING: {msg} — dropping this view.")
+            continue
+        aligned.append(matches[0])
+        kept.append(meta_fn)
+    if not aligned:
+        raise ValueError(f"{kind}: no files matched any selected camera "
+                         f"(cameras: {[os.path.basename(m) for m in cameras_metadata_fns]}).")
+    return aligned, kept
+
+
 def process_metadata(optim_cfg_fn, metadata_data_pth, pred_pth, downsampled_verts_mat_path, smplx_model_pth, cam_names,
                      hand_joints_pred_pth=None, use_gt=True, device="cuda", cam_name_prefix=None):
     with open(optim_cfg_fn, 'r') as f:
@@ -388,10 +419,6 @@ def process_metadata(optim_cfg_fn, metadata_data_pth, pred_pth, downsampled_vert
         cameras_metadata_fns = sorted(cameras_metadata_fns)
 
     print("cameras_metadata_fns: ", cameras_metadata_fns)
-    selected_cameras_id = [i for i in range(len(cameras_metadata_fns))]
-
-    cameras_metadata_fns = [cameras_metadata_fns[i] for i in selected_cameras_id]
-    print("selected cameras: ", cameras_metadata_fns)
     print("prediction path: ", pred_pth)
 
     if pred_pth is not None:
@@ -420,15 +447,15 @@ def process_metadata(optim_cfg_fn, metadata_data_pth, pred_pth, downsampled_vert
                 if os.path.basename(f).rsplit("_",1)[-1] != 'diff.npz'
             ]
 
-        pred_fns = sorted(pred_fns)
         print(pred_pth, cam_names if use_cam_names else cam_name_prefix)
 
-        if len(selected_cameras_id) <= len(pred_fns):
-            pred_fns = [pred_fns[i] for i in selected_cameras_id]
-        else:
-            pred_fns = [pred_fns[i] for i in range(len(pred_fns))]
-            selected_cameras_id = [i for i in range(len(pred_fns))]
-            cameras_metadata_fns = [cameras_metadata_fns[i] for i in selected_cameras_id]
+        # Pair each 2D-prediction file to its camera by name.
+        # We need to make sure the .npz files match correctly with camera params,
+        # because we'll use that correspondance when we apply epipolar contraints.
+        pred_fns, cameras_metadata_fns = _pair_files_with_cameras(
+            pred_fns, cameras_metadata_fns, "2D predictions")
+        for p, m in zip(pred_fns, cameras_metadata_fns):
+            print(f"  paired 2D {os.path.basename(p)} <-> calib {os.path.basename(m)}")
     else:
         pred_fns = None
         downsampled_verts_mat_path = None
@@ -445,8 +472,9 @@ def process_metadata(optim_cfg_fn, metadata_data_pth, pred_pth, downsampled_vert
         else:
             hand_joints_pred_fns = glob.glob(os.path.join(hand_joints_pred_pth, f'{cam_name_prefix}*.npz'))
 
-        hand_joints_pred_fns = sorted(hand_joints_pred_fns)
-        hand_joints_pred_fns = [hand_joints_pred_fns[i] for i in selected_cameras_id]
+        # Same name-keyed pairing as pred_fns (was sorted + positional indexing).
+        hand_joints_pred_fns, _ = _pair_files_with_cameras(
+            hand_joints_pred_fns, cameras_metadata_fns, "hand-joint predictions", required=True)
     else:
         hand_joints_pred_fns = None
 
