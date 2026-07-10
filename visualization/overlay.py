@@ -493,7 +493,7 @@ def render_overlay_videos(
     fps: int = DEFAULT_FPS,
     resolution: Optional[int] = 1280,
     max_frames: Optional[int] = None,
-    num_workers: int = 1,
+    num_workers: Optional[int] = None,
     image_prefix: str = "",
     colors_rgb: Optional[Sequence[Tuple[float, float, float]]] = None,
     opacity: float = DEFAULT_OPACITY,
@@ -510,8 +510,12 @@ def render_overlay_videos(
         resolution: Long-side target in pixels (preserves aspect ratio).
             ``None`` or ``<=0`` keeps the source camera resolution.
         max_frames: Optional cap on frames per camera.
-        num_workers: 1 = single process. >1 spawns a process pool with one
-            ``OverlayRenderer`` per worker (each has its own pyrender context).
+        num_workers: ``None`` (default) = auto, ``min(#cameras, 4)`` (~2x
+            measured on 6 cams). 1 = single process. >1 spawns a process pool
+            with one ``OverlayRenderer`` per worker (each has its own pyrender
+            context); cameras whose worker fails (spawned EGL contexts don't
+            work on every host) are retried serially in the main process, so
+            parallelism can cost time but never output.
         image_prefix: Prefix to prepend to ``cam.image_paths`` entries (used
             when the calibration npz holds paths from a different machine
             and you mounted the dataset elsewhere).
@@ -527,7 +531,11 @@ def render_overlay_videos(
     if colors_rgb is None:
         colors_rgb = _default_palette(max(10, max((m.body_id for m in motions), default=0) + 1))
     fps = max(1, int(fps))
-    num_workers = max(1, int(num_workers))
+    if num_workers is None:
+        num_workers = max(1, min(len(cameras), 4))
+        log.info("overlay workers: auto -> %d", num_workers)
+    else:
+        num_workers = max(1, int(num_workers))
 
     if num_workers == 1 or len(cameras) == 1:
         return [
@@ -607,6 +615,7 @@ def _render_in_parallel(
         for cam in cameras
     ]
     ordered: List[Optional[CameraOverlayResult]] = [None] * len(cameras)
+    failed: List[int] = []
     ctx = mp.get_context("spawn")
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_workers,
@@ -620,6 +629,22 @@ def _render_in_parallel(
             try:
                 ordered[idx] = fut.result()
             except Exception as e:  # pragma: no cover  (only raised on real GPU)
-                log.warning("camera %s failed: %s", cameras[idx].name, e)
-                ordered[idx] = CameraOverlayResult(cameras[idx].name, None, 0, 0.0)
+                log.warning("camera %s failed in worker: %s — retrying serially",
+                            cameras[idx].name, e)
+                failed.append(idx)
+
+    # Serial retry in the main process: spawned pyrender/EGL contexts fail on
+    # some hosts where the main-process context works fine, so a pool failure
+    # must cost time, never overlays.
+    for idx in failed:
+        try:
+            ordered[idx] = _render_one_camera(
+                cameras[idx], motions, faces, out_dir,
+                fps=fps, resolution=resolution, max_frames=max_frames,
+                image_prefix=image_prefix, colors_rgb=colors_rgb, opacity=opacity,
+                undistort=undistort,
+            )
+        except Exception as e:
+            log.warning("camera %s failed serially too: %s", cameras[idx].name, e)
+            ordered[idx] = CameraOverlayResult(cameras[idx].name, None, 0, 0.0)
     return [r for r in ordered if r is not None]

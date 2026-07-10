@@ -59,7 +59,7 @@ def run_visualization(
     rerun_light: bool = False,
     overlay_resolution: Optional[int] = 1280,
     overlay_max_frames: Optional[int] = None,
-    overlay_num_workers: int = 1,
+    overlay_num_workers: Optional[int] = None,
     overlay_image_prefix: str = "",
     max_preview_cams: int = 4,
     faces_path=None,

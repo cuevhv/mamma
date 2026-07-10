@@ -29,6 +29,28 @@ import sys
 from .pipeline import run_visualization
 
 
+def _resolve_fps(args) -> int:
+    """Explicit ``--fps`` wins; else the capture's recorded rate from
+    ``<ma_cap_dir>/<seq>/gt/global.npz``; else 30. The frame rate is a fact
+    about the footage — asking for it only invites wrong-speed playback."""
+    if args.fps is not None:
+        return args.fps
+    if args.ma_cap_dir and args.seq_name:
+        import os
+
+        import numpy as np
+        p = os.path.join(args.ma_cap_dir, args.seq_name, "gt", "global.npz")
+        try:
+            with np.load(p, allow_pickle=True) as z:
+                if "fps" in z.files and int(z["fps"]) > 0:
+                    fps = int(z["fps"])
+                    sys.stderr.write(f"fps: {fps} (from capture global.npz)\n")
+                    return fps
+        except (OSError, ValueError):
+            pass
+    return 30
+
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m visualization",
@@ -88,8 +110,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--up-axis", "--up_axis", default="z",
                    choices=["x", "y", "z", "-x", "-y", "-z"],
                    help="Signed world up axis (default: z).")
-    p.add_argument("--fps", type=int, default=30,
-                   help="FPS for both the Rerun timeline and overlay videos.")
+    p.add_argument("--fps", type=int, default=None,
+                   help="FPS for both the Rerun timeline and overlay videos. "
+                        "Default: the capture's recorded rate (global.npz, "
+                        "ma_cap mode), else 30.")
     p.add_argument("--rerun-display-scale", "--rerun_display_scale",
                    type=float, default=1.0,
                    help="Downscale factor applied to camera images shown in "
@@ -158,8 +182,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    type=int, default=None,
                    help="Optional cap on frames per camera.")
     p.add_argument("--overlay-num-workers", "--overlay_num_workers",
-                   type=int, default=1,
-                   help="Parallelism for overlay rendering. 1 = single process.")
+                   type=int, default=None,
+                   help="Parallelism for overlay rendering. Default: auto "
+                        "(min(#cameras, 4), with serial retry for any camera "
+                        "whose worker fails). 1 = single process.")
     # ``--overlay_imgs_pth`` is the upstream name.
     p.add_argument("--overlay-image-prefix", "--overlay_image_prefix", "--overlay_imgs_pth",
                    default="",
@@ -254,7 +280,7 @@ def main(argv=None) -> None:
         cam_names_2d_keypoints=args.cam_names_2d_keypoints,
         cam_names_overlay=args.cam_names_overlay,
         up_axis=args.up_axis,
-        fps=args.fps,
+        fps=_resolve_fps(args),
         rerun_display_scale=args.rerun_display_scale,
         skip_overlay=args.skip_overlay,
         rerun_light=args.rerun_light,
