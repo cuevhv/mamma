@@ -137,7 +137,7 @@ export function NpzViewer({ npzPath, fileName, onClose }: Props) {
           </div>
         </header>
 
-        <div className="px-4 pt-3 pb-1 text-foreground-muted text-xs h-4">
+        <div className="px-4 pt-3 pb-1 text-foreground-muted text-xs min-h-8">
           {meta ? <span>{summary}</span> : (loadError ? '' : <Skeleton className="h-3 w-44" />)}
         </div>
 
