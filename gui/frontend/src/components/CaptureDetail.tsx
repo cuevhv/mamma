@@ -41,15 +41,6 @@ interface HistoryTask {
   sequences: HistorySequence[];
 }
 
-interface ActiveTask {
-  taskId: string;
-  captureName: string;
-  username: string;
-  createdAt: string;
-  runnerPid?: string | null;
-  processes: Array<HistoryProcess & { sequenceName: string }>;
-}
-
 interface SequenceInfo {
   name: string;
   path?: string | null;
@@ -327,9 +318,11 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     }
   };
 
-  // Live polling of /api/processes/active so cells update while a run is in flight.
-  const { data: activeData } = useTaskPolling<ActiveTask[]>('/api/processes/active', { intervalMs: 2000 });
-  // Full history for this capture; refreshed on focus / explicit reload elsewhere.
+  // Run status comes from /api/tasks/history — a snapshot, not a live feed. The
+  // page intentionally does NOT poll /api/processes/active: a capture page is
+  // almost always opened to view finished results, so a constant heartbeat would
+  // be pure noise. The "Reload page" button re-fetches history + outputs on
+  // demand; live in-flight progress is watched on the Tasks page instead.
   const { data: historyData, refresh: refreshHistory } = useTaskPolling<HistoryTask[]>('/api/tasks/history', { intervalMs: 0 });
 
   // Fetch capture details. `showSkeleton` is for the initial load (full-page
@@ -365,7 +358,7 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     refreshHistory();
     loadCapture(false);
     setRefreshKey(k => k + 1);
-    toast.success('Page reloaded — showing latest outputs');
+    toast.success('Page reloaded — latest run status and outputs');
   }, [refreshHistory, loadCapture]);
 
   const selectedTask = useMemo(
@@ -376,36 +369,11 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
   // Refresh history once per matrix-relevant change so it reflects newly-finished runs.
   useEffect(() => { refreshHistory(); }, [captureName, refreshHistory]);
 
-  // Per-capture run list, derived from history + any live tasks for the same capture.
-  const runsForCapture = useMemo<HistoryTask[]>(() => {
-    const fromHistory = (historyData ?? []).filter(t => t.captureName === captureName);
-    if (!activeData) return fromHistory;
-    // Replace history rows with live ones when a task is currently active.
-    const liveByTaskId = new Map<string, ActiveTask>();
-    for (const t of activeData) {
-      if (t.captureName === captureName) liveByTaskId.set(t.taskId, t);
-    }
-    return fromHistory.map(h => {
-      const live = liveByTaskId.get(h.taskId);
-      if (!live) return h;
-      // Pivot live's flat processes into history's nested shape.
-      const seqMap: Record<string, HistoryProcess[]> = {};
-      for (const p of live.processes) {
-        (seqMap[p.sequenceName] ||= []).push({
-          processId: p.processId,
-          processType: p.processType,
-          status: p.status,
-          pid: p.pid,
-          outFile: p.outFile,
-          errFile: p.errFile,
-        });
-      }
-      return {
-        ...h,
-        sequences: Object.entries(seqMap).map(([seqName, processes]) => ({ seqName, processes })),
-      };
-    });
-  }, [historyData, activeData, captureName]);
+  // Per-capture run list, from history (refreshed on mount and via "Reload page").
+  const runsForCapture = useMemo<HistoryTask[]>(
+    () => (historyData ?? []).filter(t => t.captureName === captureName),
+    [historyData, captureName]
+  );
 
   // Flatten all (task, seq, process) tuples across this capture's runs
   // into the per-(task, seq) row shape the table consumes.
@@ -656,7 +624,7 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       <div className="shrink-0 flex flex-col items-stretch gap-1">
                         <button
                           onClick={handleRefresh}
-                          title="Reloads the page content to show the latest outputs."
+                          title="Refreshes this page — latest run status and outputs."
                           className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors whitespace-nowrap"
                         >
                           <RotateCw className="w-3.5 h-3.5" /> Reload page

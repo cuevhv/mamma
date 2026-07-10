@@ -82,14 +82,29 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
   const [subView, setSubView] = useState<'list' | 'submit'>(initialSubView ?? 'list');
   const [importOpen, setImportOpen] = useState(false);
 
-  // Live polling of /api/processes/active so cells update while runs are in flight.
-  const { data: activeData } = useTaskPolling<ActiveTask[]>('/api/processes/active', { intervalMs: 2000 });
-  // History polled too so we catch queue/completion transitions that the
-  // /active overlay misses (queued tasks aren't "active" yet; completed
-  // tasks aren't "active" any more; quick steps can finish entirely
-  // between two /active polls). Slower than /active because /history
-  // returns the full task list rather than just the running set.
-  const { data: historyData, refresh: refreshHistory } = useTaskPolling<HistoryTask[]>('/api/tasks/history', { intervalMs: 4000 });
+  // Poll fast only while a run is actually in flight. When idle we drop the
+  // /active poll entirely and let /history tick slowly — enough to notice a run
+  // started from the CLI or a status change made elsewhere, without hammering the
+  // dev server every 2s when nothing is running. `anyActive` (recomputed below
+  // from the latest polls) drives the cadence; a run appearing ramps it back up.
+  const [anyActive, setAnyActive] = useState(false);
+  // /active: 2s while running, off when idle (the merge below just no-ops then).
+  const { data: activeData } = useTaskPolling<ActiveTask[]>('/api/processes/active', { intervalMs: anyActive ? 2000 : 0 });
+  // /history catches queue/completion transitions the /active overlay misses
+  // (queued tasks aren't "active" yet; completed tasks aren't any more; quick
+  // steps can finish between two /active polls). 4s while running; a slow 15s
+  // heartbeat when idle so a newly-started run is still noticed and ramps polling.
+  const { data: historyData, refresh: refreshHistory } = useTaskPolling<HistoryTask[]>('/api/tasks/history', { intervalMs: anyActive ? 4000 : 15000 });
+
+  // Is anything in flight? An active /active payload, or an in-flight status in
+  // history, both count. Drives the adaptive cadence above.
+  useEffect(() => {
+    const inFlight = new Set(['running', 'queued', 'pending', 'retrying', 'cancelling', 'starting']);
+    const active =
+      (activeData?.length ?? 0) > 0 ||
+      (historyData ?? []).some(t => t.sequences.some(s => s.processes.some(p => inFlight.has((p.status || '').toLowerCase()))));
+    setAnyActive(active);
+  }, [activeData, historyData]);
 
   // Merge live tasks on top of history when a task is currently active so its cells
   // reflect the latest status without waiting for a refresh.
@@ -239,6 +254,7 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
         toast.info(d.message || `Task ${formatTaskId(taskId)} is already fully completed.`);
       } else {
         toast.success(`Restarted task ${formatTaskId(taskId)}`);
+        setAnyActive(true);  // re-enqueued work — ramp polling up now
       }
       refreshHistory();
     } catch (e) {
@@ -303,6 +319,7 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
         <NewTaskForm
           onSubmitted={(taskId) => {
             setSubView('list');
+            setAnyActive(true);  // ramp polling up now, don't wait for the idle heartbeat
             refreshHistory();
             onSubmitted?.(taskId);
           }}
