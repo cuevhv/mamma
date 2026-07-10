@@ -53,7 +53,6 @@ from lib.datasets.vitdet_dataset import DEFAULT_MEAN, DEFAULT_STD
 from lib.datasets.utils_eval import gen_trans_from_patch_cv, expand_to_aspect_ratio
 from kornia.geometry.transform import warp_affine
 from kornia.filters import gaussian_blur2d
-from utils.video_utils import create_video_from_images
 from utils.post_video_from_imgs import process_sequence
 import argparse
 from collections.abc import Mapping
@@ -346,18 +345,6 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
         all_vis.append(np.array(vis_per_body[body_id]).squeeze(1))
         all_contact.append(np.array(contact_per_body[body_id]).squeeze(1))
         all_floor_contact.append(np.array(floor_contact_per_body[body_id]).squeeze(1))
-
-        # Preview MP4 is optional and only meaningful when frames were
-        # actually written above (``save_cam_output=True``, gated by
-        # ``frame_n % 20 == 0`` so e.g. quick smoke runs may produce
-        # zero preview frames). The helper now no-ops when the
-        # ``folder_path`` is empty, so this call is safe either way;
-        # the explicit guard avoids spamming "creating video" prints
-        # on common no-preview runs. Format matches the .jpg writes
-        # above (was .png — silent ffmpeg failure on every call).
-        if save_cam_output:
-            folder_path = body_dirs[body_id]
-            create_video_from_images(folder_path, f"{folder_path}/{camera_id}.mp4", img_format="img_%04d.jpg")
 
     # Pin the output dtype due to the zero-fill placeholders for missing detections
     landmarks = np.stack(all_verts, axis=1).astype(np.float32, copy=False)
