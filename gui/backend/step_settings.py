@@ -173,8 +173,7 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             target=_flag("--cam_init"), default=None, omit_when_default=True,
             placeholder="e.g. IOI_09",
             note="Camera whose view seeds the people's IDs — every person you want "
-                 "tracked must be visible in it. Leave blank to auto-pick the view "
-                 "with the most people detected.",
+                 "tracked must be visible in it at least for a few frames. Leave blank to pick the first camera.",
             help="Camera used to initialize person identities.",
         ),
         Setting(
