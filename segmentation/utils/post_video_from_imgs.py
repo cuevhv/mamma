@@ -84,6 +84,22 @@ def _make_frame_collage(
     return collage
 
 
+def _label_tile(tile: np.ndarray, text: str) -> np.ndarray:
+    """Stamp a camera name in the tile's top-left corner (in place).
+
+    White text over a black outline so it reads on both the letterbox padding
+    and bright image content; size scales with the tile. Callers must not pass
+    a shared buffer (label the copy, not the reusable black filler tile).
+    """
+    scale = max(0.35, tile.shape[0] / 640.0)
+    thickness = max(1, int(round(1.5 * scale)))
+    org = (int(16 * scale), int(40 * scale))
+    for color, extra in (((0, 0, 0), 1), ((255, 255, 255), 0)):
+        cv2.putText(tile, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale,
+                    color, thickness + extra, cv2.LINE_AA)
+    return tile
+
+
 def _overlay_frame_label(image_bgr: np.ndarray, frame_id: int) -> np.ndarray:
     """Add a header with frame ID to an image."""
     if image_bgr is None or image_bgr.size == 0:
@@ -404,10 +420,13 @@ def process_collage_body(
             for source in sources:
                 frame = _read_source_frame(source, frame_idx)
                 if frame is None:
-                    # Use black frame if this source has fewer frames or fails to decode.
-                    tiles.append(black_tile)
+                    # Black frame if this source has fewer frames or fails to
+                    # decode — copied, since black_tile is shared and the label
+                    # differs per camera.
+                    tile = black_tile.copy()
                 else:
-                    tiles.append(_resize_frame(frame, tile_size))
+                    tile = _resize_frame(frame, tile_size)
+                tiles.append(_label_tile(tile, source["camera"]))
 
             collage = _make_frame_collage(tiles, columns, tile_size)
             if collage is not None:
