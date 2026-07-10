@@ -250,24 +250,12 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             id="use_vposer", label="Enable Pose Prior", widget="toggle",
             target=_flag("--use-vposer", valued=False), default=False,
             help="A learned prior of realistic human poses; a fix for heavy occlusion, not a "
-                 "general quality boost. "
-                 # ""
-                 # "Turn it on only when too few 2D landmarks are visible to "
-                 # "constrain a joint and limbs settle into implausible poses (e.g. a knee or elbow "
-                 # "rotating the wrong way); it nudges those under-constrained joints back onto "
-                 # "plausible ones. Leave it off otherwise — when the 2D evidence is good it can bias "
-                 # "the fit toward generic poses and reduce accuracy. Requires the VPoser weights in "
-                 # "data/body_models/vposer."
+                 "general quality boost. It can bias the fit toward generic poses and reduce accuracy."
             ,
         ),
     ],
 
     "ma_vis": [
-        Setting(
-            id="overlay_num_workers", label="Overlay workers", widget="slider",
-            target=_flag("--overlay-num-workers"), default=1, min=1, max=8, step=1,
-            help="Parallel overlay-rendering workers (~2x on multi-cam; raise on big machines).",
-        ),
         Setting(
             id="skip_overlay", label="Skip overlay videos", widget="toggle",
             target=_flag("--skip-overlay", valued=False), default=False,
@@ -276,31 +264,10 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
                  "only lose the ready-made overlay MP4s.",
         ),
         Setting(
-            id="rerun_light", label="Light .rrd", widget="toggle",
-            target=_flag("--rerun-light", valued=False), default=False,
-            help="Skip 2D landmark logging for a lighter, faster Rerun scene.",
-        ),
-        Setting(
-            id="rerun_video", label="H.264 backdrop", widget="toggle",
-            target=_flag_pair("--rerun-video", "--no-rerun-video", default_on=True), default=True,
-            help="Log each camera backdrop as H.264 (~10-15x smaller .rrd) instead of "
-                 "per-frame JPEG.",
-        ),
-        Setting(
-            id="rerun_video_crf", label="Backdrop quality (CRF)", widget="slider",
-            target=_flag("--rerun-video-crf"), default=20, min=18, max=28, step=1,
-            help="H.264 quality for the .rrd backdrop. Lower = better but larger.",
-        ),
-        Setting(
             id="overlay_resolution", label="Overlay resolution", widget="number",
             target=_flag("--overlay-resolution"), default=1280,
             min=0, step=1, unit="px", omit_when_default=True,
             help="Long-side resolution for overlay videos. 0 keeps the source resolution.",
-        ),
-        Setting(
-            id="fps", label="FPS", widget="number",
-            target=_flag("--fps"), default=30, min=1, step=1, omit_when_default=True,
-            help="Frame rate for the Rerun timeline and overlay videos.",
         ),
     ],
 }
