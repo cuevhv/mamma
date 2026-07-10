@@ -44,7 +44,7 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
         ) : (
           <div className="mt-4 space-y-3">
             <SequenceSelect seqs={seqs ?? []} values={sels} onChange={setSels} getKey={key} />
-            <ExportPanel targets={targets} onNeedTools={onGoToExporter} />
+            <ExportPanel targets={targets} onNeedTools={onGoToExporter} setupLabel="Download them in the Exporter tab" />
           </div>
         )}
       </div>

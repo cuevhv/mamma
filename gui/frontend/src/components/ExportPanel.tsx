@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Loader2, AlertTriangle, Box, FolderOpen, Wrench, Info } from 'lucide-react';
+import { Check, Loader2, AlertTriangle, Box, FolderOpen, Info } from 'lucide-react';
 
 /** Shared SMPL-X export core — formats, options, run, and live status — reused by
  *  the Exporter tab and the inline export on a result. The caller supplies the
@@ -40,13 +40,17 @@ export function fmtWhen(mtime?: number): string {
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function ExportPanel({ targets, readiness, onNeedTools }: {
+export function ExportPanel({ targets, readiness, onNeedTools, setupLabel }: {
   /** Sequences to export — one runs a single export, many run a sequential batch. */
   targets: ExportTarget[];
   /** Pass readiness to share one source of truth (tab); omit to let the panel fetch it (results). */
   readiness?: Readiness | null;
   /** Called when the user needs to set up Blender (e.g. navigate to the Exporter tab). */
   onNeedTools?: () => void;
+  /** When set, the missing-tools notice shows a link with this text that runs
+   *  onNeedTools — used on the results page to point at the Exporter tab. Omit on
+   *  the Exporter tab itself, where the setup panel is already present (no link). */
+  setupLabel?: string;
 }) {
   const [ownReady, setOwnReady] = useState<Readiness | null>(null);
   const ready = readiness !== undefined ? readiness : ownReady;
@@ -78,6 +82,21 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
   const needsBlender = chosen.some(f => ALL_FORMATS.find(x => x.id === f)?.blender);
   const canExport = targets.length > 0 && chosen.length > 0 && (!needsBlender || toolsReady) && job?.state !== 'running';
 
+  // Which export tools are missing (or incompatible), so we can tell the user
+  // exactly what's absent and where to get it. npz never needs these; only the
+  // Blender-backed formats (FBX/Alembic/BVH/USD) do. Blank until readiness loads.
+  const blenderMissing = !!ready && !ready.blender.present;
+  const blenderTooOld = !!ready && ready.blender.present && ready.blender.compat === 'too_old';
+  const addonMissing = !!ready && !ready.addon.present;
+  const ver = ready?.blender.version || '?';
+  const toolNotice =
+    blenderMissing && addonMissing ? "Blender and the Blender SMPL-X add-on aren't installed."
+    : blenderMissing ? "Blender isn't installed."
+    : blenderTooOld && addonMissing ? `The detected Blender ${ver} is too old (needs 4.5+), and the Blender SMPL-X add-on isn't installed.`
+    : blenderTooOld ? `The detected Blender ${ver} is too old — needs Blender 4.5+.`
+    : addonMissing ? "The Blender SMPL-X add-on isn't installed."
+    : '';
+
   const runExport = async () => {
     if (targets.length === 0) return;
     const r = await jpost<{ job_id: string }>('/api/exporter/export', {
@@ -107,6 +126,20 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
           );
         })}
       </div>
+
+      {/* missing-tools notice — name exactly what's absent and where to get it */}
+      {toolNotice && (
+        <div className="flex items-start gap-2 rounded-md border border-status-pending/30 bg-status-pending/5 px-3 py-2 text-xs">
+          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-status-pending" />
+          <div className="space-y-0.5 min-w-0">
+            <p className="text-foreground">{toolNotice}</p>
+            <p className="text-foreground-faint">
+              Needed for the FBX, Alembic, BVH and USD formats.
+              {onNeedTools && setupLabel && <>{' '}<button onClick={onNeedTools} className="text-primary hover:underline">{setupLabel}</button></>}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* options */}
       <div className="flex flex-wrap items-center gap-4 text-xs text-foreground-muted">
@@ -146,18 +179,7 @@ export function ExportPanel({ targets, readiness, onNeedTools }: {
             <Box className="w-4 h-4" /> Export{targets.length > 1 ? ` ${targets.length}` : ''}
           </button>
           {targets.length === 0 && <span className="text-foreground-faint text-xs">choose at least one sequence</span>}
-          {targets.length > 0 && needsBlender && !toolsReady && (
-            onNeedTools
-              ? <button onClick={onNeedTools} className="inline-flex items-center gap-1.5 text-status-pending text-xs hover:underline"><Wrench className="w-3.5 h-3.5" /> set up Blender for FBX/ABC/BVH/USD</button>
-              : <span className="text-status-pending text-xs">set up the export tools for the Blender formats</span>
-          )}
         </div>
-        {ready?.blender.present && ready.blender.compat === 'too_old' && (
-          <p className="mt-2 text-xs text-status-failed">
-            <AlertTriangle className="w-3.5 h-3.5 inline mr-1 -mt-0.5" />
-            Detected Blender {ready.blender.version} is too old — the SMPL-X add-on needs Blender 4.5+. Download the portable Blender.
-          </p>
-        )}
         {job && (
           <div className="mt-3 text-sm">
             {job.state === 'running' && (
