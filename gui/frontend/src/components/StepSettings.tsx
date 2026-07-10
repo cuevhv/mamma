@@ -64,8 +64,10 @@ export function StepSettings({ settings, stepName, flags, extras, override, edit
 
   // Layout: value controls (select / number / slider / text) sit in a 2-col
   // grid — selects and any control carrying a note take the full width; short
-  // ones pair two-up. Toggles are gathered into a tidy pill cluster below so
-  // the on/off switches don't float in ragged half-cells.
+  // ones pair two-up. Toggles are gathered into one pill cluster that lives in
+  // the same grid: a single toggle slots into a free half-cell beside a lone
+  // field (one tidy line), while several toggles span their own full row so
+  // the pills don't wrap raggedly.
   const fieldSettings = settings.filter((s) => s.widget !== 'toggle');
   const toggleSettings = settings.filter((s) => s.widget === 'toggle');
   const fullWidth = (s: StepSetting) => s.widget === 'select' || !!s.note;
@@ -83,21 +85,23 @@ export function StepSettings({ settings, stepName, flags, extras, override, edit
         Common settings
       </button>
       {open && (
-        <div className="px-3 py-3 space-y-3">
-          {fieldSettings.length > 0 && (
-            <div className="grid grid-cols-1 @[22rem]:grid-cols-2 gap-x-5 gap-y-3">
-              {fieldSettings.map((s) => (
-                <div key={s.id} className={fullWidth(s) ? '@[22rem]:col-span-2' : ''}>
-                  {renderRow(s)}
-                </div>
-              ))}
-            </div>
-          )}
-          {toggleSettings.length > 0 && (
-            <div className="flex flex-wrap items-start gap-2">
-              {toggleSettings.map((s) => <Fragment key={s.id}>{renderRow(s)}</Fragment>)}
-            </div>
-          )}
+        <div className="px-3 py-3">
+          <div className="grid grid-cols-1 @[22rem]:grid-cols-2 gap-x-5 gap-y-3">
+            {fieldSettings.map((s) => (
+              <div key={s.id} className={fullWidth(s) ? '@[22rem]:col-span-2' : ''}>
+                {renderRow(s)}
+              </div>
+            ))}
+            {toggleSettings.length > 0 && (
+              <div
+                className={`flex flex-wrap items-center gap-2 self-end ${
+                  toggleSettings.length > 1 ? '@[22rem]:col-span-2' : ''
+                }`}
+              >
+                {toggleSettings.map((s) => <Fragment key={s.id}>{renderRow(s)}</Fragment>)}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
