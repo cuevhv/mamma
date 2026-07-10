@@ -1252,6 +1252,17 @@ class SegmentMultipleFrames:
                     max_iou = iou
         return max_iou
 
+    def _mean_pairwise_iou(self, boxes):
+        """Compute the mean pairwise IoU among a list of [x1,y1,x2,y2] boxes."""
+        if len(boxes) <= 1:
+            return 0.0
+        total, pairs = 0.0, 0
+        for i in range(len(boxes)):
+            for j in range(i + 1, len(boxes)):
+                total += self._bbox_iou_xyxy(boxes[i], boxes[j])
+                pairs += 1
+        return total / pairs
+
     def _overlap_penalty(self, target_box, all_boxes, penalty_iou=0.3):
         """Compute a score penalty [0, 1] for a detection based on how much it
         overlaps with other detections on the same frame.
@@ -1999,6 +2010,8 @@ class SegmentMultipleFrames:
                 n_det = len(dets)
                 mean_conf = sum(float(d[3]) for d in dets) / n_det
                 score = n_det * mean_conf
+                # Separation factor: crowded frames make bad seeds.
+                score *= 1.0 - self._mean_pairwise_iou([d[2] for d in dets])
                 # Prefer frames with expected_subjects detections
                 if expected_subjects and n_det == expected_subjects:
                     score *= 1.5  # bonus for exact match
@@ -3478,9 +3491,9 @@ class SegmentMultipleFrames:
 
         Backend-neutral (YOLO for sam2/sam3, SAM3-text for sam3_prompt_light via the
         _collect_yolo_detections dispatch). Scores candidate frames by
-        ``n_det * mean_conf`` (×1.5 when n_det == expected_subjects), mirroring the
-        init-camera auto-selector, then returns every detection (the cross-camera
-        remap prunes surplus by identity).
+        ``n_det * mean_conf * (1 - mean_pairwise_iou)`` (×1.5 when
+        n_det == expected_subjects), mirroring the init-camera auto-selector, then
+        returns every detection (the cross-camera remap prunes surplus by identity).
 
         Returns (best_frame:int, detections:list[(crop, feat, bbox, score)]) or
         (None, []) when nothing is detected.
@@ -3507,6 +3520,8 @@ class SegmentMultipleFrames:
                 continue
             n_det = len(dets)
             score = sum(float(d[3]) for d in dets)  # == n_det * mean_conf (n_det >= 1 here)
+            # Prefer frames where the subjects don't overlap (cleaner local seeds).
+            score *= 1.0 - self._mean_pairwise_iou([d[2] for d in dets])
             # Prefer frames with exactly the expected subject count: these are the
             # cleanest (all real subjects, no splits/spurious). Rewarding n_det > expected
             # instead steers toward over-detecting frames (splits) and regresses tracking
