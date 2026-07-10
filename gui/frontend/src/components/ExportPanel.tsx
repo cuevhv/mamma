@@ -90,7 +90,7 @@ export function ExportPanel({ targets, readiness, onNeedTools, setupLabel }: {
   const addonMissing = !!ready && !ready.addon.present;
   const ver = ready?.blender.version || '?';
   const toolNotice =
-    blenderMissing && addonMissing ? "Blender and the Blender SMPL-X add-on aren't installed."
+    blenderMissing && addonMissing ? "Blender and its SMPL-X add-on aren't installed."
     : blenderMissing ? "Blender isn't installed."
     : blenderTooOld && addonMissing ? `The detected Blender ${ver} is too old (needs 4.5+), and the Blender SMPL-X add-on isn't installed.`
     : blenderTooOld ? `The detected Blender ${ver} is too old — needs Blender 4.5+.`
