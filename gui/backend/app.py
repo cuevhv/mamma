@@ -927,18 +927,14 @@ def generate_capture_json():
             ),
         }), 400
 
+
     capture_json_data = {
         "ioi_root": ioi_root_input,
-        "c3d_root": None,
-        "params_root": None,
         "calib": calib_input,
-        "use_deviceid": False,
         "cam_fps": 30,
         "up_axis": up_axis_value,
-        "vicon_frame_shift": 0,
         "cams": cams,
         "sequences": sequences,
-        "groups": {"whitelist": []},
     }
     # Record the detected videos subdir whenever the layout is videos.
     # This is the signal the inference layer uses to tell a video
