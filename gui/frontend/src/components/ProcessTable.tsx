@@ -341,8 +341,12 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
 
   return (
     <div className="bg-surface-1 border border-border-subtle rounded-xl overflow-hidden shadow-sm shadow-black/30 ring-1 ring-inset ring-white/[0.02]">
-      {/* Filter bar */}
-      <div className="px-4 py-3 border-b border-border-subtle bg-surface-2/40 flex flex-wrap items-center gap-x-2 gap-y-2">
+      {/* Filter bar. Two zones: a flexible left group (filters — wraps its own
+          pills when space is tight) and a fixed right group (view toggle, search,
+          Clear). Keeping them separate means the Clear button appearing/disappearing
+          reflows the LEFT pills, never bumping the whole right cluster to a new line. */}
+      <div className="px-4 py-3 border-b border-border-subtle bg-surface-2/40 flex items-start gap-x-3 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-2 min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-foreground-subtle text-[11px] font-medium uppercase tracking-wider mr-1">
           <Filter className="w-3.5 h-3.5" />
           Status
@@ -394,10 +398,11 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
             className="w-3.5 h-3.5 accent-primary"
           />
           <Layers className="w-3.5 h-3.5 text-foreground-subtle" />
-          Latest run only
+          Latest runs
         </label>
+        </div>
 
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
           {/* Status ⇄ Timing view toggle. Segmented control; the active
               segment is filled. Keeps both views uncluttered — see one signal
               per cell at a time instead of stacking status + duration. */}
@@ -431,33 +436,41 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
               <Clock className="w-3.5 h-3.5" /> Timing
             </button>
           </div>
-          <div className="relative">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-subtle pointer-events-none" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search task # or sequence…"
-              className="bg-surface-2 border border-border rounded-md pl-7 pr-7 py-1.5 text-foreground text-xs focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition w-60 placeholder:text-foreground-faint"
-            />
-            {search && (
-              <button
-                onClick={() => setSearch('')}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 text-foreground-subtle hover:text-foreground transition-colors"
-                aria-label="Clear search"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-          {anyFilter && (
+          {/* Search + Clear share a fixed-width zone so the Clear button
+              appearing/disappearing never changes the toolbar's width — the
+              search input flexes to absorb the difference instead of anything
+              reflowing onto a new line. */}
+          <div className="flex items-center gap-2 w-60">
+            <div className="relative flex-1 min-w-0">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground-subtle pointer-events-none" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search task # or sequence…"
+                className="w-full bg-surface-2 border border-border rounded-md pl-7 pr-7 py-1.5 text-foreground text-xs focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition placeholder:text-foreground-faint"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch('')}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-foreground-subtle hover:text-foreground transition-colors"
+                  aria-label="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            {/* Always mounted so its slot is reserved; just hidden (no layout
+                change) until a filter is active. */}
             <button
               onClick={clearAll}
-              className="text-xs text-foreground-muted hover:text-foreground px-2 py-1 rounded-md border border-border hover:border-border-strong transition-colors"
+              aria-hidden={!anyFilter}
+              tabIndex={anyFilter ? 0 : -1}
+              className={`flex-shrink-0 text-xs text-foreground-muted hover:text-foreground px-2 py-1 rounded-md border border-border hover:border-border-strong transition-colors ${anyFilter ? '' : 'invisible pointer-events-none'}`}
             >
               Clear
             </button>
-          )}
+          </div>
         </div>
       </div>
 
