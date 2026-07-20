@@ -785,10 +785,10 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                           outputDir: selectedTask.outputPath || '',
                           seqNames: selectedTask.sequenceNames || [],
                         })}
-                        title="Re-run this task — redo the steps you pick into a new run, reusing this run's earlier steps as input. This run stays untouched."
+                        title="Re-run this task: redo the steps you pick into a new run. This run stays untouched."
                         className="inline-flex items-center gap-1 text-primary text-[11px] font-medium hover:underline"
                       >
-                        <RotateCcw className="w-3 h-3" /> Re-run this task…
+                        <RotateCcw className="w-3 h-3" /> Re-run some steps with different configuration…
                       </button>
                     )}
                   </div>
