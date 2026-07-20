@@ -23,6 +23,7 @@ import { CommandPreviewModal, type CommandPreview } from './CommandPreviewModal'
 import { CaptureSelect } from './CaptureSelect';
 import { PresetPicker } from './PresetPicker';
 import { stepLabel } from './shared/stepLabels';
+import { formatTaskId } from './shared/formatTaskId';
 import { CreateField, FieldRow, FootageHint, CalibrationHint } from './shared/CreateCaptureFields';
 
 const DEFAULT_CAMERAS = Array.from({ length: 33 }, (_, i) => `IOI_${String(i + 1).padStart(2, '0')}`);
@@ -752,7 +753,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
         <h2 className="text-3xl text-foreground tracking-tight font-medium mb-1">{isReRun ? 'Re-run' : 'New task'}</h2>
         <p className="text-foreground-muted text-sm">
           {isReRun
-            ? <>Re-running from run <span className="font-mono text-foreground">{reRunInit?.outputId}</span> into a new run — pick the steps to redo and edit their config. They read this run's earlier steps as input, so it stays untouched.</>
+            ? <>Re-running from task <span className="font-mono text-foreground">{formatTaskId(reRunInit?.outputId)}</span> into a new run: pick the steps to redo and edit their config.<br />Redone steps take their inputs from that task's existing outputs; all new results are written to the new run, and the original task is never modified.</>
             : 'Pick a capture, choose a pipeline configuration preset, and submit.'}
         </p>
       </div>
@@ -771,7 +772,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
           <div className="flex items-start gap-2.5 rounded-md border border-border-subtle bg-surface-2/40 p-3 text-xs text-foreground-muted">
             <Info className="w-4 h-4 text-primary flex-shrink-0 mt-0.5" />
             <div className="leading-relaxed">
-              Re-running run <span className="font-mono text-foreground">{reRunInit?.outputId}</span> into a new run —
+              Re-running task <span className="font-mono text-foreground">{formatTaskId(reRunInit?.outputId)}</span> into a new run —
               pick the steps to redo in <span className="text-foreground">Step 3</span>; the rest are reused from here.
             </div>
           </div>
@@ -967,7 +968,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
                 </div>
               </FieldRow>
               <p className="pl-36 text-foreground-faint text-[11px] leading-snug">
-                Sequences and cameras are fixed to what run {reRunInit?.outputId} used.
+                Sequences and cameras are fixed to what task {formatTaskId(reRunInit?.outputId)} used.
               </p>
             </>
           ) : (
