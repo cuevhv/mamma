@@ -344,3 +344,12 @@ def register_routes(app) -> None:
         if rec is None:
             return jsonify({"error": "unknown job"}), 404
         return jsonify(rec)
+
+    @app.get("/api/exporter/jobs")
+    def _exporter_jobs():
+        # Recent jobs, newest first — lets the frontend re-attach to a running
+        # export after a tab switch or page reload (the job registry is
+        # server-side; component state is not). In-memory read, O(#jobs).
+        with _jobs_lock:
+            recs = sorted(_jobs.values(), key=lambda r: r["started_at"], reverse=True)[:10]
+        return jsonify(recs)

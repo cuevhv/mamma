@@ -68,9 +68,21 @@ export function ExportPanel({ targets, readiness, onNeedTools, setupLabel }: {
   const [outputDir, setOutputDir] = useState('');
   const [job, setJob] = useState<Job | null>(null);
 
-  // Reset the job when the selection changes so stale results don't linger.
+  // Re-attach to a still-running export after a tab switch or page reload —
+  // the job registry is server-side; this component's state is not. One fetch
+  // on mount; costs nothing when no job is running.
+  useEffect(() => {
+    jget<Job[]>('/api/exporter/jobs').then(js => {
+      const running = Array.isArray(js) ? js.find(j => j.state === 'running') : undefined;
+      if (running) setJob(running);
+    }).catch(() => {});
+  }, []);
+
+  // Reset the job when the selection changes so stale results don't linger —
+  // but never drop a still-running job (it keeps running server-side and the
+  // user must be able to see it).
   const targetsKey = targets.map(t => `${t.tag}/${t.capture}/${t.seq}`).join('|');
-  useEffect(() => { setJob(null); }, [targetsKey]);
+  useEffect(() => { setJob(j => (j && j.state === 'running' ? j : null)); }, [targetsKey]);
 
   useEffect(() => {
     if (!job || job.state !== 'running') return;
