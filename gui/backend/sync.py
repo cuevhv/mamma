@@ -244,6 +244,8 @@ def find_input_thumbnail(
     capture_content: dict | None,
     *,
     max_walk_entries: int = 50,
+    capture_name: str | None = None,
+    cache_dir: str | None = None,
 ) -> str | None:
     """Return a representative input frame for a capture.
 
@@ -261,7 +263,39 @@ def find_input_thumbnail(
     The fallback covers real-world capture.jsons that omit `cams`
     entirely, or that use cam folder names not matching the listed ones.
     Returns None if nothing resolves within `max_walk_entries` per cam.
+
+    When ``capture_name`` and ``cache_dir`` are given, this is cache-first
+    like :func:`find_video_thumbnail`, and for the same reason: locating a
+    frame lists footage directories whose entries may be symlinks into
+    network storage, and this runs for every capture on every
+    ``/api/captures`` request. Frame footage is immutable once on disk, so
+    a present cache JPEG is valid (delete it to force a refresh). The
+    cache copy also spares the frontend from fetching a full-resolution
+    frame over the network on every page load.
     """
+    dest = None
+    if capture_name and cache_dir:
+        safe_name = "".join(c if (c.isalnum() or c in "._-") else "_" for c in capture_name)
+        if safe_name:
+            dest = os.path.join(cache_dir, f"{safe_name}.jpg")
+            if os.path.isfile(dest):
+                return dest  # cache hit — return without touching the footage
+    frame = _locate_first_input_frame(capture_content, max_walk_entries=max_walk_entries)
+    if not frame or not dest:
+        return frame
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+    except OSError:
+        return frame
+    return _write_image_as_jpeg(frame, dest) or frame
+
+
+def _locate_first_input_frame(
+    capture_content: dict | None,
+    *,
+    max_walk_entries: int = 50,
+) -> str | None:
+    """Resolve the first input frame path (see find_input_thumbnail)."""
     if not isinstance(capture_content, dict):
         return None
     ioi_root = capture_content.get("ioi_root")
@@ -300,6 +334,23 @@ def find_input_thumbnail(
         cam_dir = os.path.join(seq_dir, cam)
         if not os.path.isdir(cam_dir):
             continue
+        # Fast path: name-only scan of the flat <cam>/<frame> convention.
+        # Deliberately no is_dir()/stat per entry — footage entries may be
+        # symlinks whose stat resolves over network storage, and a 1000-frame
+        # camera dir then costs ~1.5 s per capture per request.
+        names = []
+        try:
+            with os.scandir(cam_dir) as it:
+                for entry in it:
+                    names.append(entry.name)
+                    if len(names) >= max_walk_entries:
+                        break
+        except OSError:
+            continue
+        for fname in sorted(names):
+            if os.path.splitext(fname)[1].lower() in _THUMBNAIL_EXTENSIONS:
+                return os.path.join(cam_dir, fname)
+        # Fallback for non-flat layouts: the original bounded recursive walk.
         seen = 0
         for dirpath, _, files in os.walk(cam_dir, followlinks=False):
             for fname in sorted(files):
@@ -310,6 +361,37 @@ def find_input_thumbnail(
                 if ext in _THUMBNAIL_EXTENSIONS:
                     return os.path.join(dirpath, fname)
     return None
+
+
+def _write_image_as_jpeg(src_path: str, dest_path: str, *, quality: int = 85) -> str | None:
+    """Read `src_path` with cv2 and write it as a JPEG to `dest_path`
+    (in-memory encode + atomic rename, mirroring extract_video_middle_frame).
+    Returns dest_path on success, None on any failure."""
+    try:
+        import cv2  # noqa: PLC0415  (deferred for module-import cost)
+    except Exception:
+        return None
+    try:
+        img = cv2.imread(src_path)
+        if img is None:
+            return None
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+        if not ok or buf is None:
+            return None
+        tmp_path = f"{dest_path}.partial.{os.getpid()}"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(buf.tobytes())
+            os.replace(tmp_path, dest_path)
+        except OSError:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return None
+        return dest_path
+    except Exception:
+        return None
 
 
 def find_capture_thumbnail(
