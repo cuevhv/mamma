@@ -1,5 +1,6 @@
 import { HelpCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { CalibrationFormatDocs } from './CalibrationFormatDocs';
 
 /**
  * Shared "new capture" field primitives + the footage/calibration hints.
@@ -101,44 +102,14 @@ export function FootageHint() {
 export function CalibrationHint() {
   return (
     <div className="space-y-2">
-      <div className="text-foreground-faint uppercase tracking-[0.14em] text-[10px]">
-        Supported: MAMMA YAML · OpenCV FileStorage · EasyMocap dir · Vicon .xcp · OpenCV .json
-      </div>
       <p className="text-foreground-faint">
-        Point at any of: a <span className="font-mono">.yml/.yaml</span> in the
-        MAMMA schema (below), an <strong>OpenCV FileStorage</strong> file or a{' '}
-        <strong>folder</strong> of per-camera OpenCV files (K/D/R/T), an{' '}
-        <strong>EasyMocap</strong> folder (<span className="font-mono">intri.yml</span>{' '}
-        + <span className="font-mono">extri.yml</span>), a Vicon{' '}
-        <span className="font-mono">.xcp</span>, or an OpenCV{' '}
-        <span className="font-mono">.json</span>. OpenCV/EasyMocap are read as{' '}
-        <em>world→camera</em>; no hand-conversion needed.
+        Multi-camera calibration (intrinsics and extrinsics). Camera names must
+        match those detected in the footage root.
       </p>
-      <pre className="font-mono text-foreground-subtle leading-relaxed whitespace-pre text-[10.5px]">{`# MAMMA YAML
-extrinsics_convention: cam2world   # or world2cam (declare it!)
-cameras:
-  <cam_name>:
-    camera_model: pinhole
-    distortion_model: radtan
-    intrinsics: [fx, fy, cx, cy]
-    distortion_coeffs: [k1, k2, p1, p2]
-    resolution: [W, H]
-    translation: [tx, ty, tz]
-    rotation_quaternion: [w, x, y, z]`}</pre>
+      <CalibrationFormatDocs />
       <p className="text-foreground-faint">
-        Camera names must match those detected in the footage root.{' '}
-        <span className="font-mono">extrinsics_convention</span> declares whether{' '}
-        translation/quaternion are the <em>camera pose in the world</em>{' '}
-        (<span className="font-mono">cam2world</span>, default) or the{' '}
-        <em>world→camera</em> transform (<span className="font-mono">world2cam</span>).
-        Wrong convention silently produces bad 3D — use{' '}
-        <strong>Preview camera rig</strong> to confirm cameras ring the subject,
-        looking inward.
-      </p>
-      <p className="text-foreground-faint">
-        Worked examples under{' '}
-        <span className="font-mono">configs/examples/calib/</span>{' '}
-        (e.g. <span className="font-mono">iphones_outdoors.yaml</span>).
+        A wrong extrinsics convention won't error — it silently produces bad 3D. Use{' '}
+        <strong>Preview camera rig</strong> to confirm cameras ring the subject, looking inward.
       </p>
     </div>
   );

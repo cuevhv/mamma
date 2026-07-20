@@ -20,7 +20,6 @@ export interface CalibInfo {
 const FORMAT_LABELS: Record<string, string> = {
   yaml: 'MAMMA YAML',
   opencv: 'OpenCV FileStorage',
-  easymocap: 'EasyMocap',
   xcp: 'Vicon XCP',
   json: 'OpenCV JSON',
 };

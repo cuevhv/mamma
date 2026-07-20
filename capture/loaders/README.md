@@ -20,7 +20,7 @@ for name, cam in calib.cameras.items():
 This is the historical source of user confusion. Two ways to express extrinsics:
 
 - **world→camera (`world2cam`)**: `X_cam = R · X_world + t`. The matrix `[R|t]`
-  is `T_cam_world`. (OpenCV / EasyMocap / COLMAP use this.)
+  is `T_cam_world`. (OpenCV / COLMAP use this.)
 - **camera→world / camera pose (`cam2world`)**: `R`,`t` are the camera's
   orientation/position *in the world*. The matrix is `T_world_cam`; its inverse
   is `T_cam_world`. The camera centre is `t` directly (vs `-Rᵀt` for world2cam).
@@ -39,7 +39,6 @@ a correct rig shows cameras around the scene, looking inward.
 |---|---|---|---|---|---|
 | `yaml_loader.py` | single `.yaml`/`.yml`, MAMMA schema | **declared** via `extrinsics_convention` (default `cam2world`) | `radtan` (4) / `vicon_radial_2` (5) | `[w,x,y,z]` Hamilton (`quaternion_order: xyzw` to flip) | The recommended format for new rigs. |
 | `opencv_loader.py` | OpenCV FileStorage `.yml` (single file, or a **folder** of per-camera files) | **world2cam** (`K`/`D`/`R`/`T`) | `opencv_brown` (5) | — (matrices) | Tolerant parser (handles tabs + the non-standard `%YAML:1.0` directive that crash `cv2.FileStorage`). Camera name = file stem; resolution inferred from the principal point if absent. |
-| `easymocap_loader.py` | a **folder** with `intri.yml` + `extri.yml` | **world2cam** | `opencv_brown` (5) | — (`Rot_*` matrix or `R_*` Rodrigues) | Camera names from the `names` list. |
 | `xcp_loader.py` | Vicon `.xcp` (XML) | camera pose in world | `vicon_radial_2` (5) | `[x,y,z,w]` JPL/scipy | Millimetres → metres at parse time. |
 | `json_loader.py` | OpenCV-style `.json` (nested / flat / legacy) | OpenCV layout: **world2cam** `extrinsics_matrix`; legacy: pose-in-world | `opencv_brown` (5) / `vicon_radial_2` | — (matrices) | Auto-detects the sub-layout. |
 
@@ -61,8 +60,7 @@ cameras:
 
 ## Dispatch rules (`load_calibration`)
 
-1. **Directory** → EasyMocap if it has `intri.yml` + `extri.yml`, otherwise a
-   folder of OpenCV FileStorage files (`opencv_loader`).
+1. **Directory** → a folder of per-camera OpenCV FileStorage files (`opencv_loader`).
 2. **`.xcp`** → `xcp_loader`; **`.json`** → `json_loader`.
 3. **`.yaml` / `.yml`** → content-sniffed: an OpenCV FileStorage header
    (`%YAML:1.0` / `!!opencv-matrix`) routes to `opencv_loader`, otherwise the

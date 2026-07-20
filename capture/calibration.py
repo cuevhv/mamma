@@ -101,17 +101,14 @@ def load_calibration(path) -> Calibration:
     if not p.exists():
         raise FileNotFoundError(f"calibration file not found: {p}")
 
-    # A directory holds either an EasyMocap rig (intri.yml + extri.yml) or a set
-    # of per-camera OpenCV FileStorage files (camera name = file stem).
+    # A directory holds a set of per-camera OpenCV FileStorage files
+    # (camera name = file stem).
     if p.is_dir():
-        from .loaders import easymocap_loader, opencv_loader
-        if easymocap_loader.is_easymocap_dir(p):
-            cameras, source_format = easymocap_loader.load(p), "easymocap"
-        else:
-            cameras, source_format = opencv_loader.load(p), "opencv"
+        from .loaders import opencv_loader
+        cameras = opencv_loader.load(p)
         return Calibration(
             cameras=dict(sorted(cameras.items())),
-            source_format=source_format,
+            source_format="opencv",
             source_path=p,
         )
 
@@ -135,7 +132,7 @@ def load_calibration(path) -> Calibration:
     else:
         raise CalibrationError(
             f"unsupported calibration extension: {ext!r}; supported: "
-            f".yaml/.yml/.xcp/.json (or a directory of OpenCV/EasyMocap files)"
+            f".yaml/.yml/.xcp/.json (or a directory of OpenCV files)"
         )
 
     cameras = loader.load(p)
@@ -150,7 +147,7 @@ def load_calibration(path) -> Calibration:
 # World up-axis
 # ---------------------------------------------------------------------------
 # The up-axis is a property of the calibration's world frame, but it can't be
-# declared inside every external format (OpenCV/EasyMocap/Vicon have fixed
+# declared inside every external format (OpenCV/Vicon have fixed
 # schemas). So we *auto-detect* it from camera geometry (poses only -> works for
 # every format) and let it be overridden explicitly in capture.json.
 #
