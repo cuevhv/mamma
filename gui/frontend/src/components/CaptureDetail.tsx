@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
-import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw } from 'lucide-react';
+import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw, RotateCcw } from 'lucide-react';
+import { NewTaskForm, type ReRunInit } from './NewTaskForm';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
 import { useTaskPolling } from './shared/useTaskPolling';
@@ -360,6 +361,18 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     setRefreshKey(k => k + 1);
     toast.success('Page reloaded — latest run status and outputs');
   }, [refreshHistory, loadCapture]);
+
+  // Re-run modal: the Re-run form opens as an overlay on THIS page (no tab
+  // navigation), so closing or submitting it lands the user right back on
+  // the capture results they were looking at. Escape closes (X too); no
+  // click-outside close, so a stray click can't discard form edits.
+  const [reRunTarget, setReRunTarget] = useState<ReRunInit | null>(null);
+  useEffect(() => {
+    if (!reRunTarget) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setReRunTarget(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [reRunTarget]);
 
   const selectedTask = useMemo(
     () => captureData?.tasks.find(t => t.id === selectedTaskId) ?? null,
@@ -759,7 +772,25 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                 <div>
-                  <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium mb-1.5 block">Task</label>
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium">Task</label>
+                    {selectedTask?.outputId && (
+                      <button
+                        type="button"
+                        onClick={() => setReRunTarget({
+                          taskId: selectedTask.id,
+                          captureJsonPath: captureData.captureJsonPath!,
+                          outputId: selectedTask.outputId!,
+                          outputDir: selectedTask.outputPath || '',
+                          seqNames: selectedTask.sequenceNames || [],
+                        })}
+                        title="Re-run this task — redo the steps you pick into a new run, reusing this run's earlier steps as input. This run stays untouched."
+                        className="inline-flex items-center gap-1 text-primary text-[11px] font-medium hover:underline"
+                      >
+                        <RotateCcw className="w-3 h-3" /> Re-run this task…
+                      </button>
+                    )}
+                  </div>
                   <select
                     value={selectedTaskId}
                     onChange={e => setSelectedTaskId(e.target.value)}
@@ -775,7 +806,9 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                   </select>
                 </div>
                 <div>
-                  <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium mb-1.5 block">Sequence</label>
+                  <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium mb-1.5 block">
+                    {selectedTaskId ? <>Sequences of selected task {formatTaskId(selectedTaskId)}</> : 'Sequence'}
+                  </label>
                   <select
                     value={selectedSequence}
                     onChange={e => setSelectedSequence(e.target.value)}
@@ -965,6 +998,38 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
             fileName={npzViewer.name}
             onClose={() => setNpzViewer(null)}
           />
+        )}
+
+        {/* Re-run modal — the full Re-run form as an overlay, so the user
+            stays on this capture's results. Submit closes it and refreshes
+            the page's run status; X / Escape / backdrop click close without
+            submitting (form edits are discarded). */}
+        {reRunTarget && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center p-4 sm:p-8 bg-black/65 backdrop-blur-sm overflow-y-auto"
+            onClick={() => setReRunTarget(null)}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="relative w-full max-w-5xl bg-surface-1 border border-border rounded-xl shadow-2xl shadow-black/50 ring-1 ring-inset ring-white/[0.03] my-auto"
+            >
+              <button
+                type="button"
+                onClick={() => setReRunTarget(null)}
+                aria-label="Close"
+                className="absolute top-4 right-4 z-10 text-foreground-subtle hover:text-foreground p-1.5 rounded-md hover:bg-surface-3 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <NewTaskForm
+                reRunInit={reRunTarget}
+                onSubmitted={() => {
+                  setReRunTarget(null);
+                  handleRefresh();
+                }}
+              />
+            </div>
+          </div>
         )}
       </div>
     </div>

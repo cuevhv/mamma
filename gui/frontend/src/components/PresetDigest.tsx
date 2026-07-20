@@ -28,6 +28,8 @@ export interface PresetDigest {
   global: {
     datasetName: string;
     condaEnv: string;
+    /** Cameras the run used — only set for a frozen run config (Re-run pre-fill). */
+    camNames?: string[];
     bind: string[];
     /** Run frame window. null = unset = all frames. Becomes ma_cap's
      *  --start/--end at runtime; downstream steps inherit it via the NPZ. */
@@ -70,6 +72,10 @@ interface Props {
   /** Called after a successful delete of the currently-shown user preset.
    *  Parent should refresh the preset list and pick a new selection. */
   onPresetDeleted?: (deletedName: string) => void;
+  /** When set, the frame-range editor is locked and this note explains why.
+   *  Used by the Re-run form: the range is baked into the reused ma_cap NPZs,
+   *  so editing it is inert unless ma_cap itself is among the re-run steps. */
+  frameRangeLockedNote?: string | null;
   /** Per-step "common settings" schema (GET /api/steps/settings). When
    *  provided, each step card shows friendly widgets above the raw flags. */
   stepSettings?: StepSettingsSchema;
@@ -83,7 +89,7 @@ interface Props {
  * fields are sent to the backend, which deep-merges them on top of the
  * preset before the form-level fields (seq_ids, cam_names, ...) land.
  */
-export function PresetDigestCard({ digest, overrides, onOverridesChange, onPresetSaved, onPresetDeleted, stepSettings }: Props) {
+export function PresetDigestCard({ digest, overrides, onOverridesChange, onPresetSaved, onPresetDeleted, stepSettings, frameRangeLockedNote }: Props) {
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [saveDisplayName, setSaveDisplayName] = useState('');
@@ -406,9 +412,12 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                 start={eff.startFrame}
                 end={eff.endFrame}
                 dirty={frameRangeDirty}
-                editable={editable}
+                editable={editable && !frameRangeLockedNote}
                 onChange={setFrameRange}
               />
+              {frameRangeLockedNote && (
+                <p className="text-foreground-faint text-[11px] leading-snug">{frameRangeLockedNote}</p>
+              )}
               {/* Up axis widget hidden for now (plumbing kept: eff.upAxis +
                   setGlobalField('up_axis') + digest.global.upAxis). */}
               {showBind && (

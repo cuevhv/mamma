@@ -3,7 +3,7 @@ import { Info, FolderOpen, FileJson } from 'lucide-react';
 import { toast } from 'sonner';
 import { CalibrationStatus } from './CalibrationStatus';
 import { UpAxisValue } from './UpAxisToggle';
-import { CreateField, FieldRow, FootageHint, CalibrationHint } from './shared/CreateCaptureFields';
+import { CreateField, FootageHint, CalibrationHint } from './shared/CreateCaptureFields';
 
 interface Props {
   /** Called with the new capture-json's relative path on success. */
@@ -29,6 +29,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
   const [ioiRoot, setIoiRoot] = useState('');
   const [calib, setCalib] = useState('');
   const [outputName, setOutputName] = useState('');
+  const [camFps, setCamFps] = useState('30');                  // capture.json cam_fps
   const [upAxis, setUpAxis] = useState<UpAxisValue>('auto');   // saved into capture.json
   const [submitting, setSubmitting] = useState(false);
   // Per-input "what goes here?" disclosures, toggled by the (?) icon next
@@ -46,7 +47,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
       const res = await fetch('/api/captures/generate-json', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ioiRoot, calib, outputName, upAxis }),
+        body: JSON.stringify({ ioiRoot, calib, outputName, camFps, upAxis }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -56,6 +57,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
         setIoiRoot('');
         setCalib('');
         setOutputName('');
+        setCamFps('30');
         setUpAxis('auto');
       } else {
         toast.error(`Failed: ${data.error || 'Unknown error'}`);
@@ -79,7 +81,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
           <ul className="list-disc ml-4 mt-1 space-y-0.5">
             <li>Detect <span className="text-foreground">sequences</span> from each subfolder of the footage root (excluding <code className="font-mono">logs</code>).</li>
             <li>Detect <span className="text-foreground">cameras</span> from the first sequence's subfolders (any naming — <code className="font-mono">cam01</code>, <code className="font-mono">A001</code>, <code className="font-mono">IOI_01</code>, …).</li>
-            <li>Set <code className="font-mono">cam_fps=30</code> (override later in the manage page).</li>
+            <li>Record the <span className="text-foreground">camera FPS</span> you set below (defaults to <code className="font-mono">30</code>).</li>
           </ul>
           Use the <span className="text-foreground">(?)</span> next to each field for its expected structure. You can edit
           any field afterwards via <span className="text-foreground">Edit</span> on the new capture's row.
@@ -117,7 +119,7 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
               type="text"
               value={calib}
               onChange={(e) => setCalib(e.target.value)}
-              placeholder="/path/to/calibration.yaml  (or an OpenCV / EasyMocap folder)"
+              placeholder="/path/to/calibration.yaml  (or an OpenCV folder)"
               className="w-full bg-surface-2 border border-border rounded-md pl-9 pr-3 py-2 text-foreground text-sm font-mono focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint"
             />
           </div>
@@ -125,15 +127,27 @@ export function InlineCaptureJsonForm({ onCreated }: Props) {
         </div>
       </CreateField>
 
-      <FieldRow label="Capture name">
+      {/* Camera FPS + Capture name share one compact row (FPS on the left). */}
+      <div className="flex items-center gap-3">
+        <label className="text-foreground-muted text-xs uppercase tracking-wider font-medium w-32 text-right flex-shrink-0">Camera FPS</label>
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={camFps}
+          onChange={(e) => setCamFps(e.target.value)}
+          placeholder="30"
+          className="w-20 bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm font-mono focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint"
+        />
+        <label className="text-foreground-muted text-xs uppercase tracking-wider font-medium flex-shrink-0">Capture name</label>
         <input
           type="text"
           value={outputName}
           onChange={(e) => setOutputName(e.target.value)}
           placeholder="defaults to the last folder of the footage root"
-          className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm font-mono focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint"
+          className="flex-1 min-w-0 bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm font-mono focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors placeholder:text-foreground-faint"
         />
-      </FieldRow>
+      </div>
 
       <div className="flex justify-end">
         <button

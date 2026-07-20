@@ -527,8 +527,13 @@ def get_captures():
                 if isinstance(user_thumb, str) and user_thumb and os.path.isfile(user_thumb):
                     thumbnail_path = user_thumb
                 else:
-                    # 2a) Image-frame footage (legacy ioi_root schema).
-                    thumbnail_path = _sync.find_input_thumbnail(capture_json_content)
+                    stem = os.path.splitext(os.path.basename(capture_json_path))[0]
+                    # 2a) Image-frame footage (legacy ioi_root schema),
+                    # cache-first like the videos path below.
+                    thumbnail_path = _sync.find_input_thumbnail(
+                        capture_json_content,
+                        capture_name=stem, cache_dir=_THUMB_CACHE_DIR,
+                    )
                     # 2b) Videos footage — extract a mid-frame. Covers
                     # released-dataset captures (capture_root + videos_*).
                     if not thumbnail_path:
@@ -536,7 +541,6 @@ def get_captures():
                             capture_json_path, capture_json_content,
                         )
                         if capture_root_abs and os.path.isdir(capture_root_abs):
-                            stem = os.path.splitext(os.path.basename(capture_json_path))[0]
                             thumbnail_path = _sync.find_video_thumbnail(
                                 capture_json_content, capture_root_abs,
                                 stem, _THUMB_CACHE_DIR,
@@ -928,10 +932,20 @@ def generate_capture_json():
         }), 400
 
 
+    # Camera FPS: honor an explicit value from the form, else default to 30.
+    # Kept a positive int; anything missing or unparseable falls back to 30.
+    raw_fps = data.get("camFps")
+    try:
+        cam_fps = int(raw_fps)
+        if cam_fps <= 0:
+            cam_fps = 30
+    except (TypeError, ValueError):
+        cam_fps = 30
+
     capture_json_data = {
         "ioi_root": ioi_root_input,
         "calib": calib_input,
-        "cam_fps": 30,
+        "cam_fps": cam_fps,
         "up_axis": up_axis_value,
         "cams": cams,
         "sequences": sequences,
@@ -1647,6 +1661,78 @@ def preview_task_commands():
     })
 
 
+# Which upstream output-dir a step reads, keyed by the step's config field →
+# the step that produces it. Drives the "new run" re-run: for each step that
+# runs, any input coming from a step that is NOT running is redirected to the
+# source run's path (via a ``--<field>`` override) so the reused work is read
+# straight from the old output-id — no data copied. Mirrors the defaults in
+# inference/steps/*.py (``self._resolve("<field>") or <out>/<producer>/...``).
+_STEP_INPUT_DIRS = {
+    "ma_masks": {"ma_cap_dir": "ma_cap"},
+    "ma_2d": {"ma_cap_dir": "ma_cap", "ma_masks_dir": "ma_masks"},
+    "ma_3d": {"ma_2d_dir": "ma_2d", "ma_cap_dir": "ma_cap"},
+    "ma_vis": {"ma_2d_dir": "ma_2d", "ma_3d_dir": "ma_3d", "ma_cap_dir": "ma_cap"},
+}
+
+
+_ALL_PIPELINE_STEPS = ("ma_cap", "ma_masks", "ma_2d", "ma_3d", "ma_vis")
+
+
+def _step_source_dirs(src_cfg, src_out_dir, src_output_id, dataset):
+    """``{step: dir}`` — where every step's outputs live, per the source run.
+
+    Every re-run's frozen config RECORDS this map verbatim under
+    ``global.step_source_dirs`` (written at submit, below), so chaining
+    re-runs is a single one-hop dict read — no inference, any depth.
+    Configs without the map (normal first runs, or pre-map re-runs) derive
+    it: a step the source ran lives under the source id; a reused step keeps
+    the redirect recorded on its consumers; else the source-id default.
+    """
+    recorded = (src_cfg.get("global") or {}).get("step_source_dirs")
+    recorded = recorded if isinstance(recorded, dict) else {}
+    dirs = {}
+    for step in _ALL_PIPELINE_STEPS:
+        if recorded.get(step):
+            dirs[step] = recorded[step]
+            continue
+        default = os.path.join(src_out_dir, step, str(src_output_id), str(dataset or ""))
+        if (src_cfg.get(step) or {}).get("enabled"):
+            dirs[step] = default
+            continue
+        field = f"{step}_dir"
+        v = None
+        for consumer in _STEP_INPUT_DIRS:
+            v = (src_cfg.get(consumer) or {}).get(field)
+            if v:
+                break
+        dirs[step] = v or (src_cfg.get("global") or {}).get(field) or default
+    return dirs
+
+
+def _reuse_input_overrides(run_steps, src_dirs, src_cfg):
+    """Compute ``{step: {field: path|None}}`` input-dir overrides so the steps
+    in ``run_steps`` read their reused (not-run) upstream inputs from the
+    source run's outputs. Two cases per input field:
+
+    * producer NOT running → redirect to its dir in the source's
+      :func:`_step_source_dirs` map.
+    * producer IS running → emit ``None`` when the source frozen config carries
+      a stale explicit path for that field, so the inherited value is
+      neutralized and the step builder falls back to the NEW output-id default
+      (``_resolve`` treats null as unset).
+    """
+    run_set = set(run_steps)
+    overrides = {}
+    for step in run_set:
+        for field, producer in _STEP_INPUT_DIRS.get(step, {}).items():
+            if producer in run_set:
+                if (src_cfg.get(step) or {}).get(field):
+                    overrides.setdefault(step, {})[field] = None
+                continue
+            overrides.setdefault(step, {})[field] = src_dirs[producer]
+    return overrides
+
+
 @app.route("/api/tasks", methods=["POST"])
 def start_task():
     data = request.json or {}
@@ -1680,6 +1766,41 @@ def start_task():
 
     if not capture_json_path or not preset_path or not seq_names or not output_dir:
         return jsonify({"error": "Missing required parameters"}), 400
+
+    # "New run" re-run: run only the selected steps under a fresh output-id and
+    # read the reused (not-run) steps' outputs straight from the source run via
+    # --<step>_dir path overrides — no data copied, source run untouched. Fold
+    # the computed path overrides into task_overrides before materialize so they
+    # land in the run config the step builders read.
+    reuse = data.get("reuseInputsFrom") or None
+    if reuse:
+        if not reuse.get("outputId"):
+            return jsonify({"error": "reuseInputsFrom.outputId is required"}), 400
+        # The source run's frozen config: tells us which steps the source
+        # actually ran and where it read its own reused inputs from — needed
+        # to chain re-runs correctly. Missing/unreadable → {} degrades to the
+        # default-under-source-id paths.
+        src_cfg = {}
+        src_task_id = reuse.get("taskId")
+        if src_task_id is not None:
+            src_cfg_path = db.get_task_json_path(src_task_id)
+            if src_cfg_path and os.path.isfile(src_cfg_path):
+                try:
+                    src_cfg = load_config_file(src_cfg_path)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[rerun] could not read source run config {src_cfg_path}: {e}")
+        src_g = src_cfg.get("global") or {}
+        # Prefer what the source config recorded over the request fields.
+        src_out = os.path.join(
+            DEFAULT_OUTPUT_DIR, reuse.get("outputDir") or src_g.get("out_dir") or "")
+        dataset = src_g.get("dataset_name") or reuse.get("dataset") or ""
+        src_step_dirs = _step_source_dirs(src_cfg, src_out, reuse.get("outputId"), dataset)
+        dir_overrides = _reuse_input_overrides(
+            [p.name for p in processes], src_step_dirs, src_cfg)
+        for step, fields in dir_overrides.items():
+            task_overrides.setdefault(step, {}).update(fields)
+    else:
+        src_step_dirs = None
 
     # Build the bound run config via the shared materializer (same code
     # path the CLI's ``run --preset … --capture …`` uses).
@@ -1715,6 +1836,17 @@ def start_task():
     )
     if status != "Entry created successfully":
         return jsonify({"error": status}), 500
+
+    # Re-run: record the full where-does-every-step-live map in the frozen
+    # config (source map, with the steps run NOW repointed at this run's id).
+    # A future re-run of THIS run then chains with a single dict read.
+    if src_step_dirs is not None:
+        ds = (task_data.get("global") or {}).get("dataset_name") or ""
+        task_data.setdefault("global", {})["step_source_dirs"] = {
+            **src_step_dirs,
+            **{p.name: os.path.join(output_dir, p.name, str(output_id), ds)
+               for p in processes},
+        }
 
     try:
         with open(task_json_final_path, "w") as f:
@@ -1967,16 +2099,13 @@ def delete_task_preset(name):
     return jsonify({"ok": True}), 200
 
 
-@app.route("/api/task-presets/<path:name>/digest", methods=["GET"])
-def get_task_preset_digest(name):
-    """Structured summary of what a preset will run, for read-only preview."""
-    loaded = _read_preset(name)
-    if loaded is None:
-        return jsonify({"error": f"Preset '{name}' not found or unreadable"}), 404
-    path, cfg = loaded
+def _config_digest(path, cfg, *, name, display_name_fallback):
+    """Structured summary of a run config (a preset *or* a frozen run.json),
+    for read-only preview. Shared by the preset-digest route and the
+    re-run pre-fill route so both surface identical shape."""
     g = cfg.get("global") or {}
 
-    # Steps in canonical order, but skip ones not in the preset (lets future
+    # Steps in canonical order, but skip ones not in the config (lets future
     # branch additions just add entries without breaking older presets).
     steps_out = []
     for step_name in _PRESET_STEP_ORDER:
@@ -2000,14 +2129,18 @@ def get_task_preset_digest(name):
             "extras": extras,
         })
 
-    return jsonify({
+    return {
         "name": name,
         "path": path,
-        "displayName": g.get("display_name") or name,
+        "displayName": g.get("display_name") or display_name_fallback,
         "description": g.get("description") or "",
         "global": {
             "datasetName": g.get("dataset_name") or "",
             "condaEnv": g.get("conda_env") or "mamma",
+            # Cameras the run used — populated for a frozen run config (empty for
+            # a preset, whose cameras are only bound to a capture at run time).
+            # Lets the Re-run form show the run's fixed camera set.
+            "camNames": list(g.get("cam_names") or []),
             "bind": list(g.get("bind") or []),
             # Run frame window. ma_cap turns these into --start/--end and bakes
             # them into the per-camera NPZ that downstream steps inherit (see
@@ -2018,7 +2151,35 @@ def get_task_preset_digest(name):
             "upAxis": g.get("up_axis"),
         },
         "steps": steps_out,
-    })
+    }
+
+
+@app.route("/api/task-presets/<path:name>/digest", methods=["GET"])
+def get_task_preset_digest(name):
+    """Structured summary of what a preset will run, for read-only preview."""
+    loaded = _read_preset(name)
+    if loaded is None:
+        return jsonify({"error": f"Preset '{name}' not found or unreadable"}), 404
+    path, cfg = loaded
+    return jsonify(_config_digest(path, cfg, name=name, display_name_fallback=name))
+
+
+@app.route("/api/tasks/<int:task_id>/rerun-config", methods=["GET"])
+def get_task_rerun_config(task_id):
+    """Digest of a completed run's frozen config, to pre-fill the "Re-run…"
+    form. The New Task form loads this as its config baseline so the user edits
+    the exact settings that ran, then force-re-runs selected steps against the
+    same output-id. ``digest.path`` is the frozen run config's absolute path,
+    reused verbatim as ``taskJsonPath`` on submit (materialize re-binds it)."""
+    path = db.get_task_json_path(task_id)
+    if not path or not os.path.isfile(path):
+        return jsonify({"error": f"Run config for task #{task_id} not found"}), 404
+    try:
+        cfg = load_config_file(path)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": f"Could not read run config: {e}"}), 500
+    return jsonify(_config_digest(
+        path, cfg, name=f"run-{task_id}", display_name_fallback=f"run #{task_id}"))
 
 
 # ---------------------------------------------------------------------------
@@ -2532,7 +2693,10 @@ def _reset_rrd_blueprint(rrd_path: str) -> int:
     except OSError:
         return 0
     seq = os.path.basename(os.path.dirname(rrd_path))
-    app_id = next((c for c in (f"MAMMA · {seq}", "MAMMA visualization")
+    stem = os.path.splitext(os.path.basename(rrd_path))[0]
+    app_id = next((c for c in (f"MAMMA · {seq}", "MAMMA visualization",
+                               f"mamma_calib_rig · {stem}",
+                               f"mamma_contact · {seq}")
                    if c.encode("utf-8") in head), None)
     if not app_id:
         return 0
