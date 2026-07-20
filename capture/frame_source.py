@@ -22,6 +22,7 @@ Usage::
 """
 
 import os
+import time
 from typing import List, Optional, Protocol, Tuple, runtime_checkable
 
 import numpy as np
@@ -88,17 +89,35 @@ class ImageFileSource:
         self._camera = camera
         self._undistort = undistort
 
+    def _open_rgb(self, path: str) -> Image.Image:
+        """Open + fully decode an image, retrying transient read failures.
+
+        Footage may live on network storage (e.g. frame symlinks into a
+        cluster filesystem); under concurrent load a read can come back
+        truncated, which PIL reports as a broken/corrupt image even though
+        the file on disk is fine. A short retry turns that into a non-event.
+        A genuinely corrupt file still fails after the retries — with the
+        offending path in the error, which PIL alone does not provide."""
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                return Image.open(path).convert("RGB")
+            except (OSError, SyntaxError) as exc:  # PIL raises SyntaxError for bad chunks
+                last_exc = exc
+                time.sleep(0.2 * (attempt + 1))
+        raise OSError(f"Failed to read image after 3 attempts: {path}") from last_exc
+
     def read_pil(self, idx: int) -> Image.Image:
         if idx < 0 or idx >= len(self._paths):
             raise IndexError(f"Frame index {idx} out of range [0, {len(self._paths)})")
-        img = Image.open(self._paths[idx]).convert("RGB")
+        img = self._open_rgb(self._paths[idx])
         if self._undistort:
             arr = undistort_rgb(np.asarray(img), self._camera)
             img = Image.fromarray(arr)
         return img
 
     def read_rgb(self, idx: int) -> np.ndarray:
-        arr = np.asarray(Image.open(self._paths[idx]).convert("RGB"))
+        arr = np.asarray(self._open_rgb(self._paths[idx]))
         if self._undistort:
             arr = undistort_rgb(arr, self._camera)
         return arr
