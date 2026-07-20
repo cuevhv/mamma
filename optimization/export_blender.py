@@ -203,8 +203,17 @@ def _rotate_params(poses, trans, R, J0):
 def export_person(params_path, model_dir, fps, out_path,
                   verts_path=None, validate=True, validate_tol_mm=2.0,
                   ground=True, up_axis="auto", blender_format="auto",
-                  write_blender_npz=False, blender_npz_path=None):
-    """Convert one ``smplx_params_body_id-NN.npz`` to an add-on npz at ``out_path``."""
+                  write_blender_npz=False, blender_npz_path=None,
+                  scene_orient=None, scene_floor=None):
+    """Convert one ``smplx_params_body_id-NN.npz`` to an add-on npz at ``out_path``.
+
+    ``scene_orient``/``scene_floor`` (from :func:`_scene_orient_and_floor`)
+    override the per-person up-axis detection and floor: people belong to one
+    scene, so orientation and grounding must be a SINGLE shared transform —
+    per-person grounding breaks inter-person geometry, and per-person up
+    detection can misread a seated person's posture as the up direction.
+    Without them (direct single-file callers) the legacy per-person behavior
+    applies."""
     with np.load(params_path, allow_pickle=True) as d:
         pose = np.asarray(d["smplx_pose"], dtype=np.float64)          # (F,165)
         betas = np.asarray(d["smplx_betas"], dtype=np.float64)        # (1,nb)
@@ -270,7 +279,9 @@ def export_person(params_path, model_dir, fps, out_path,
     poses[:, _RHAND] += rhm
 
     # --- detect the source up-axis (works for any coordinate system, not just Z) ---
-    if up_axis in ("x", "y", "z"):
+    if scene_orient is not None:
+        up_vec, up_idx, src, conf = scene_orient
+    elif up_axis in ("x", "y", "z"):
         up_vec, up_idx, src, conf = _AXIS_UNIT[up_axis], {"x": 0, "y": 1, "z": 2}[up_axis], "forced", 1.0
     elif ref_joints is not None:
         up_vec, _f, info = _auto_orient(ref_joints, fps=fps)
@@ -290,7 +301,9 @@ def export_person(params_path, model_dir, fps, out_path,
     # Project onto the SIGNED up vector so a negative up-axis (e.g. −Y) grounds
     # correctly (floor is the low end of p·up, not of the raw coordinate).
     if ground:
-        if ref is not None:
+        if scene_floor is not None:
+            floor_proj = float(scene_floor)  # shared scene floor — same shift for every body
+        elif ref is not None:
             floor_proj = float(np.percentile(ref.reshape(-1, 3) @ up_vec, 1))  # soles
         elif ref_joints is not None:
             floor_proj = float(np.percentile(ref_joints[:, _J_FEET, :].reshape(-1, 3) @ up_vec, 5))
@@ -400,6 +413,64 @@ def _blender_export(blender_bin, addon_dir, npz_path, out_prefix, formats, fps, 
     return [f"{out_prefix}.{f}" for f in produced]
 
 
+def _scene_orient_and_floor(seq_dir, params, up_axis, fps):
+    """Scene-level up-axis + shared floor for ALL bodies of a sequence.
+
+    People are exported as a group: ONE up direction (detected from the pooled
+    joints of every body — a seated or lying person cannot flip the scene's up
+    the way it can flip its own) and ONE floor (the scene's lowest support), so
+    grounding is a single shared translation and inter-person geometry is
+    preserved verbatim. ``up_axis`` may be signed ("-y") to force a negative
+    world axis. Returns ``((up_vec, up_idx, src, conf), scene_floor_or_None)``.
+    """
+    joints = {}
+    for p in params:
+        m = re.search(r"body_id-(\d+)", os.path.basename(p))
+        bid = m.group(1) if m else "00"
+        vp = os.path.join(seq_dir, f"verts_joints_body_id-{bid}.npz")
+        if not os.path.exists(vp):
+            continue
+        try:
+            with np.load(vp, allow_pickle=True) as vd:
+                if "pred_joints" in vd.files:
+                    joints[bid] = np.asarray(vd["pred_joints"], dtype=np.float64)
+        except (OSError, ValueError, KeyError):
+            continue
+
+    axis = str(up_axis).lstrip("+-")
+    sign = -1.0 if str(up_axis).startswith("-") else 1.0
+    if axis in _AXIS_UNIT:
+        up_vec = sign * _AXIS_UNIT[axis]
+        up_idx, src, conf = {"x": 0, "y": 1, "z": 2}[axis], "forced", 1.0
+    elif joints:
+        pooled = np.concatenate(list(joints.values()), axis=0)
+        up_vec, _floor, info = _auto_orient(pooled, fps=fps)
+        up_idx = int(np.argmax(np.abs(up_vec)))
+        src, conf = info["source"], info["confidence"]
+    else:
+        up_vec, up_idx, src, conf = _AXIS_UNIT["z"], 2, "default-z", 0.0
+
+    floors = []
+    for p in params:
+        m = re.search(r"body_id-(\d+)", os.path.basename(p))
+        bid = m.group(1) if m else "00"
+        vp = os.path.join(seq_dir, f"verts_joints_body_id-{bid}.npz")
+        if os.path.exists(vp):
+            try:
+                with np.load(vp, allow_pickle=True) as vd:
+                    if "pred_vertices" in vd.files:
+                        v = vd["pred_vertices"].reshape(-1, 3)
+                        floors.append(float(np.percentile(v @ up_vec, 1)))  # soles
+                        continue
+            except (OSError, ValueError, KeyError):
+                pass
+        if bid in joints:
+            feet = joints[bid][:, _J_FEET, :].reshape(-1, 3)
+            floors.append(float(np.percentile(feet @ up_vec, 5)))
+    scene_floor = min(floors) if floors else None
+    return (up_vec, up_idx, src, conf), scene_floor
+
+
 def export_sequence(ma_3d_dir, seq_name, model_dir, out_dir, up_axis="auto",
                     ma_cap_dir=None, fps=None, validate=True,
                     formats=("npz",), blender_bin=None, addon_dir=None,
@@ -409,6 +480,15 @@ def export_sequence(ma_3d_dir, seq_name, model_dir, out_dir, up_axis="auto",
     if not params:
         raise FileNotFoundError(f"no smplx_params_body_id-*.npz under {seq_dir}")
     fps = _resolve_fps(ma_cap_dir, seq_name, fps)
+
+    # One shared orientation + floor for the whole group of people: per-person
+    # grounding breaks inter-person geometry, and per-person up detection can
+    # lay a seated person flat (its own body-vertical is not the scene's up).
+    scene_orient, scene_floor = _scene_orient_and_floor(seq_dir, params, up_axis, fps)
+    log.info("scene: up-axis=%s%s (%s, conf %.2f) from %d bodies; shared floor=%s",
+             "-" if scene_orient[0][scene_orient[1]] < 0 else "",
+             "xyz"[scene_orient[1]], scene_orient[2], scene_orient[3], len(params),
+             f"{scene_floor:.4f}" if scene_floor is not None else "n/a")
 
     # Resolve Blender once (graceful: fall back to npz-only if it / the add-on
     # is missing — the npz path never needs Blender).
@@ -436,7 +516,8 @@ def export_sequence(ma_3d_dir, seq_name, model_dir, out_dir, up_axis="auto",
         faithful, bnpz, _src, _fmt = export_person(
             p, model_dir, fps, npz_out, verts_path=verts, validate=validate,
             ground=ground, up_axis=up_axis, blender_format=blender_format,
-            write_blender_npz=bool(blender_fmts), blender_npz_path=bz)
+            write_blender_npz=bool(blender_fmts), blender_npz_path=bz,
+            scene_orient=scene_orient, scene_floor=scene_floor if ground else None)
         out.append(faithful)
         if blender_fmts and bnpz:
             out += _blender_export(bin_, addon_dir, bnpz,
@@ -470,7 +551,8 @@ def main(argv=None):
                     help="Drop the feet to the floor (0 along the up-axis). Default on.")
     ap.add_argument("--no-ground", dest="ground", action="store_false",
                     help="Keep the fit's original translation (exact, ungrounded).")
-    ap.add_argument("--up-axis", "--up_axis", default="auto", choices=["auto", "x", "y", "z"],
+    ap.add_argument("--up-axis", "--up_axis", default="auto",
+                    choices=["auto", "x", "y", "z", "-x", "-y", "-z"],
                     help="Source up-axis. 'auto' (default) detects it from the motion "
                          "(foot-contact plane + body-vertical); x/y/z force it. Used for "
                          "grounding and for normalizing the geometry to the target.")
