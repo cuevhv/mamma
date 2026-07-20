@@ -14,6 +14,7 @@ problem logs a warning and returns rather than raising into the ma_3d run.
 from __future__ import annotations
 
 import logging
+import os
 
 import numpy as np
 
@@ -192,7 +193,13 @@ def write_contact_rrd(out_path, points_world, contact, floor_contact,
         r_min, r_max = 0.004 * diag, min(0.016 * diag, 0.05)
         r_min = min(r_min, r_max)
 
-        rr.init("mamma_contact", spawn=False)
+        # Per-content application_id (the parent dir is the sequence's ma_3d
+        # output dir). The native Rerun viewer persists view state keyed by
+        # app_id — a single shared id would restore the orientation of the
+        # LAST-inspected sequence onto every contact rrd, visible whenever two
+        # captures use different up-axes (same fix as the GUI calib preview).
+        _seq = os.path.basename(os.path.dirname(str(out_path))) or "scene"
+        rr.init(f"mamma_contact · {_seq}", spawn=False)
         rr.save(str(out_path))
         # Make the scene upright so the camera orients sensibly on open.
         if hasattr(rr, "ViewCoordinates"):

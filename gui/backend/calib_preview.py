@@ -83,7 +83,12 @@ def write_calib_rrd(calib_path, out_path, up_axis=None) -> int:
     pt_radius = 0.005 * span      # small marker at each camera centre (label anchor)
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    rr.init("mamma_calib_rig", spawn=False)
+    # Per-content application_id (the calibration stem + up-axis are baked into
+    # out_path's basename). The native Rerun viewer persists view state
+    # (blueprints) keyed by app_id — a single shared id would restore the 3D
+    # orientation of whatever rig was inspected LAST onto every preview,
+    # making the rig appear rotated vs the (always-fresh) browser viewer.
+    rr.init(f"mamma_calib_rig · {Path(out_path).stem}", spawn=False)
     rr.save(str(out_path))
 
     # Orient the viewer to the resolved up-axis (no fixed convention).
