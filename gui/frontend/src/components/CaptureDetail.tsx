@@ -105,6 +105,7 @@ interface CaptureData {
 // rolled-up status reads at a glance even though <option> can't be styled.
 const STATUS_GLYPH: Record<RowStatus, string> = {
   Running: '●',
+  Queued: '○',
   Failed: '✗',
   Mixed: '~',
   Pending: '…',

@@ -289,7 +289,7 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
   }, [annotated]);
 
   const statusCounts = useMemo(() => {
-    const c: Record<RowStatus, number> = { Running: 0, Failed: 0, Mixed: 0, Pending: 0, Completed: 0 };
+    const c: Record<RowStatus, number> = { Running: 0, Queued: 0, Failed: 0, Mixed: 0, Pending: 0, Completed: 0 };
     for (const a of annotated) c[a.status]++;
     return c;
   }, [annotated]);
