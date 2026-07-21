@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Download, Check, Loader2, AlertTriangle, ChevronDown, ChevronRight, Search } from 'lucide-react';
 import { ExportPanel, jget, jpost, type Readiness, type Job } from './ExportPanel';
 import { SequenceSelect } from './SequenceSelect';
+import { MeshPreview } from './MeshPreview';
 
 /** SMPL-X Exporter tab: in-tab setup (Blender + add-on downloads) and readiness,
  *  a sequence source (detected results OR a custom path), and the shared export
@@ -16,6 +17,7 @@ export function Exporter() {
   const [seqs, setSeqs] = useState<Seq[]>([]);
   const [source, setSource] = useState<'detected' | 'custom'>('detected');
   const [sels, setSels] = useState<string[]>([]);
+  const [previewTarget, setPreviewTarget] = useState<Seq | null>(null);
   // custom path
   const [customPath, setCustomPath] = useState('');
   const [customSeqs, setCustomSeqs] = useState<Seq[]>([]);
@@ -147,7 +149,7 @@ export function Exporter() {
           seqs.length === 0 ? (
             <p className="text-foreground-muted text-sm">No completed <code className="font-mono">ma_3d</code> results found. Run the pipeline, or use <button onClick={() => setSource('custom')} className="text-primary hover:underline">Custom path</button>.</p>
           ) : (
-            <SequenceSelect seqs={seqs} values={sels} onChange={setSels} getKey={seqKey} showCapture />
+            <SequenceSelect seqs={seqs} values={sels} onChange={setSels} getKey={seqKey} showCapture onPreview={setPreviewTarget} />
           )
         ) : (
           <div className="space-y-2">
@@ -164,7 +166,7 @@ export function Exporter() {
             {scan.state === 'done' && customSeqs.length === 0 && <p className="text-foreground-muted text-xs">No <code className="font-mono">smplx_params_*.npz</code> found under that path.</p>}
             {customSeqs.length > 0 && (
               <SequenceSelect seqs={customSeqs} values={customSels} onChange={setCustomSels} getKey={seqKey} showCapture
-                placeholder={`Select sequences… (${customSeqs.length} found)`} />
+                placeholder={`Select sequences… (${customSeqs.length} found)`} onPreview={setPreviewTarget} />
             )}
           </div>
         )}
@@ -175,6 +177,8 @@ export function Exporter() {
         <div className="text-sm font-medium text-foreground mb-3">Formats & options</div>
         <ExportPanel targets={targets} readiness={ready} onNeedTools={() => setSetupOpen(true)} />
       </div>
+
+      {previewTarget && <MeshPreview target={previewTarget} onClose={() => setPreviewTarget(null)} />}
     </div>
   );
 }

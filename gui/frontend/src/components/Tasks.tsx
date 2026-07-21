@@ -31,6 +31,8 @@ interface HistoryTask {
   /** Path of the preset the GUI used to materialize this run, when
    *  recorded. Null/undefined for legacy rows and CLI imports. */
   presetPath?: string | null;
+  outputPath?: string | null;
+  outputId?: string | null;
   /** 1-indexed position in the task-coordinator's queue. Present only
    *  for tasks whose runner hasn't been spawned yet. Backend computes
    *  this from the in-memory queue and decorates the history response. */
@@ -197,6 +199,8 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
     stepName: string;
     captureName?: string;
     captureJsonPath?: string;
+    outputPath?: string | null;
+    outputId?: string | null;
     cell: MatrixCell | null;
   } | null>(null);
 
@@ -376,16 +380,19 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
         <ProcessTable
           rows={tableData.rows}
           steps={tableData.steps}
-          onCellClick={(row, stepName, cell) =>
+          onCellClick={(row, stepName, cell) => {
+            const task = (historyData ?? []).find(t => t.taskId === row.taskId);
             setSelectedCell({
               taskId: row.taskId,
               seqName: row.seqName,
               stepName,
               captureName: row.captureName,
               captureJsonPath: row.captureJsonPath,
+              outputPath: task?.outputPath,
+              outputId: task?.outputId,
               cell,
-            })
-          }
+            });
+          }}
           selected={selectedCell ? {
             taskId: selectedCell.taskId, seqName: selectedCell.seqName, stepName: selectedCell.stepName,
           } : null}

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
-import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw, RotateCcw } from 'lucide-react';
+import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw, RotateCcw, Box } from 'lucide-react';
 import { NewTaskForm, type ReRunInit } from './NewTaskForm';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
@@ -15,6 +15,7 @@ import { StepOutputs } from './StepOutputs';
 import { ResultExport } from './ResultExport';
 import { formatTaskId } from './shared/formatTaskId';
 import { formatRelativeTime } from './shared/relativeTime';
+import { MeshPreview, MeshViewer } from './MeshPreview';
 
 /** Shape returned by /api/tasks/history for one run's processes. */
 interface HistoryProcess {
@@ -217,6 +218,11 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
   /** ma_vis preview.mp4 relPath for the current task/sequence, or null if it
    *  doesn't exist — fills the spare cell in the step grid when present. */
   const [previewRelPath, setPreviewRelPath] = useState<string | null>(null);
+  /** ma_3d fitted-body target for the inline 3D viewer of the current
+   *  task/sequence, or null when no smplx_params_body_id-* exist. */
+  const [viewer3dTarget, setViewer3dTarget] = useState<{ tag: string; capture: string; seq: string; ma_3d_dir: string; ma_cap_dir?: string } | null>(null);
+  /** When set, the fullscreen 3D mesh preview modal is open for this target. */
+  const [meshPreviewTarget, setMeshPreviewTarget] = useState<{ tag: string; capture: string; seq: string; ma_3d_dir: string; ma_cap_dir?: string } | null>(null);
   // Run config viewer state — shared across all the "view config" pill actions.
   const [taskConfigViewer, setTaskConfigViewer] = useState<{ name: string; path: string } | null>(null);
   /** When set, the embedded Rerun web viewer is open for this .rrd. */
@@ -534,6 +540,39 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
       .then(d => {
         if (d && Array.isArray(d.files) && d.files.some((f: { name: string }) => f.name === 'preview.mp4')) {
           setPreviewRelPath(`${base}/preview.mp4`);
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+    // baseRelPathFor is a render-local closure over these same deps.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTaskId, selectedSequence, captureData, availableProcesses]);
+
+  // Probe for the ma_3d fitted SMPL-X params of the current task/sequence so the
+  // step grid can show an inline 3D viewer beside the ma_vis preview. Mirrors the
+  // preview.mp4 probe above: cleared and re-checked whenever the selection changes.
+  useEffect(() => {
+    setViewer3dTarget(null);
+    if (!availableProcesses.includes('ma_3d')) return;
+    if (!selectedTask || !selectedSequence || !captureData) return;
+    const base = baseRelPathFor('ma_3d');
+    if (!base) return;
+    const controller = new AbortController();
+    fetch(`/api/files/list?path=${encodeURIComponent(base)}`, { signal: controller.signal })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (d && Array.isArray(d.files) && d.files.some((f: { name: string }) => f.name.startsWith('smplx_params_body_id-'))) {
+          const outId = selectedTask.outputId || selectedTaskId;
+          const dataset = selectedTask.datasetName || captureData.captureName;
+          const outRoot = selectedTask.outputPath || 'output';
+          setViewer3dTarget({
+            tag: String(outId),
+            capture: dataset,
+            seq: selectedSequence,
+            ma_3d_dir: `${outRoot}/ma_3d/${outId}/${dataset}`,
+            // Lets the backend read the run's recorded frame rate (gt/global.npz).
+            ma_cap_dir: `${outRoot}/ma_cap/${outId}/${dataset}`,
+          });
         }
       })
       .catch(() => {});
@@ -898,6 +937,30 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       </div>
                     </div>
                   )}
+
+                  {/* 3D Viewer — inline SMPL-X body preview for this
+                      task/sequence, shown when ma_3d fitted params exist.
+                      Mirrors the ma_vis preview card; the Maximize button opens
+                      the same fullscreen modal the export-list Preview uses. */}
+                  {viewer3dTarget && (
+                    <div className="bg-background border border-border-subtle rounded-lg overflow-hidden flex flex-col">
+                      <div className="w-full flex items-center gap-2 px-3 py-2 bg-surface-1 border-b border-border-subtle">
+                        <Box className="w-4 h-4 text-foreground-muted" />
+                        <span className="text-foreground text-sm font-medium">3D Viewer</span>
+                        <span className="text-foreground-faint text-xs font-mono">(fitted bodies)</span>
+                        <button
+                          onClick={() => setMeshPreviewTarget(viewer3dTarget)}
+                          className="ml-auto p-1 rounded-md text-foreground-muted hover:text-foreground hover:bg-surface-3 transition-colors"
+                          title="Open fullscreen"
+                        >
+                          <Maximize2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="h-[300px]">
+                        <MeshViewer key={`${viewer3dTarget.tag}::${viewer3dTarget.seq}`} target={viewer3dTarget} className="h-full" fpsHint={captureData?.camFps} />
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -999,6 +1062,10 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
             fileName={npzViewer.name}
             onClose={() => setNpzViewer(null)}
           />
+        )}
+
+        {meshPreviewTarget && (
+          <MeshPreview target={meshPreviewTarget} onClose={() => setMeshPreviewTarget(null)} fpsHint={captureData?.camFps} />
         )}
 
         {/* Re-run modal — the full Re-run form as an overlay, so the user

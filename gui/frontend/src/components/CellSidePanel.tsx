@@ -1,11 +1,12 @@
-import { useState } from 'react';
-import { X, FileText, StopCircle, Folder, FileJson } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, FileText, StopCircle, Folder, FileJson, Maximize2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { StatusBadge, statusKind } from './shared/StatusBadge';
 import { FileViewerModal } from './shared/FileViewerModal';
 import { stepLabel } from './shared/stepLabels';
 import { formatTaskId } from './shared/formatTaskId';
 import { MatrixCell } from './ProcessTable';
+import { MeshPreview, MeshViewer } from './MeshPreview';
 
 interface Props {
   /** When null the panel is closed. */
@@ -18,6 +19,10 @@ interface Props {
      *  views where the parent handles output paths internally. */
     captureName?: string;
     captureJsonPath?: string;
+    /** Output root + id of the run, used to locate its ma_3d results for the
+     *  inline 3D viewer. Optional — the viewer is skipped when absent. */
+    outputPath?: string | null;
+    outputId?: string | null;
     cell: MatrixCell | null;
   } | null;
   onClose: () => void;
@@ -41,6 +46,40 @@ interface Props {
  */
 export function CellSidePanel({ selection, onClose, onStop, onBrowseOutputs }: Props) {
   const [viewer, setViewer] = useState<{ name: string; path: string } | null>(null);
+  /** ma_3d fitted-body target for the inline 3D viewer, or null when none exist. */
+  const [viewer3dTarget, setViewer3dTarget] = useState<{ tag: string; capture: string; seq: string; ma_3d_dir: string; ma_cap_dir?: string } | null>(null);
+  /** When set, the fullscreen 3D mesh preview modal is open for this target. */
+  const [meshModal, setMeshModal] = useState<{ tag: string; capture: string; seq: string; ma_3d_dir: string; ma_cap_dir?: string } | null>(null);
+
+  // Probe for this (task, sequence)'s ma_3d fitted SMPL-X params so the panel can
+  // embed an inline 3D viewer when results exist. Mirrors CaptureDetail's probe.
+  // Declared before the early return below so the hook order stays stable across
+  // open/closed panel states; it bails internally when there's no selection.
+  useEffect(() => {
+    setViewer3dTarget(null);
+    if (!selection) return;
+    const outRoot = selection.outputPath || 'output';
+    const outId = selection.outputId || selection.taskId;
+    const dataset = selection.captureName || '';   // dataset defaults to the capture name in GUI runs
+    if (!dataset) return;
+    const seqName = selection.seqName;
+    const controller = new AbortController();
+    fetch(`/api/files/list?path=${encodeURIComponent(`${outRoot}/ma_3d/${outId}/${dataset}/${seqName}`)}`, { signal: controller.signal })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (d && Array.isArray(d.files) && d.files.some((f: { name: string }) => f.name.startsWith('smplx_params_body_id-'))) {
+          setViewer3dTarget({
+            tag: String(outId), capture: dataset, seq: seqName,
+            ma_3d_dir: `${outRoot}/ma_3d/${outId}/${dataset}`,
+            ma_cap_dir: `${outRoot}/ma_cap/${outId}/${dataset}`,   // lets the backend read the recorded fps
+          });
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+    // selection.output*/captureName all move together with taskId/seqName.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection?.taskId, selection?.seqName]);
 
   if (!selection) return null;
 
@@ -82,6 +121,9 @@ export function CellSidePanel({ selection, onClose, onStop, onBrowseOutputs }: P
           </button>
         </header>
 
+        {/* Scrollable middle — status, logs, and the inline 3D viewer scroll as
+            a unit so the header and footer actions stay pinned on short viewports. */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
         {/* Status */}
         <section className="p-5 border-b border-border-subtle space-y-3">
           {cell ? (
@@ -134,8 +176,27 @@ export function CellSidePanel({ selection, onClose, onStop, onBrowseOutputs }: P
           </section>
         )}
 
+        {/* 3D viewer — inline SMPL-X body preview, shown when ma_3d fitted
+            params exist for this (task, sequence). Maximize opens the same
+            fullscreen modal used elsewhere. */}
+        {viewer3dTarget && (
+          <section className="p-5 border-b border-border-subtle">
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="text-[11px] text-foreground-subtle uppercase tracking-wider font-medium">3D viewer</div>
+              <button onClick={() => setMeshModal(viewer3dTarget)} title="Open fullscreen"
+                      className="p-1 -m-1 rounded-md text-foreground-subtle hover:text-foreground hover:bg-surface-3/60 transition-colors">
+                <Maximize2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="h-[230px] rounded-md overflow-hidden border border-border-subtle">
+              <MeshViewer key={`${viewer3dTarget.tag}::${viewer3dTarget.seq}`} target={viewer3dTarget} className="h-full" />
+            </div>
+          </section>
+        )}
+        </div>
+
         {/* Actions */}
-        <section className="p-5 mt-auto flex flex-col gap-2 border-t border-border-subtle bg-surface-2/30">
+        <section className="p-5 flex flex-col gap-2 border-t border-border-subtle bg-surface-2/30">
           <button
             onClick={async () => {
               try {
@@ -208,6 +269,7 @@ export function CellSidePanel({ selection, onClose, onStop, onBrowseOutputs }: P
       </aside>
 
       <FileViewerModal file={viewer} onClose={() => setViewer(null)} />
+      {meshModal && <MeshPreview target={meshModal} onClose={() => setMeshModal(null)} />}
     </>
   );
 }

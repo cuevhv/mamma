@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Box } from 'lucide-react';
 import { ExportPanel, jget } from './ExportPanel';
 import { SequenceSelect } from './SequenceSelect';
+import { MeshPreview } from './MeshPreview';
 
 /** Inline SMPL-X export on a capture's results page. Reuses the shared ExportPanel;
  *  scopes the sequence list to this capture. Always expanded (no toggle); tool
@@ -15,6 +16,7 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
 }) {
   const [seqs, setSeqs] = useState<Seq[] | null>(null);
   const [sels, setSels] = useState<string[]>([]);
+  const [previewTarget, setPreviewTarget] = useState<Seq | null>(null);
 
   useEffect(() => {
     if (seqs !== null) return;
@@ -43,11 +45,12 @@ export function ResultExport({ captureName, initialSeq, onGoToExporter }: {
           </p>
         ) : (
           <div className="mt-4 space-y-3">
-            <SequenceSelect seqs={seqs ?? []} values={sels} onChange={setSels} getKey={key} />
+            <SequenceSelect seqs={seqs ?? []} values={sels} onChange={setSels} getKey={key} onPreview={setPreviewTarget} />
             <ExportPanel targets={targets} onNeedTools={onGoToExporter} setupLabel="Download them in the Exporter tab" />
           </div>
         )}
       </div>
+      {previewTarget && <MeshPreview target={previewTarget} onClose={() => setPreviewTarget(null)} />}
     </section>
   );
 }

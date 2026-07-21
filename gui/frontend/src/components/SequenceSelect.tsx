@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { ChevronDown, ChevronRight, Box, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, Box, Search, Eye } from 'lucide-react';
 import { fmtRun, fmtWhen } from './ExportPanel';
 
 export interface SeqItem {
@@ -15,7 +15,7 @@ export interface SeqItem {
  *  toggles the whole capture; filtering auto-expands the matching groups).
  *  Toggling keeps the menu open; click-outside / Escape closes. */
 export function SequenceSelect<T extends SeqItem>({
-  seqs, values, onChange, getKey, showCapture = false, placeholder = 'Select sequences…',
+  seqs, values, onChange, getKey, showCapture = false, placeholder = 'Select sequences…', onPreview,
 }: {
   seqs: T[];
   values: string[];
@@ -23,6 +23,8 @@ export function SequenceSelect<T extends SeqItem>({
   getKey: (s: T) => string;
   showCapture?: boolean;
   placeholder?: string;
+  /** When set, each row gets a "Preview" button that opens a quick 3D viewer. */
+  onPreview?: (s: T) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -97,6 +99,16 @@ export function SequenceSelect<T extends SeqItem>({
           <span className="flex-shrink-0 text-[10px] font-medium text-emerald-400 bg-emerald-400/10 border border-emerald-400/25 rounded px-1.5 py-0.5">
             exported
           </span>
+        )}
+        {onPreview && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onPreview(s); }}
+            title="Quick 3D preview of the fitted bodies"
+            className="flex-shrink-0 text-[10px] font-medium text-foreground-muted hover:text-foreground bg-surface-2 hover:bg-surface-3 border border-border rounded px-1.5 py-0.5 inline-flex items-center gap-1 transition-colors"
+          >
+            <Eye className="w-3 h-3" /> Preview
+          </button>
         )}
       </li>
     );

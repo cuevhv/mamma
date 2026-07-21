@@ -45,6 +45,7 @@
             "recharts": "^2.15.2",
             "sonner": "^2.0.3",
             "tailwind-merge": "*",
+            "three": "^0.185.1",
             "vaul": "^1.1.2"
       },
       "devDependencies": {
@@ -52,6 +53,7 @@
             "@types/node": "^20.10.0",
             "@types/react": "^18.3.31",
             "@types/react-dom": "^18.3.7",
+            "@types/three": "^0.185.1",
             "@vitejs/plugin-react-swc": "^3.10.2",
             "tailwindcss": "^4.2.4",
             "typescript": "^7.0.2",
