@@ -390,7 +390,14 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
 
         <div className="w-px h-5 bg-border mx-1.5" />
 
-        <label className="inline-flex items-center gap-2 text-foreground-muted text-xs cursor-pointer select-none hover:text-foreground transition-colors">
+        <label
+          title={
+            'Collapse to one row per sequence, keeping only its most recent run ' +
+            '(the highest task number). Older runs of the same sequence are hidden — ' +
+            'even if an older run completed more pipeline steps than the newest one.'
+          }
+          className="inline-flex items-center gap-2 text-foreground-muted text-xs cursor-pointer select-none hover:text-foreground transition-colors"
+        >
           <input
             type="checkbox"
             checked={latestOnly}
