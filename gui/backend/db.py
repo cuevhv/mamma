@@ -1461,7 +1461,8 @@ def get_all_tasks_with_processes():
                       s.sequence_name, p.process, p.status,
                       p.created_at, p.started_at, p.ended_at, p.cluster_job_id, p.sif_file,
                       p.out_file, p.err_file, p.num_frames, p.num_cameras,
-                      t.username, t.created_at AS task_created_at, t.preset_path
+                      t.username, t.created_at AS task_created_at, t.preset_path,
+                      t.output_path, t.output_id
                FROM processes p
                JOIN tasks t ON p.task_id = t.task_id
                JOIN captures c ON t.capture_id = c.capture_id
@@ -1477,6 +1478,8 @@ def get_all_tasks_with_processes():
                     "captureName": r["capture_name"],
                     "captureJsonPath": r["capture_json_path"],
                     "presetPath": r["preset_path"],
+                    "outputPath": r["output_path"],
+                    "outputId": r["output_id"],
                     "username": r["username"],
                     "createdAt": _iso_utc(r["task_created_at"]),
                     "sequences": {},

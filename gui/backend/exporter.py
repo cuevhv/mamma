@@ -26,7 +26,7 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import jsonify, request
+from flask import jsonify, request, send_file
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OUTPUT = _REPO_ROOT / "output"
@@ -278,6 +278,61 @@ def _scan_sequences(root: str):
     return seqs, None
 
 
+# ---- 3D mesh preview -----------------------------------------------------
+
+# Serializes scene-blob generation so a double-clicked Preview button never
+# runs two subprocesses racing to write the same cache file.
+_preview_lock = threading.Lock()
+
+
+def _anchor_repo(path: str) -> Path:
+    """Expand ``~`` and anchor repo-relative paths (legacy DB rows carry
+    "output/…") to the repo root so cwd never matters. Like _export_base."""
+    p = Path(os.path.expanduser(path))
+    return p if p.is_absolute() else _REPO_ROOT / p
+
+
+def _blob_is_current(out: Path) -> bool:
+    """True when the cached blob was written by the current schema version.
+    The version field leads the JSON, so sniffing the head avoids parsing MBs."""
+    try:
+        with open(out, "r", encoding="utf-8") as f:
+            return '"version": 2' in f.read(64)
+    except OSError:
+        return False
+
+
+def _preview_scene_blob(tag: str, capture: str, seq: str, ma_3d_dir: str,
+                        ma_cap_dir: str = "") -> tuple[Path | None, str | None]:
+    """Return (path to a fresh scene3d.json, error). Generates via
+    ``visualization.preview_scene`` (a ~1-2 s numpy subprocess) unless a
+    cache newer than every source npz already exists."""
+    root = _anchor_repo(ma_3d_dir)
+    seq_dir = root / seq
+    sources = sorted(glob.glob(str(seq_dir / "smplx_params_body_id-*.npz"))) + \
+        sorted(glob.glob(str(seq_dir / "verts_joints_body_id-*.npz")))
+    if not sources:
+        return None, f"no ma_3d results (smplx_params_body_id-*.npz) under {seq_dir}"
+    out = _OUTPUT / "preview" / tag / capture / seq / "scene3d.json"
+    src_mtime = max(os.path.getmtime(p) for p in sources)
+    with _preview_lock:
+        if out.is_file() and out.stat().st_mtime >= src_mtime and _blob_is_current(out):
+            return out, None
+        cmd = [sys.executable, "-m", "visualization.preview_scene",
+               "--ma-3d-dir", str(root), "--seq-name", seq, "--out", str(out)]
+        if ma_cap_dir:
+            cmd += ["--ma-cap-dir", str(_anchor_repo(ma_cap_dir))]
+        try:
+            r = subprocess.run(cmd, cwd=str(_REPO_ROOT), capture_output=True,
+                               text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            return None, "preview generation timed out"
+        if r.returncode != 0 or not out.is_file():
+            tail = (r.stderr or r.stdout or "").strip().splitlines()[-3:]
+            return None, "preview generation failed: " + (" | ".join(tail) or f"exit {r.returncode}")
+        return out, None
+
+
 # ---- routes -------------------------------------------------------------
 
 def register_routes(app) -> None:
@@ -336,6 +391,29 @@ def register_routes(app) -> None:
         jid = _new_job("export")
         threading.Thread(target=_run_export_batch, args=(jid, specs), daemon=True).start()
         return jsonify({"job_id": jid}), 201
+
+    @app.get("/api/exporter/preview-scene")
+    def _exporter_preview_scene():
+        """Scene blob for the in-browser 3D mesh preview. Generation is fast
+        (~1-2 s) and cached, so this is a single synchronous request — the
+        frontend just shows a spinner until the JSON arrives."""
+        q = {k: (request.args.get(k) or "").strip()
+             for k in ("tag", "capture", "seq", "ma_3d_dir", "ma_cap_dir")}
+        missing = [k for k in ("seq", "ma_3d_dir") if not q[k]]
+        if missing:
+            return jsonify({"error": f"missing: {', '.join(missing)}"}), 400
+        seq_dir = Path(q["ma_3d_dir"])
+        tag = q["tag"] or seq_dir.parent.name or "run"
+        capture = q["capture"] or seq_dir.name or "capture"
+        blob, err = _preview_scene_blob(tag, capture, q["seq"], q["ma_3d_dir"],
+                                        ma_cap_dir=q["ma_cap_dir"])
+        if err:
+            return jsonify({"error": err}), 500 if "failed" in err or "timed" in err else 404
+        resp = send_file(blob, mimetype="application/json")
+        # Freshness is decided server-side (cache vs source npz mtimes);
+        # the URL never changes, so the browser must not cache the body.
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.get("/api/exporter/job/<job_id>")
     def _exporter_job(job_id):
