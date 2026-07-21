@@ -8,7 +8,7 @@ import { MeshPreview } from './MeshPreview';
  *  scopes the sequence list to this capture. Always expanded (no toggle); tool
  *  setup (Blender downloads) lives in the Exporter tab. */
 
-interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir: string; already_exported: boolean; mtime?: number; }
+interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir?: string; already_exported: boolean; mtime?: number; }
 const key = (s: Seq) => `${s.tag}/${s.capture}/${s.seq}::${s.ma_3d_dir}`;
 
 export function ResultExport({ captureName, initialSeq, onGoToExporter }: {

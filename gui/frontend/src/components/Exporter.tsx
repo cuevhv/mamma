@@ -8,7 +8,7 @@ import { MeshPreview } from './MeshPreview';
  *  a sequence source (detected results OR a custom path), and the shared export
  *  panel. The export core itself lives in ExportPanel so it's reused on results. */
 
-interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir: string; already_exported: boolean; mtime?: number; }
+interface Seq { tag: string; capture: string; seq: string; people: number; ma_3d_dir: string; ma_cap_dir?: string; already_exported: boolean; mtime?: number; }
 
 const seqKey = (s: Seq) => `${s.tag}/${s.capture}/${s.seq}::${s.ma_3d_dir}`;
 

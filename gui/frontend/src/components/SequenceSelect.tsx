@@ -4,7 +4,10 @@ import { fmtRun, fmtWhen } from './ExportPanel';
 
 export interface SeqItem {
   tag: string; capture: string; seq: string; people: number;
-  ma_3d_dir: string; already_exported: boolean; mtime?: number;
+  /** ma_cap output dir for this sequence, when one exists on disk — the
+   *  backend emits "" when absent. Carried through so a picked row's
+   *  `onPreview` target can feed recorded fps to the mesh preview. */
+  ma_3d_dir: string; ma_cap_dir?: string; already_exported: boolean; mtime?: number;
 }
 
 /** Styled MULTI-select for export sequences. Native <option> can't show rich text
