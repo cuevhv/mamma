@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, ArrowLeft, Activity, Upload } from 'lucide-react';
+import { Plus, ArrowLeft, Activity, Upload, Info } from 'lucide-react';
 import { toast } from 'sonner';
 import { ProcessTable, MatrixCell, ALL_STEPS, buildProcessRows } from './ProcessTable';
 import { PipelineOverview } from './PipelineOverview';
@@ -9,6 +9,7 @@ import { RunModeBadge } from './RunModeBadge';
 import { ImportPreviousRunModal } from './ImportPreviousRunModal';
 import { useTaskPolling } from './shared/useTaskPolling';
 import { formatTaskId } from './shared/formatTaskId';
+import { ConfirmModal } from './shared/ConfirmModal';
 
 interface HistoryProcess {
   processId: string;
@@ -204,6 +205,18 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
     cell: MatrixCell | null;
   } | null>(null);
 
+  // Delete-sequence confirmation. `pendingDelete` holds the (task, seq) the
+  // trash button targeted; a non-null value drives the confirm modal open.
+  // `deleting` spins the modal's confirm button while the DELETE is in flight.
+  const [pendingDelete, setPendingDelete] = useState<{ taskId: string; seqName: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  // Stop-task confirmation. Only multi-sequence tasks confirm (stopping one
+  // process cancels every sequence in it); single-sequence stops fire directly.
+  // A non-null `pendingStop` opens the modal; `stopping` spins its confirm.
+  const [pendingStop, setPendingStop] = useState<{ taskId: string; seqNames: string[] } | null>(null);
+  const [stopping, setStopping] = useState(false);
+
   const handleStopCell = async (cell: MatrixCell) => {
     try { await fetch(`/api/processes/${cell.processId}/stop`, { method: 'POST' }); }
     catch (e) { console.error('stop failed', e); }
@@ -212,21 +225,20 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
   // Stop a whole task (kills the runner subprocess + cancels remaining
   // processes server-side). Used by the row-level Stop button. A task's
   // sequences all run in ONE process, so Stop is whole-task by nature —
-  // when the run has more than one sequence we confirm first so it's clear
-  // this cancels every sequence, not just the row that was clicked.
-  const handleStopTask = async (taskId: string) => {
+  // when the run has more than one sequence we confirm first (via the modal)
+  // so it's clear this cancels every sequence, not just the row clicked.
+  const handleStopTask = (taskId: string) => {
     const seqNames = tableData.rows.filter(r => r.taskId === taskId).map(r => r.seqName);
     if (seqNames.length > 1) {
-      const ok = window.confirm(
-        `Stop task ${formatTaskId(taskId)}?\n\n` +
-        `This run's ${seqNames.length} sequences all execute in a single ` +
-        `process, so stopping it cancels ALL of them:\n` +
-        `  • ${seqNames.join('\n  • ')}\n\n` +
-        `Finished steps keep their outputs (DONE sentinels), so a later ` +
-        `Restart resumes from where it left off.`
-      );
-      if (!ok) return;
+      setPendingStop({ taskId, seqNames });
+      return;
     }
+    void doStopTask(taskId);
+  };
+
+  // The stop request itself, shared by the direct (single-sequence) path and
+  // the modal-confirmed (multi-sequence) path.
+  const doStopTask = async (taskId: string) => {
     try {
       const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/stop`, { method: 'POST' });
       if (!res.ok) {
@@ -239,6 +251,19 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
     } catch (e) {
       console.error(e);
       toast.error(`Failed to reach the backend.`);
+    }
+  };
+
+  /** Runs the stop for the task the modal is confirming. The finally closes
+   *  the modal on both success and handled failure. */
+  const confirmStopTask = async () => {
+    if (!pendingStop || stopping) return;
+    setStopping(true);
+    try {
+      await doStopTask(pendingStop.taskId);
+    } finally {
+      setStopping(false);
+      setPendingStop(null);
     }
   };
 
@@ -273,18 +298,18 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
    *  sequence, the empty task row disappears too. **Does not delete output
    *  files on disk** — we surface that caveat so re-submitting against the
    *  same `output_id` still skips finished work via DONE sentinels. */
-  const handleDeleteSequence = async (taskId: string, seqName: string) => {
-    const ok = window.confirm(
-      `Remove sequence '${seqName}' from task ${formatTaskId(taskId)}?\n\n` +
-      `Only this sequence is removed from the Tasks table — other sequences ` +
-      `in the same task stay. If it's the task's last sequence, the task row ` +
-      `goes too.\n\n` +
-      `Output files on disk are NOT deleted: logs and outputs (under ` +
-      `output/<step>/<output_id>/...) stay where they are, and re-submitting ` +
-      `against the same Output ID will still skip finished steps via DONE ` +
-      `sentinels. If you want to wipe the files too, delete them on disk afterwards.`
-    );
-    if (!ok) return;
+  const handleDeleteSequence = (taskId: string, seqName: string) => {
+    // Open the styled confirm modal; the DELETE itself runs on confirm.
+    setPendingDelete({ taskId, seqName });
+  };
+
+  /** Runs the DELETE for the sequence the modal is confirming. The finally
+   *  closes the modal on both success and handled failure; user feedback is
+   *  by toast, matching the other Tasks actions. */
+  const confirmDeleteSequence = async () => {
+    if (!pendingDelete || deleting) return;
+    const { taskId, seqName } = pendingDelete;
+    setDeleting(true);
     try {
       const res = await fetch(
         `/api/tasks/${encodeURIComponent(taskId)}/sequence?name=${encodeURIComponent(seqName)}`,
@@ -305,6 +330,9 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
     } catch (e) {
       console.error(e);
       toast.error(`Failed to reach the backend.`);
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
     }
   };
 
@@ -409,6 +437,74 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
         onStop={handleStopCell}
         onBrowseOutputs={onBrowseOutputs}
       />
+
+      <ConfirmModal
+        open={!!pendingDelete}
+        tone="danger"
+        title={pendingDelete ? `Remove sequence '${pendingDelete.seqName}'?` : ''}
+        confirmLabel="Remove sequence"
+        cancelLabel="Cancel"
+        busy={deleting}
+        onConfirm={confirmDeleteSequence}
+        onCancel={() => { if (!deleting) setPendingDelete(null); }}
+      >
+        {pendingDelete && (
+          <>
+            <p>
+              From task{' '}
+              <span className="font-mono text-foreground">{formatTaskId(pendingDelete.taskId)}</span>.{' '}
+              Only this sequence is removed from the Tasks table — other sequences
+              in the same task stay. If it's the task's last sequence, the task row
+              goes too.
+            </p>
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-border-subtle bg-surface-2/50 px-3 py-2">
+              <Info className="w-3.5 h-3.5 text-foreground-faint flex-shrink-0 mt-0.5" aria-hidden />
+              <span className="text-[12px] text-foreground-subtle leading-relaxed">
+                <strong className="text-foreground font-medium">Files on disk are not deleted.</strong>{' '}
+                Logs and outputs under{' '}
+                <code className="font-mono text-foreground-muted">output/&lt;step&gt;/&lt;output_id&gt;/…</code>{' '}
+                stay where they are, and re-submitting against the same Output ID
+                will still skip finished steps via DONE sentinels.
+              </span>
+            </div>
+          </>
+        )}
+      </ConfirmModal>
+
+      <ConfirmModal
+        open={!!pendingStop}
+        tone="danger"
+        title={pendingStop ? `Stop task ${formatTaskId(pendingStop.taskId)}?` : ''}
+        confirmLabel="Stop task"
+        cancelLabel="Keep running"
+        busy={stopping}
+        onConfirm={confirmStopTask}
+        onCancel={() => { if (!stopping) setPendingStop(null); }}
+      >
+        {pendingStop && (
+          <>
+            <p>
+              This run's {pendingStop.seqNames.length} sequences all execute in a single
+              process, so stopping it cancels{' '}
+              <strong className="text-foreground font-medium">all of them</strong>:
+            </p>
+            <ul className="mt-2 max-h-40 overflow-auto rounded-md border border-border-subtle bg-surface-2/50 divide-y divide-border-subtle">
+              {pendingStop.seqNames.map(s => (
+                <li key={s} className="px-3 py-1.5 font-mono text-[12px] text-foreground-muted truncate" title={s}>
+                  {s}
+                </li>
+              ))}
+            </ul>
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-border-subtle bg-surface-2/50 px-3 py-2">
+              <Info className="w-3.5 h-3.5 text-foreground-faint flex-shrink-0 mt-0.5" aria-hidden />
+              <span className="text-[12px] text-foreground-subtle leading-relaxed">
+                Finished steps keep their outputs (DONE sentinels), so a later{' '}
+                <strong className="text-foreground font-medium">Restart</strong> resumes from where it left off.
+              </span>
+            </div>
+          </>
+        )}
+      </ConfirmModal>
     </div>
   );
 }

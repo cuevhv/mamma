@@ -1,8 +1,9 @@
-import { Search, X, FolderOpen, Trash2 } from 'lucide-react';
+import { Search, X, FolderOpen, Trash2, Info, Check } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Thumbnail } from './shared/Thumbnail';
 import { formatRelativeTime } from './shared/relativeTime';
+import { ConfirmModal } from './shared/ConfirmModal';
 
 interface Capture {
   id: string;
@@ -36,6 +37,10 @@ export function ResultsList({ onOpen }: Props) {
   const [captures, setCaptures] = useState<Capture[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  // Delete-capture confirmation (DB-only). A non-null value opens the modal;
+  // `deleting` spins its confirm button while the DELETE is in flight.
+  const [pendingDelete, setPendingDelete] = useState<Capture | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const refresh = () => {
     setError(null);
@@ -51,22 +56,19 @@ export function ResultsList({ onOpen }: Props) {
   useEffect(() => { refresh(); }, []);
 
   /** Remove a capture's DB row (and cascading tasks/processes) without
-   *  touching any files. The confirmation dialog spells this out so the
-   *  user doesn't think their artifacts are about to disappear. */
-  const handleDelete = async (capture: Capture) => {
-    const ok = window.confirm(
-      `Remove “${capture.captureName}” from the database?\n\n` +
-      `This is a DB-only delete:\n` +
-      `  • The capture.json file is NOT deleted (${capture.jsonPath}).\n` +
-      `  • Output files on disk are NOT deleted (logs, .rrd, .mp4, etc).\n` +
-      `  • Task rows for this capture (${capture.taskCount}) ARE removed from ` +
-      `the Tasks table along with the capture row itself.\n\n` +
-      `You can re-add this capture later by submitting against the same ` +
-      `capture.json — DONE sentinels under existing output dirs will still ` +
-      `skip finished steps.\n\n` +
-      `If you want to wipe the files too, delete them on disk afterwards.`
-    );
-    if (!ok) return;
+   *  touching any files. The confirm modal spells this out so the user
+   *  doesn't think their artifacts are about to disappear. */
+  const handleDelete = (capture: Capture) => {
+    setPendingDelete(capture);
+  };
+
+  /** Runs the DB-only DELETE for the capture the modal is confirming. The
+   *  finally closes the modal on both success and handled failure; feedback
+   *  is by toast. */
+  const confirmDelete = async () => {
+    if (!pendingDelete || deleting) return;
+    const capture = pendingDelete;
+    setDeleting(true);
     try {
       const res = await fetch(
         `/api/captures/db?path=${encodeURIComponent(capture.jsonPath)}`,
@@ -82,6 +84,9 @@ export function ResultsList({ onOpen }: Props) {
     } catch (e) {
       console.error(e);
       toast.error('Failed to reach the backend.');
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
     }
   };
 
@@ -143,6 +148,56 @@ export function ResultsList({ onOpen }: Props) {
           ))}
         </div>
       )}
+
+      <ConfirmModal
+        open={!!pendingDelete}
+        tone="danger"
+        title={pendingDelete ? `Remove “${pendingDelete.captureName}” from the database?` : ''}
+        confirmLabel="Remove from database"
+        cancelLabel="Cancel"
+        busy={deleting}
+        onConfirm={confirmDelete}
+        onCancel={() => { if (!deleting) setPendingDelete(null); }}
+      >
+        {pendingDelete && (
+          <>
+            <p>This is a database-only delete — no files on disk are touched.</p>
+            <ul className="mt-2.5 space-y-1.5">
+              <li className="flex items-start gap-2">
+                <Check className="w-3.5 h-3.5 text-status-completed flex-shrink-0 mt-0.5" aria-hidden />
+                <span>
+                  The <code className="font-mono text-foreground-muted">capture.json</code> stays on disk:{' '}
+                  <span className="font-mono text-foreground-subtle break-all">{pendingDelete.jsonPath}</span>
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <Check className="w-3.5 h-3.5 text-status-completed flex-shrink-0 mt-0.5" aria-hidden />
+                <span>
+                  Output files on disk stay — logs,{' '}
+                  <code className="font-mono text-foreground-muted">.rrd</code>,{' '}
+                  <code className="font-mono text-foreground-muted">.mp4</code>, etc.
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <X className="w-3.5 h-3.5 text-status-failed flex-shrink-0 mt-0.5" aria-hidden />
+                <span>
+                  This capture's {pendingDelete.taskCount} task row{pendingDelete.taskCount === 1 ? '' : 's'}{' '}
+                  {pendingDelete.taskCount === 1 ? 'is' : 'are'} removed from the Tasks table, along with the
+                  capture row itself.
+                </span>
+              </li>
+            </ul>
+            <div className="mt-3 flex items-start gap-2 rounded-md border border-border-subtle bg-surface-2/50 px-3 py-2">
+              <Info className="w-3.5 h-3.5 text-foreground-faint flex-shrink-0 mt-0.5" aria-hidden />
+              <span className="text-[12px] text-foreground-subtle leading-relaxed">
+                You can re-add it later by submitting against the same{' '}
+                <code className="font-mono text-foreground-muted">capture.json</code> — DONE sentinels under
+                existing output dirs will still skip finished steps.
+              </span>
+            </div>
+          </>
+        )}
+      </ConfirmModal>
     </div>
   );
 }

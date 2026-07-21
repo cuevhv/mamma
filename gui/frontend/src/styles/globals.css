@@ -223,6 +223,27 @@
   }
 }
 
+/* Modal / dialog entrance — a soft fade for the backdrop and a fade with a
+ * slight rise-and-zoom for the panel, so confirmation dialogs feel placed
+ * rather than popped. Used by <ConfirmModal>. Dropped entirely under
+ * prefers-reduced-motion. */
+@keyframes mamma-overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes mamma-modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+@layer utilities {
+  .animate-overlay-in { animation: mamma-overlay-in 0.15s ease-out; }
+  .animate-modal-in   { animation: mamma-modal-in 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-overlay-in,
+  .animate-modal-in { animation: none; }
+}
+
 /* CTA hover effects. Plain CSS (not @apply/@layer) so they render
  * regardless of any Tailwind JIT or @layer ordering quirks.
  *
