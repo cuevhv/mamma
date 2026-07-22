@@ -225,7 +225,6 @@ for ds in "${DATASETS[@]}"; do
     # Download the file list
     download "${ds}/tar_train_list.txt" && downloaded=$((downloaded+1)) || failed=$((failed+1))
     download "${ds}/train_data.txt" && downloaded=$((downloaded+1)) || true
-    download "${ds}/get_dataset_list.sh" && downloaded=$((downloaded+1)) || true
 
     # If we got the tar list, use it to download all .tar files
     listfile="${OUTPUT_DIR}/${ds}/tar_train_list.txt"
