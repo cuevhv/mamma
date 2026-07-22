@@ -1453,6 +1453,44 @@ def get_task_by_id(task_id):
         }
 
 
+def get_task_context_for_output(output_id, capture_name, sequence_name):
+    """Resolve a disk-discovered export item back to the task that produced it.
+
+    The Exporter page lists sequences by scanning output/ma_3d/<output_id>/…,
+    so it knows the output id but not the task. Return the latest matching
+    task (preferring one whose capture name matches, since output ids can be
+    reused across submissions) with its frozen run-config path and the
+    per-step .out/.err log files for the sequence — or None when the run
+    isn't in this GUI's database (CLI runs, other machines).
+    """
+    with create_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT t.task_id, t.task_json_path, t.username
+               FROM tasks t JOIN captures c ON t.capture_id = c.capture_id
+               WHERE t.output_id = ?
+               ORDER BY (c.capture_name = ?) DESC, t.created_at DESC LIMIT 1""",
+            (str(output_id), capture_name),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cur.execute(
+            """SELECT p.process, p.out_file, p.err_file
+               FROM processes p JOIN sequences s ON p.sequence_id = s.sequence_id
+               WHERE p.task_id = ? AND s.sequence_name = ?""",
+            (row["task_id"], sequence_name),
+        )
+        logs = {r["process"]: {"out": r["out_file"], "err": r["err_file"]} for r in cur.fetchall()}
+        json_path = row["task_json_path"]
+        return {
+            "taskId": str(row["task_id"]),
+            "taskJsonPath": json_path if json_path and json_path != "PENDING_CREATION" else None,
+            "username": row["username"],
+            "logs": logs,
+        }
+
+
 def get_all_tasks_with_processes():
     with create_connection() as conn:
         cur = conn.cursor()

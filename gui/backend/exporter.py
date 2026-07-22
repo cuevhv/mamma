@@ -415,6 +415,21 @@ def register_routes(app) -> None:
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    @app.get("/api/exporter/task-context")
+    def _exporter_task_context():
+        """Resolve a listed sequence (known only by output id + capture + seq)
+        back to its task, so the Outputs view can offer the run-config and
+        per-step log buttons. Empty object when the run isn't in the DB."""
+        q = {k: (request.args.get(k) or "").strip() for k in ("tag", "capture", "seq")}
+        if not q["tag"] or not q["seq"]:
+            return jsonify({"error": "missing: tag, seq"}), 400
+        try:
+            import db
+            ctx = db.get_task_context_for_output(q["tag"], q["capture"], q["seq"])
+        except Exception as exc:  # noqa: BLE001 — resolver is best-effort garnish
+            return jsonify({"error": str(exc)}), 500
+        return jsonify(ctx or {})
+
     @app.get("/api/exporter/job/<job_id>")
     def _exporter_job(job_id):
         with _jobs_lock:
