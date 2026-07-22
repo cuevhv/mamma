@@ -104,6 +104,11 @@ DEFAULT_ASSIGNMENT_CONFIG = {
     "masks": {
         "merge_duplicate_tracklets": True,
         "merge_iou_threshold": 0.95,
+        "truncate_relatched_tracklets": True,
+        "relatch_iou": 0.9,
+        "relatch_min_run_frames": 5,
+        "relatch_pre_frames": 5,
+        "relatch_pre_area_px": 100,
         "discard_tiny_tracklets": True,
         "tiny_tracklet_min_area_ratio": 0.005,
         "tiny_tracklet_min_frame_ratio": 0.2,
@@ -2435,7 +2440,9 @@ class SegmentMultipleFrames:
         """Unified post-propagation cleanup for all SAM versions.
 
         1. Merge duplicate tracklets (near-identical masks = same person tracked twice)
-        2. Discard tiny tracklets (noise, not real people)
+        2. Truncate re-latched tracklets (a track that lost its person mid-sequence
+           and re-acquired onto another person)
+        3. Discard tiny tracklets (noise, not real people)
 
         Controlled by the ``masks:`` config section.
         """
@@ -2448,7 +2455,18 @@ class SegmentMultipleFrames:
                 cam_name, video_segments, detected_ids, iou_thresh=merge_iou,
             )
 
-        # Step 2: discard tiny tracklets
+        # Step 2: truncate re-latched tracklets (partial-duration duplicates the
+        # whole-clip mean of Step 1 cannot see)
+        if bool(mask_cfg.get("truncate_relatched_tracklets", True)):
+            video_segments = self._truncate_relatched_tracklets(
+                cam_name, video_segments, detected_ids,
+                iou_thresh=float(mask_cfg.get("relatch_iou", 0.9)),
+                min_run_frames=int(mask_cfg.get("relatch_min_run_frames", 5)),
+                pre_frames=int(mask_cfg.get("relatch_pre_frames", 5)),
+                pre_area_px=int(mask_cfg.get("relatch_pre_area_px", 100)),
+            )
+
+        # Step 3: discard tiny tracklets
         if bool(mask_cfg.get("discard_tiny_tracklets", True)):
             min_area_ratio = float(mask_cfg.get("tiny_tracklet_min_area_ratio", 0.005))
             min_frame_ratio = float(mask_cfg.get("tiny_tracklet_min_frame_ratio", 0.2))
@@ -2575,6 +2593,152 @@ class SegmentMultipleFrames:
             )
 
         return video_segments, detected_ids
+
+    def _truncate_relatched_tracklets(self, cam_name, video_segments, detected_ids,
+                                      iou_thresh=0.9, min_run_frames=5,
+                                      pre_frames=5, pre_area_px=100,
+                                      sample_count=20):
+        """Zero the frames on which a tracklet re-latched onto another person.
+
+        When a tracked person leaves the scene, the tracker's memory can
+        re-acquire "its" object on the most similar visible person a few frames
+        later: the tracklet is a real, distinct person early on and a
+        near-perfect duplicate (IoU ~1) of another tracklet from the takeover
+        frame onward. _merge_duplicate_tracklets cannot catch this: its
+        whole-clip mean IoU is diluted by the legitimate early segment
+        (measured 0.74 on a real re-latch vs the 0.95 merge threshold).
+
+        Detection: pairs whose *sampled* IoU peaks at >= iou_thresh anywhere
+        are rescanned per frame; a sustained run of IoU >= iou_thresh
+        (>= min_run_frames) is a re-latch candidate. The culprit is the
+        tracklet that was empty/tiny (area <= pre_area_px) on every one of the
+        pre_frames frames just before the run while the other stayed
+        substantial. Only the culprit's masks inside the run are zeroed —
+        frames after the run are untouched, so a genuine recovery after
+        occlusion survives. When the pre-run evidence is ambiguous (both
+        present, or the run starts at the clip start — that is Step 1's
+        domain) nothing is changed and a warning is logged: a logged miss is
+        recoverable, a wrong truncation is not.
+        """
+        if len(detected_ids) < 2:
+            return video_segments
+
+        sorted_frames = video_segments.frames()
+        n_sample = min(sample_count, len(sorted_frames))
+        if n_sample == 0:
+            return video_segments
+        sample_idxs = [sorted_frames[int(i)] for i in
+                       np.linspace(0, len(sorted_frames) - 1, n_sample, dtype=int)]
+
+        def _pair_iou(masks, oid_a, oid_b):
+            mask_a, mask_b = masks.get(oid_a), masks.get(oid_b)
+            if mask_a is None or mask_b is None:
+                return 0.0
+            ma = (mask_a[0] if mask_a.ndim == 3 else mask_a) > 0
+            mb = (mask_b[0] if mask_b.ndim == 3 else mask_b) > 0
+            union = float((ma | mb).sum())
+            return float((ma & mb).sum()) / union if union > 0 else 0.0
+
+        # Cheap prescreen on the sampled frames: only pairs that peak at
+        # >= iou_thresh somewhere get the full per-frame scan, so clean
+        # sequences pay nothing beyond Step 1's existing sampling cost.
+        ids = list(detected_ids)
+        flagged = []
+        for fidx in sample_idxs:
+            masks = video_segments.frame(fidx)
+            for i in range(len(ids)):
+                for j in range(i + 1, len(ids)):
+                    pair = (ids[i], ids[j])
+                    if pair in flagged:
+                        continue
+                    if _pair_iou(masks, *pair) >= iou_thresh:
+                        flagged.append(pair)
+        if not flagged:
+            return video_segments
+
+        # One streaming pass over all frames: per-frame IoU series for every
+        # flagged pair plus area series for the involved IDs.
+        involved = sorted({oid for pair in flagged for oid in pair})
+        iou_series = {pair: [] for pair in flagged}
+        area_series = {oid: [] for oid in involved}
+        for fidx in sorted_frames:
+            masks = video_segments.frame(fidx)
+            for oid in involved:
+                mask = masks.get(oid)
+                if mask is None:
+                    area_series[oid].append(0)
+                else:
+                    m = mask[0] if mask.ndim == 3 else mask
+                    area_series[oid].append(int((m > 0).sum()))
+            for pair in flagged:
+                iou_series[pair].append(_pair_iou(masks, *pair))
+
+        for oid_a, oid_b in flagged:
+            series = iou_series[(oid_a, oid_b)]
+            # Maximal runs of positions with IoU >= iou_thresh.
+            runs, start = [], None
+            for pos, v in enumerate(series + [0.0]):
+                if v >= iou_thresh and start is None:
+                    start = pos
+                elif v < iou_thresh and start is not None:
+                    if pos - start >= min_run_frames:
+                        runs.append((start, pos - 1))
+                    start = None
+            # Bridge brief dips: runs separated by fewer than pre_frames
+            # positions are one takeover event — such a gap is too short to be
+            # a genuine recovery, and too short to re-establish pre-run
+            # evidence for the follow-up run (which would otherwise be skipped
+            # as ambiguous, leaving its frames poisoned).
+            bridged = []
+            for run in runs:
+                if bridged and run[0] - bridged[-1][1] - 1 < pre_frames:
+                    bridged[-1] = (bridged[-1][0], run[1])
+                else:
+                    bridged.append(run)
+            for run_s, run_e in bridged:
+                f_s, f_e = sorted_frames[run_s], sorted_frames[run_e]
+                if run_s < pre_frames:
+                    self._log_warn(
+                        f"[{cam_name}] Tracklets {oid_a}/{oid_b} are near-identical "
+                        f"(IoU>={iou_thresh}) from frame {f_s} to {f_e} but the run starts "
+                        f"at the clip start — leaving it to the duplicate merge, not truncating."
+                    )
+                    continue
+                pre_a = area_series[oid_a][run_s - pre_frames:run_s]
+                pre_b = area_series[oid_b][run_s - pre_frames:run_s]
+                a_gone = max(pre_a) <= pre_area_px
+                b_gone = max(pre_b) <= pre_area_px
+                a_solid = min(pre_a) > 10 * pre_area_px
+                b_solid = min(pre_b) > 10 * pre_area_px
+                if a_gone and b_solid:
+                    culprit, keeper = oid_a, oid_b
+                elif b_gone and a_solid:
+                    culprit, keeper = oid_b, oid_a
+                else:
+                    self._log_warn(
+                        f"[{cam_name}] Tracklets {oid_a}/{oid_b} are near-identical "
+                        f"(IoU>={iou_thresh}) from frame {f_s} to {f_e}, but neither was "
+                        f"clearly absent just before the run (pre-run areas {oid_a}: "
+                        f"{pre_a}, {oid_b}: {pre_b}) — not truncating."
+                    )
+                    continue
+                n_zeroed = 0
+                for pos in range(run_s, run_e + 1):
+                    fidx = sorted_frames[pos]
+                    masks = video_segments.frame(fidx)
+                    mask = masks.get(culprit)
+                    if mask is None or not mask.any():
+                        continue
+                    masks[culprit] = np.zeros_like(mask)
+                    video_segments.set_frame(fidx, masks)
+                    n_zeroed += 1
+                self._log_info(
+                    f"[{cam_name}] Re-latch truncation: tracklet {culprit} was empty for "
+                    f"{pre_frames} frames and then re-acquired onto tracklet {keeper} "
+                    f"(IoU>={iou_thresh} on frames {f_s}-{f_e}) — zeroed its masks on "
+                    f"{n_zeroed} frames. Its earlier frames are kept."
+                )
+        return video_segments
 
     def _sam3_prompt_detect_and_propagate(self, cam_name, sam_source, n_frames,
                                           frame_id=None, expected_subjects=None, frames=None):
