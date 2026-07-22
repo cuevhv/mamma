@@ -32,6 +32,8 @@ interface HistoryTask {
   /** Path of the preset the GUI used to materialize this run, when
    *  recorded. Null/undefined for legacy rows and CLI imports. */
   presetPath?: string | null;
+  /** Output root + id recorded at submit time — used to locate this run's
+   *  ma_3d results for the side-panel 3D viewer. */
   outputPath?: string | null;
   outputId?: string | null;
   /** 1-indexed position in the task-coordinator's queue. Present only
