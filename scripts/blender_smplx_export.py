@@ -162,8 +162,12 @@ def main():
 
     def _abc():  # native (the add-on's ABC op is this call without a scale arg)
         _select([mesh, arm], mesh)
+        # face_sets=False: Alembic cannot carry shaders, so a face set only makes
+        # importers (Maya AbcImport et al.) fabricate a shader-less material that
+        # renders black. The body is single-material — the partition has no value;
+        # without it every DCC falls back to its own default shading.
         bpy.ops.wm.alembic_export(filepath=out + ".abc", selected=True, packuv=False,
-                                  face_sets=True, global_scale=scale)
+                                  face_sets=False, global_scale=scale)
 
     def _bvh():  # native exporter (no add-on BVH op)
         _select([arm], arm)
