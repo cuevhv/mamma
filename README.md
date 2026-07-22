@@ -198,6 +198,8 @@ MAMMA builds on a number of open-source models, datasets, and tools. We thank th
 - [**CameraHMR**](https://camerahmr.is.tue.mpg.de/): MPI-IS; landmark architecture baseline.
 - [**BEDLAM**](https://bedlam.is.tue.mpg.de/): MPI-IS; synthetic dataset of humans in motion.
 - [**Rerun**](https://rerun.io): interactive 3D scene viewer.
+- [**three.js**](https://threejs.org): in-browser 3D viewer of the fitted bodies.
+- [**Blender**](https://www.blender.org) and the [**SMPL-X Blender add-on**](https://smpl-x.is.tue.mpg.de/): headless export of rigged animation formats.
 - [**Detectron2**](https://github.com/facebookresearch/detectron2): Meta FAIR; vision research library.
 - [**PyTorch Lightning**](https://github.com/Lightning-AI/pytorch-lightning), [**Hydra**](https://github.com/facebookresearch/hydra), and [**WebDataset**](https://github.com/webdataset/webdataset): training infrastructure.
 
