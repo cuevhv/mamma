@@ -101,6 +101,39 @@ def _label(canvas, text, pos=(8, 22), font_scale=0.55, color=(255, 255, 255)):
     cv2.putText(canvas, text, pos, _FONT, font_scale, color,     1, cv2.LINE_AA)
 
 
+def _legend(canvas, subject_colors, origin=(8, 44), row_h=18):
+    """Color key drawn on every frame: one swatch + 'body NN' row per subject,
+    so the color-to-subject mapping is always explicit."""
+    x, y = origin
+    for bid in sorted(subject_colors.keys()):
+        color = subject_colors[bid]
+        cv2.rectangle(canvas, (x, y - 10), (x + 14, y + 2), color, -1)
+        cv2.rectangle(canvas, (x, y - 10), (x + 14, y + 2), (0, 0, 0), 1)
+        _label(canvas, f"body {int(bid):02d}", pos=(x + 20, y), font_scale=0.45)
+        y += row_h
+
+
+def _subject_tag(canvas, kpts_TL, vis_TL, frame_t, body_id, color, scale=_IMG_SCALE):
+    """Write 'bNN' just above the person's topmost visible keypoint, in the
+    subject's color, so people stay attributable even when they cross."""
+    def _np(x):
+        return x.cpu().numpy() if torch.is_tensor(x) else np.asarray(x)
+
+    uv = _np(kpts_TL[frame_t])
+    if vis_TL is not None:
+        vis = _np(vis_TL[frame_t])
+    else:
+        vis = np.ones(uv.shape[0], dtype=np.float32)
+    ok = (vis > 0.5) & (uv[:, 0] > 1) & (uv[:, 1] > 1)
+    if not ok.any():
+        return
+    x = int(uv[ok, 0].mean() / scale)
+    y = max(12, int(uv[ok, 1].min() / scale) - 6)
+    text = f"b{int(body_id):02d}"
+    cv2.putText(canvas, text, (x, y), _FONT, 0.5, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(canvas, text, (x, y), _FONT, 0.5, color, 1, cv2.LINE_AA)
+
+
 def _fit_frame(img, h, w):
     """Crop or pad img so it is exactly (h, w, 3)."""
     img = img[:h, :w]
@@ -222,9 +255,19 @@ def visualize_reid(
                                 pts2d_after[bid][cam_id],
                                 vis_a[cam_id] if vis_a is not None else None,
                                 t, color)
+                _subject_tag(before_img,
+                             pts2d_before[bid][cam_id],
+                             vis_b[cam_id] if vis_b is not None else None,
+                             t, bid, color)
+                _subject_tag(after_img,
+                             pts2d_after[bid][cam_id],
+                             vis_a[cam_id] if vis_a is not None else None,
+                             t, bid, color)
 
             _label(before_img, f"BEFORE  {cam_name} f{t}")
             _label(after_img,  f"AFTER({tag})  {cam_name} f{t}")
+            _legend(before_img, subject_colors)
+            _legend(after_img, subject_colors)
 
             sep   = np.full((_DIVIDER_H, frame_w, 3), (0, 200, 200), dtype=np.uint8)
             frame = np.vstack([before_img, sep, after_img])
