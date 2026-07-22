@@ -433,10 +433,10 @@ def _expand_syn(sel: dict) -> list[tuple[str, str]]:
 
     The .tar shards inside each dataset are listed in a remote
     ``tar_train_list.txt`` that needs MAMMA credentials to fetch, which
-    aren't available at plan time. So this only enqueues the per-dataset
-    manifest files; the shards themselves are best pulled with the
-    ``download_mamma_syn_wd.sh`` script (a full GUI shard-expansion would
-    fetch each manifest in the worker first — a deferred follow-up). The
+    aren't available at plan time. So the plan enqueues the per-dataset
+    manifest files, and the worker (:func:`_run_job`) expands each
+    downloaded ``tar_train_list.txt`` into that dataset's shard downloads
+    on the fly, growing ``files_total`` as manifests arrive. The
     remote layout keeps the ``training_webdataset/`` segment; locally we
     land under ``data/mammasyn/<dataset>/`` to match the .sh and the HF
     family so all three are interchangeable."""
@@ -456,7 +456,7 @@ def _expand_syn(sel: dict) -> list[tuple[str, str]]:
     for ds in datasets:
         # sfile = remote path under datasets/ (the worker prepends "datasets/").
         # local = on-disk path under data/, mirroring the .sh's data/mammasyn/<ds>/.
-        for manifest in ("tar_train_list.txt", "train_data.txt", "get_dataset_list.sh"):
+        for manifest in ("tar_train_list.txt", "train_data.txt"):
             files.append((f"training_webdataset/{ds}/{manifest}", f"mammasyn/{ds}/{manifest}"))
     return files
 
@@ -628,9 +628,10 @@ FAMILIES: dict[str, _Family] = {
         camera_kind="none",
         expand=_expand_syn,
         source_kind="mpi",
-        notes=("Alternative to the Hugging Face default. The GUI fetches the "
-               "per-dataset manifests; use data/download_mamma_syn_wd.sh for "
-               "the full multi-TB shard pull."),
+        notes=("Alternative to the Hugging Face default. Downloads each "
+               "selected dataset's manifest and then all of its .tar shards "
+               "(multi-TB for the big groups) -- equivalent to "
+               "data/download_mamma_syn_wd.sh."),
     ),
 }
 
@@ -747,6 +748,25 @@ def _job_view(rec: dict) -> dict:
 
 # ─── Worker ───────────────────────────────────────────────────────────────
 
+def _syn_shards_from_manifest(manifest_path: Path, dataset: str) -> list[tuple[str, str]]:
+    """Parse a downloaded ``tar_train_list.txt`` into (sfile, local) queue
+    entries for the dataset's shards. Lines are ``<sequence>/<nnnnnn>.tar``
+    relative paths; anything absolute or path-escaping is refused."""
+    entries: list[tuple[str, str]] = []
+    try:
+        lines = manifest_path.read_text(errors="replace").splitlines()
+    except OSError:
+        return entries
+    for line in lines:
+        rel = line.strip()
+        if not rel or rel.startswith("/") or ".." in rel.split("/"):
+            continue
+        entries.append((f"training_webdataset/{dataset}/{rel}",
+                        f"mammasyn/{dataset}/{rel}"))
+    return entries
+
+
+
 def _download_one_mpi(sfile: str, dest_path: Path, form_template: bytes,
                        job_id: str, label: str) -> str:
     """Download a single file via the MPI auth flow.
@@ -789,12 +809,20 @@ def _run_job(job_id: str, family: _Family, plan: list[tuple[str, str]],
              form_template: bytes) -> None:
     """Iterate the plan, downloading each file. Honour cancellation."""
     bytes_total = 0
-    for i, (sfile, local_relpath) in enumerate(plan):
+    # The plan can GROW while running: for the MAMMA-account MammaSyn family
+    # the initial plan holds only the per-dataset manifests, and each
+    # downloaded tar_train_list.txt appends that dataset's shards.
+    queue = list(plan)
+    seen = {sfile for sfile, _ in queue}
+    i = -1
+    while i + 1 < len(queue):
+        i += 1
+        sfile, local_relpath = queue[i]
         with _jobs_lock:
             rec = _jobs.get(job_id)
             if rec is None or rec.get("_cancel"):
                 _update_job(job_id, state="cancelled")
-                logger.info("Job %s cancelled at %d/%d", job_id, i, len(plan))
+                logger.info("Job %s cancelled at %d/%d", job_id, i, len(queue))
                 return
         dest = (_DATA_DIR / local_relpath).resolve()
         # Defence in depth: refuse paths that escape the data directory.
@@ -803,8 +831,17 @@ def _run_job(job_id: str, family: _Family, plan: list[tuple[str, str]],
             _update_job(job_id, error=f"Refusing path outside data/: {local_relpath}")
             _update_job(job_id, state="error")
             return
-        label = f"[{i + 1}/{len(plan)}] {sfile}"
+        label = f"[{i + 1}/{len(queue)}] {sfile}"
         result = _download_one_mpi(sfile, dest, form_template, job_id, label)
+        if (family.id == "syn_mpi" and result in ("ok", "skip")
+                and local_relpath.endswith("tar_train_list.txt")):
+            dataset = Path(local_relpath).parent.name
+            fresh = [e for e in _syn_shards_from_manifest(dest, dataset)
+                     if e[0] not in seen]
+            if fresh:
+                queue.extend(fresh)
+                seen.update(e[0] for e in fresh)
+                _update_job(job_id, files_total=len(queue))
         if result == "ok":
             try:
                 bytes_total += dest.stat().st_size
