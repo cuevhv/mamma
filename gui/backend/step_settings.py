@@ -187,8 +187,7 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             target=_flags(["--lazy-frames", "--prune-memory"]), default=False,
             help="For long clips that would otherwise run out of memory. Streams frames on "
                  "demand and prunes the tracker's accumulated per-frame memory, so memory stays "
-                 "roughly flat instead of growing with the clip. Near-lossless; costs ~+24% wall "
-                 "on mp4 (frame re-decode). Off by default — normal-length clips don't need it.",
+                 "roughly flat instead of growing with the clip. Off by default — normal-length clips don't need it.",
         ),
         Setting(
             id="debug_crop_summary", label="Debug masks", widget="toggle",
@@ -239,9 +238,12 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
         ),
         Setting(
             id="occlusion_aware_weights", label="Heavy occlusion-aware", widget="toggle",
-            target=_flag("--occlusion-aware-weights", valued=False), default=False,
+            target=_flags(["--occlusion-aware-weights", "--tri-irls"]), default=False,
             help="Enable to handle extreme occlusion, i.e. when body parts stay hidden "
-                 "across the majority of camera views.",
+                 "across the majority of camera views. Turns on occlusion-aware fitting "
+                 "weights plus a slower, occlusion-robust triangulation of the initial "
+                 "3D points. For finer control, set --occlusion-aware-weights and "
+                 "--tri-irls separately as flags in the preset.",
         ),
         Setting(
             id="use_vposer", label="Enable Pose Prior (VPoser)", widget="toggle",
