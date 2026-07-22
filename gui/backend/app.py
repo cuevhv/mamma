@@ -2257,6 +2257,53 @@ def delete_task(task_id):
     return jsonify({"message": f"Task {task_id} removed from database", "filesDeleted": False})
 
 
+def _drop_sequence_from_run_config(task_id: int, seq_name: str) -> bool:
+    """Rewrite a task's run config so ``global.seq_ids`` no longer lists
+    ``seq_name``.
+
+    Restart re-enqueues the run config verbatim, and the runner enumerates
+    sequences from that JSON — not from the DB — so deleting a sequence's
+    DB rows alone would let a later Restart resurrect it. An empty/absent
+    ``seq_ids`` means ALL capture sequences to the runner, so it is
+    materialized first; for the same reason this never writes an empty
+    list (removing a task's last sequence removes the whole task instead).
+
+    Returns True when the file was rewritten.
+    """
+    with db.create_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT task_json_path FROM tasks WHERE task_id = ?", (task_id,))
+        row = cur.fetchone()
+    task_json_path = row["task_json_path"] if row else None
+    if not task_json_path or not os.path.isfile(task_json_path):
+        return False
+
+    with open(task_json_path) as f:
+        cfg = json.load(f)
+    g = cfg.get("global") or {}
+    capture_json = os.path.expanduser(os.path.expandvars(g.get("capture_json") or ""))
+    if capture_json and not os.path.isabs(capture_json):
+        capture_json = str(_REPO_ROOT / capture_json)
+    if not capture_json or not os.path.isfile(capture_json):
+        return False
+    with open(capture_json) as f:
+        sequences = json.load(f).get("sequences", {})
+
+    name_by_id = {int(k): (v or {}).get("name") for k, v in sequences.items()}
+    drop_ids = {i for i, n in name_by_id.items() if n == seq_name}
+    if not drop_ids:
+        return False
+    current = [int(s) for s in (g.get("seq_ids") or [])] or sorted(name_by_id)
+    new_ids = [i for i in current if i not in drop_ids]
+    if new_ids == current or not new_ids:
+        return False
+    g["seq_ids"] = new_ids
+    cfg["global"] = g
+    with open(task_json_path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    return True
+
+
 @app.route("/api/tasks/<int:task_id>/sequence", methods=["DELETE"])
 def delete_task_sequence(task_id):
     """Remove a single sequence from a task — the Tasks table renders one
@@ -2305,9 +2352,26 @@ def delete_task_sequence(task_id):
     removed, task_removed = db.delete_sequence_from_task(task_id, seq_name)
     if not removed:
         return jsonify({"error": f"Sequence '{seq_name}' not found on task {task_id}"}), 404
+
+    # Also drop the sequence from the on-disk run config, or a later
+    # Restart (which re-enqueues that config verbatim) would run it again.
+    run_config_updated = False
+    warning = None
+    if not task_removed:
+        try:
+            run_config_updated = _drop_sequence_from_run_config(task_id, seq_name)
+        except Exception as e:
+            warning = (f"Could not update the run config ({e}); a Restart of this "
+                       f"task would still run '{seq_name}'.")
+            print(f"---> WARN: {warning}")
+
+    message = f"Removed sequence '{seq_name}' from task {task_id}"
+    if warning:
+        message += f" — WARNING: {warning}"
     return jsonify({
-        "message": f"Removed sequence '{seq_name}' from task {task_id}",
+        "message": message,
         "taskRemoved": task_removed,
+        "runConfigUpdated": run_config_updated,
         "filesDeleted": False,
     })
 
