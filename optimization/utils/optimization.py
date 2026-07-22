@@ -42,6 +42,8 @@ class OptimizeSMPLX:
                  save_prediction_fn=None, device="cuda", skip_start: int = 0, up_axis: str = "z"):
         self._paths = paths
         self.up_axis = up_axis           # signed world up-axis for the contact .rrd
+        # Opt-in robust triangulation (--tri-irls): cross-view residual (default off)
+        self.tri_irls = bool(optim_cfg.get("tri_irls", False)) if isinstance(optim_cfg, dict) else False
         intrinsics_np = world_params["cam_intrinsics"]
         extrinsics_np = world_params["cam_extrinsics"]
         self.cam_heights = world_params["cam_height"]
@@ -537,9 +539,17 @@ class OptimizeSMPLX:
             EX = [E[start_frame:end_frame, :] for E in self.extrinsics]
 
 
-            pts3d_world, valid_mask = triang_funcs.triangulate_batch(pts2d, Ks, EX, vis_list=vis,
-                                                    use_uncertainties=use_uncertainties,
-                                                    img_size_px=512, channel_is_logvar=False)
+            # The --tri-irls uses triangulate_batch_irls.
+            tri_fn = triang_funcs.triangulate_batch_irls if self.tri_irls else triang_funcs.triangulate_batch
+            tri_kwargs = dict(vis_list=vis, use_uncertainties=use_uncertainties,
+                              img_size_px=512, channel_is_logvar=False)
+            if self.tri_irls:
+                # Per-camera image sizes let IRLS rescale its residual scale r0
+                # by each camera's diagonal (resolution-independent weighting).
+                tri_kwargs["img_whs"] = [
+                    (float(np.asarray(w).reshape(-1)[0]), float(np.asarray(h).reshape(-1)[0]))
+                    for w, h in zip(self.cam_widths, self.cam_heights)]
+            pts3d_world, valid_mask = tri_fn(pts2d, Ks, EX, **tri_kwargs)
             from utils.epipolar_association import mvpose_style_associate_and_triangulate, mvpose_style_associate_and_triangulate_temporal, animate_pointcloud_bodies_body_first
 
             triangulated_points_world.append(pts3d_world)

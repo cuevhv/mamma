@@ -700,6 +700,10 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
         optim_cfg,
         enable_via_cli=bool(getattr(cli_args, "use_vposer", False)),
     )
+    # Opt-in robust triangulation (read by OptimizeSMPLX.triangulate_3d_from_2d_points).
+    optim_cfg["tri_irls"] = bool(getattr(cli_args, "tri_irls", False))
+    if optim_cfg["tri_irls"]:
+        print("[tri_irls] Robust (IRLS) triangulation ENABLED for the 3D seed.")
     # Preflight: if any stage (via --use-vposer OR a yaml recipe like
     # *_occlusion_vposer) uses the VPoser prior, verify the optional package
     # and weights NOW — failing seconds in beats a ModuleNotFoundError after
@@ -970,6 +974,11 @@ def parser():
                            "pose manifold (helps where 2D evidence is weak/occluded; can bias "
                            "toward typical poses). Requires the VPoser weights "
                            "(MAMMA_VPOSER_DIR, default data/body_models/vposer/V02_05). Default off.")
+    args.add_argument('--tri-irls', '--tri_irls', dest='tri_irls', action='store_true',
+                      help="Opt-in robust (IRLS) triangulation of the 3D seed: after the plain "
+                           "solve, re-solve with Cauchy weights on each observation's reprojection "
+                           "residual against the cross-view consensus, so a camera that barely "
+                           "sees a person self-suppresses (~hundreds-of-px residuals -> ~0 weight). ")
     args.add_argument('--tf32', action='store_true',
                       help="Faster optimization on modern NVIDIA GPUs; however it might give worse results. "
                            "Keep it off for final, best-quality fits.")
