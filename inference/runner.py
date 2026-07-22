@@ -160,7 +160,8 @@ def run_step(
     if sink is None:
         sink = make_sink()
 
-    return _run_step_inner(task_cfg, step_name, seq_names, out_tag, log_tag, sink, force)
+    failed = _run_step_inner(task_cfg, step_name, seq_names, out_tag, log_tag, sink, force)
+    return 1 if failed else 0
 
 
 def _ma_cap_counts(seq_dir: str) -> Tuple[Optional[int], Optional[int]]:
@@ -236,42 +237,48 @@ def run_dag(
     log.info("sequences: %s", seq_names)
 
     # Choose the loop nesting based on the per-task `sequence_major`
-    # flag. Default False = step-major (today's behaviour: finish
-    # every step across all sequences before advancing). True =
-    # sequence-major (finish each sequence end-to-end before the
-    # next). The two share engines + status sink; only the iteration
-    # order and failure-cascade scope differ.
+    # flag. Default False = step-major (finish every step across all
+    # sequences before advancing). True = sequence-major (finish each
+    # sequence end-to-end before the next). The two share engines +
+    # status sink and both cascade failures per-sequence; only the
+    # iteration order differs.
     seq_major = bool((task_cfg.get("global") or {}).get("sequence_major", False))
     if seq_major:
         log.info("dispatch mode: sequence-major")
         return _run_dag_seq_major(task_cfg, order, seq_names, out_tag, log_tag, sink, force)
 
     log.info("dispatch mode: step-major (default)")
-    failed: List[str] = []
+    # step_name -> sequences whose run of that step failed or was cascaded
+    # into Cancelled. The cascade is per-(step, sequence): one sequence's
+    # ma_masks failure blocks only THAT sequence's ma_2d/ma_3d/ma_vis; the
+    # other sequences keep running. Cancelled counts as blocked for
+    # downstream-dep purposes — otherwise a 3-deep DAG like
+    # ma_masks->ma_2d->ma_3d would have ma_3d try to run for a sequence
+    # whose ma_masks failed and whose ma_2d got cascaded into Cancelled.
+    failed_seqs: dict = {}
     for step_name in order:
         if CANCEL:
             sink.cancel_remaining([step_name], seq_names)
             continue
 
-        # If a dependency failed (or was cancelled because *its* dependency
-        # failed earlier), skip this step too. Treat cancelled steps as
-        # "blocked" for downstream-dep purposes — otherwise a 3-deep DAG
-        # like ma_masks->ma_2d->ma_3d would have ma_3d try to run even
-        # when ma_masks failed and ma_2d got cascaded into Cancelled.
         deps = task_cfg.get(step_name, {}).get("dependencies", []) or []
-        if any(d in failed for d in deps):
-            log.warning("skipping %s: dependency failed/cancelled", step_name)
-            for s in seq_names:
-                sink.update(step_name, s, "Cancelled")
-            failed.append(step_name)
-            continue
+        blocked = {s for s in seq_names
+                   if any(s in failed_seqs.get(d, ()) for d in deps)}
+        for s in [s for s in seq_names if s in blocked]:
+            log.warning("skipping %s[%s]: dependency failed/cancelled", step_name, s)
+            sink.update(step_name, s, "Cancelled")
+        runnable = [s for s in seq_names if s not in blocked]
 
-        rc = _run_step_inner(task_cfg, step_name, seq_names, out_tag, log_tag, sink, force)
-        if rc != 0:
-            failed.append(step_name)
+        step_failed = set(blocked)
+        if runnable:
+            step_failed |= _run_step_inner(
+                task_cfg, step_name, runnable, out_tag, log_tag, sink, force)
+        if step_failed:
+            failed_seqs[step_name] = step_failed
 
-    if failed:
-        log.error("DAG completed with failures: %s", failed)
+    if failed_seqs:
+        log.error("DAG completed with failures: %s",
+                  {k: sorted(v) for k, v in failed_seqs.items()})
         return 1
     log.info("DAG completed successfully")
     return 0
@@ -289,12 +296,10 @@ def _run_dag_seq_major(
     """Sequence-major DAG: finish each sequence end-to-end (all of its
     steps, in order) before moving to the next sequence.
 
-    Failure cascade is **per-sequence**: if seq A's ma_masks fails, the
-    rest of seq A's downstream steps are Cancelled, but seq B starts
-    fresh from ma_cap. Contrast with step-major where one sequence's
-    ma_cap failure blocks every sequence's ma_masks. The per-sequence
-    isolation here matches the natural user mental model — 'this
-    sequence broke; the others may still finish.'
+    Failure cascade is **per-sequence** (as in step-major): if seq A's
+    ma_masks fails, the rest of seq A's downstream steps are Cancelled,
+    but seq B is unaffected. This matches the natural user mental
+    model — 'this sequence broke; the others may still finish.'
     """
     overall_failed_steps: set[str] = set()
     tag = out_tag or "local"
@@ -382,13 +387,15 @@ def _run_step_inner(
     log_tag: Optional[str],
     sink: StatusSink,
     force: bool,
-) -> int:
+) -> set:
+    """Run one step for each sequence; returns the set of sequences that
+    failed (empty = all succeeded/skipped/cancelled)."""
     step_cfg = task_cfg.get(step_name, {})
     global_cfg = task_cfg.get("global", {})
     tag = out_tag or "local"
     builder = get_builder(step_name, step_cfg, global_cfg, tag)
 
-    failures = 0
+    failed_seqs: set = set()
     for seq in seq_names:
         if CANCEL:
             sink.update(step_name, seq, "Cancelled")
@@ -409,7 +416,7 @@ def _run_step_inner(
         except Exception as e:
             log.exception("%s[%s] engine error: %s", step_name, seq, e)
             sink.update(step_name, seq, "Failed")
-            failures += 1
+            failed_seqs.add(seq)
             continue
 
         if rc == 0:
@@ -431,10 +438,10 @@ def _run_step_inner(
             log.warning("%s[%s] cancelled by signal (exit=%s)", step_name, seq, rc)
         else:
             sink.update(step_name, seq, "Failed")
-            failures += 1
+            failed_seqs.add(seq)
             log.error("%s[%s] exit=%s -- check %s", step_name, seq, rc, err_path)
 
-    return 0 if failures == 0 else 1
+    return failed_seqs
 
 
 def _log_paths(
