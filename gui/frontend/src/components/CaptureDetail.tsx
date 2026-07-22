@@ -501,6 +501,11 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
   }, [runsForCapture, selectedTaskId, selectedSequence]);
 
   useEffect(() => {
+    // Before the capture details arrive, sequenceOptions is transiently
+    // empty — bail out instead of clearing, or a deep-linked selection
+    // from the Tasks tab would be wiped before the data loads (and the
+    // loadCapture fallback would then land on the first sequence).
+    if (!captureData) return;
     if (!sequenceOptions.length) {
       setSelectedSequence('');
       return;
@@ -508,7 +513,7 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
     if (!sequenceOptions.find(s => s.name === selectedSequence)) {
       setSelectedSequence(sequenceOptions[0].name);
     }
-  }, [sequenceOptions]);
+  }, [sequenceOptions, captureData]);
 
   // The Outputs explorer used to render one step at a time, picked from a
   // dropdown. We now stack one section per step instead — `baseRelPathFor`
