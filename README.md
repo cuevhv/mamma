@@ -207,6 +207,8 @@ MAMMA builds on a number of open-source models, datasets, and tools. We thank th
 
 For non-commercial scientific research purposes [LICENSE](LICENSE).
 
+For commercial licensing inquiries, contact: [smpl@max-planck-innovation.de](mailto:smpl@max-planck-innovation.de)
+
 ## Contact
 
 Questions, bug reports, or other inquiries: [mamma@tue.mpg.de](mailto:mamma@tue.mpg.de).
