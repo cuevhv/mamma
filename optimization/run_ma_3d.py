@@ -771,6 +771,16 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
                                                                                 up_axis=up_axis,
                                                                                 parallel=True)
 
+    # The fit may exclude bodies that ended up untriangulatable after
+    # cross-view re-ID (fewer than 2 cameras of evidence — see
+    # OptimizeSMPLX.fit); enumerate the survivors from the returned dicts
+    # rather than the input slot count.
+    if sorted(smplx_poses.keys()) != sorted(body_ids):
+        dropped = sorted(set(body_ids) - set(smplx_poses.keys()))
+        print(f"ma_3d: bodies {dropped} were excluded during fitting (untriangulatable); "
+              f"writing results for bodies {sorted(smplx_poses.keys())}.")
+        body_ids = sorted(smplx_poses.keys())
+
     # Fill ignored start frames by copying from the first optimized frame
     if ignore_start_frames > 0:
         with torch.no_grad():

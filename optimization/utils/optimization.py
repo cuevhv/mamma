@@ -14,6 +14,7 @@ from typing import List, Optional
 import time
 import os
 import copy
+from collections import Counter
 
 
 LEFT_IDX=[20,37,38,39,66,25,26,27,67,28,29,30,68,34,35,36,69,31,32,33,70]
@@ -109,6 +110,9 @@ class OptimizeSMPLX:
             self.floor_contacts = {body_id: None for body_id in body_params.keys()}
 
 
+        # A camera that essentially never sees a subject must not vote in that subject's fit:
+        self._gate_unsupported_views()
+
         self.triangulated_contact = None
         self.triangulated_floor_contact = None
         self.triangulated_3d_points = None
@@ -129,6 +133,73 @@ class OptimizeSMPLX:
             self.smplx_betas[body_id] = smplx_betas
             self.smplx_trans[body_id] = smplx_trans
 
+
+    # View-support gate thresholds: a (camera, body) pair counts as supported in
+    # a frame when >= MIN_LANDMARKS of its 512 landmarks are inside the image AND
+    # have visibility > VIS_THRESH; the pair is kept only if >= MIN_FRAME_FRAC of
+    # frames are supported. Support is a property of the (view, person) pair over the
+    # clip, not of frames.
+    _VIEW_SUPPORT_MIN_LANDMARKS = 20
+    _VIEW_SUPPORT_VIS_THRESH = 0.5
+    _VIEW_SUPPORT_MIN_FRAME_FRAC = 0.5
+
+    def _view_support_fractions(self, body_id):
+        """Per-camera support fraction for one body: the fraction of frames with
+        >= _VIEW_SUPPORT_MIN_LANDMARKS in-bounds landmarks at vis >
+        _VIEW_SUPPORT_VIS_THRESH. Shared by the view-support gate (pre-re-ID)
+        and the untriangulatable-body exclusion (post-re-ID)."""
+        vis_list = self.pts2d_vis_weight.get(body_id)
+        if vis_list is None:
+            return None
+        fractions = []
+        for cam_i, (pts, vis) in enumerate(zip(self.pts2d[body_id], vis_list)):
+            w = float(np.asarray(self.cam_widths[cam_i]).reshape(-1)[0])
+            h = float(np.asarray(self.cam_heights[cam_i]).reshape(-1)[0])
+            xy = pts[..., :2]
+            in_bounds = (xy[..., 0] >= 0) & (xy[..., 0] < w) & (xy[..., 1] >= 0) & (xy[..., 1] < h)
+            strong = in_bounds & (vis > self._VIEW_SUPPORT_VIS_THRESH)
+            fractions.append((strong.sum(dim=1) >= self._VIEW_SUPPORT_MIN_LANDMARKS).float().mean().item())
+        return fractions
+
+    def _gate_unsupported_views(self):
+        """Zero the 2D landmarks, visibility and contacts of every unsupported
+        (camera, body) pair, so the pair drops out of triangulation (its points
+        fail the abs-sum>0 validity mask), the reprojection loss (pred_in_img
+        mask), the epipolar re-ID (zero trajectory -> zero affinity), and the
+        contact aggregation alike. Zeroing the points is what removes the view
+        from the reprojection loss — zeroed visibility alone would be clipped
+        back up to vis_clip_value there.
+
+        Safeguard: if gating would leave a body with fewer than 2 supported
+        views (possible only when no camera sees the person for the majority of
+        the clip — e.g. moving cameras or mid-sequence entrances, never observed
+        on rig-style captures), the gate abstains for that body rather than
+        deleting its remaining 2D evidence.
+        """
+        for body_id, cams_pts in self.pts2d.items():
+            supports = self._view_support_fractions(body_id)
+            if supports is None:
+                continue
+            gated = [i for i, s in enumerate(supports) if s < self._VIEW_SUPPORT_MIN_FRAME_FRAC]
+            if gated and len(cams_pts) - len(gated) < 2:
+                print(f"ma_3d: view-support gate: body {body_id} would keep fewer than 2 supported "
+                      f"views — leaving all its views ungated instead of removing its remaining "
+                      f"2D evidence.")
+                continue
+            for cam_i in gated:
+                cams_pts[cam_i].zero_()
+                self.pts2d_vis_weight[body_id][cam_i].zero_()
+                # Contacts too: contact_prob is an unweighted camera mean, and
+                # zeroed visibility would otherwise disable the visible-based
+                # suppression that normally mutes this view's contact junk.
+                if self.contacts[body_id] is not None:
+                    self.contacts[body_id][cam_i].zero_()
+                    self.floor_contacts[body_id][cam_i].zero_()
+                print(f"ma_3d: view-support gate: camera {cam_i} sees body {body_id} in only "
+                      f"{supports[cam_i]:.0%} of frames (needs {self._VIEW_SUPPORT_MIN_FRAME_FRAC:.0%} with "
+                      f">={self._VIEW_SUPPORT_MIN_LANDMARKS} in-bounds points at vis>"
+                      f"{self._VIEW_SUPPORT_VIS_THRESH}) — excluding this view from body "
+                      f"{body_id}'s fit.")
 
     def init_learnable_params(self, smplx_params_size: dict, init_trans_w_extrinsics: bool = False, device: str = "cuda"):
         kwargs = {"dtype": torch.float, "device": device}
@@ -622,6 +693,175 @@ class OptimizeSMPLX:
         return params
 
 
+    def _apply_reid_corrections(self, groups_per_t):
+        """Re-assign pts2d/visibility/contacts according to the cross-view
+        re-ID groups, then clear orphaned donor slots and swap the corrected
+        dicts in. group['body_ids'] maps cam_id -> the original body_id
+        detected as this physical person in that camera.
+
+        Returns (corrections, canonical_ids, quarantined, pts2d_before,
+        pts2d_vis_before). The *_before dicts are the pre-correction
+        assignments, kept for the before/after visualisation; quarantined
+        holds bodies whose detections the association double-booked (to be
+        excluded from the fit by _exclude_unfittable_bodies).
+        """
+        pts2d_before     = self.pts2d
+        pts2d_vis_before = self.pts2d_vis_weight
+
+        new_pts            = copy.deepcopy(self.pts2d)
+        new_pts_vis        = copy.deepcopy(self.pts2d_vis_weight)
+        new_contacts       = copy.deepcopy(self.contacts)
+        new_floor_contacts = copy.deepcopy(self.floor_contacts)
+        corrections        = []   # each swap: {cam_id, group_idx, from_body_id, to_body_id}
+
+        assigned = set()        # (body_id, cam_id) slots that receive data in the re-assignment
+        canonical_ids = set()   # bodies adopted as a physical person by re-ID
+        claimed_sources = {}    # (orig_body_id, cam_id) slot -> canonical_id of the group that consumed it
+        quarantined = set()     # bodies whose detections the association double-booked
+        for group_idx, group in enumerate(groups_per_t):
+            # Canonical person_id: majority vote across cameras, tie-break by min id.
+            counts       = Counter(group['body_ids'].values())
+            canonical_id = min(counts, key=lambda bid: (-counts[bid], bid))
+            # A duplicate canonical election alone is only a warning: a person's
+            # group can legitimately split across disjoint camera sets, and the
+            # per-slot tripwires below still guarantee no detection set is
+            # double-booked. But it can also mean two people share one label
+            # upstream, so say it loudly.
+            if canonical_id in canonical_ids:
+                print(f"ma_3d re-ID: WARNING: two cross-view groups elected the same canonical "
+                      f"body {canonical_id} — benign if one person's group split across "
+                      f"disjoint cameras, suspicious if two people share this label upstream. "
+                      f"Groups: {[g['body_ids'] for g in groups_per_t]}")
+            canonical_ids.add(canonical_id)
+            print(f"Re-ID group {group_idx}: canonical_id={canonical_id}, "
+                  f"body_ids per cam={group['body_ids']}")
+            for cam_id, orig_body_id in group['body_ids'].items():
+                # Tripwires: each detection slot may be consumed by at most one
+                # group, and each receiving slot written by at most one group.
+                # A violation means the association handed one detection set to
+                # two people, or feeds one identity from two conflicting
+                # sources — no bookkeeping can repair that, so quarantine the
+                # bodies involved (they are excluded from the fit) and keep
+                # everyone else. Partial writes into a quarantined body's
+                # slots are moot: the body is popped before the fit. Never
+                # observed on real data; guarded so it can only ever cost the
+                # bodies involved, not the whole scene.
+                if (orig_body_id, cam_id) in claimed_sources:
+                    culprits = {orig_body_id, canonical_id,
+                                claimed_sources[(orig_body_id, cam_id)]}
+                    quarantined |= culprits
+                    print(f"ma_3d re-ID: WARNING: detection slot (body {orig_body_id}, "
+                          f"camera {cam_id}) is claimed by two cross-view groups — the "
+                          f"association handed one detection set to two people. Quarantining "
+                          f"bodies {sorted(culprits)}; the remaining people are unaffected. "
+                          f"Groups: {[g['body_ids'] for g in groups_per_t]}")
+                    continue
+                claimed_sources[(orig_body_id, cam_id)] = canonical_id
+                if (canonical_id, cam_id) in assigned:
+                    culprits = {orig_body_id, canonical_id}
+                    quarantined |= culprits
+                    print(f"ma_3d re-ID: WARNING: receiving slot (body {canonical_id}, "
+                          f"camera {cam_id}) is written by two cross-view groups — the "
+                          f"association feeds one identity from two conflicting sources. "
+                          f"Quarantining bodies {sorted(culprits)}; the remaining people are "
+                          f"unaffected. Groups: {[g['body_ids'] for g in groups_per_t]}")
+                    continue
+                if orig_body_id != canonical_id:
+                    corrections.append({
+                        "cam_id":       cam_id,
+                        "group_idx":    group_idx,
+                        "from_body_id": orig_body_id,
+                        "to_body_id":   canonical_id,
+                    })
+                assigned.add((canonical_id, cam_id))
+                new_pts[canonical_id][cam_id]     = self.pts2d[orig_body_id][cam_id]
+                new_pts_vis[canonical_id][cam_id] = self.pts2d_vis_weight[orig_body_id][cam_id]
+                if self.contacts[orig_body_id] is not None:
+                    new_contacts[canonical_id][cam_id]       = self.contacts[orig_body_id][cam_id]
+                    new_floor_contacts[canonical_id][cam_id] = self.floor_contacts[orig_body_id][cam_id]
+
+        # If a body's detections were given to another body and it received
+        # none in return, blank its old slot (set its 2D points and visibility
+        # weights to zero, so this camera contributes no evidence for it):
+        # after a complete swap or rotation every slot has a new owner and
+        # nothing is cleared, but a donor outside every re-ID group (e.g. an
+        # extra body) would otherwise keep a copy of the detections it gave
+        # away, and the same pixels constraining two bodies destabilises the
+        # joint optimization.
+        for c in corrections:
+            b, cam = c["from_body_id"], c["cam_id"]
+            if (b, cam) in assigned:
+                continue
+            new_pts[b][cam]     = torch.zeros_like(new_pts[b][cam])
+            new_pts_vis[b][cam] = torch.zeros_like(new_pts_vis[b][cam])
+            if new_contacts[b] is not None:
+                new_contacts[b][cam]       = torch.zeros_like(new_contacts[b][cam])
+                new_floor_contacts[b][cam] = torch.zeros_like(new_floor_contacts[b][cam])
+            print(f"ma_3d re-ID: camera {cam}: body {b}'s detections here were re-assigned "
+                  f"to body {c['to_body_id']} and nothing was re-assigned back — clearing "
+                  f"body {b}'s stale duplicate in this camera (a detection belongs to at "
+                  f"most one body).")
+
+        print(f"Re-ID: {len(corrections)} label-swap corrections across "
+              f"{len({c['cam_id'] for c in corrections})} camera(s).")
+
+        self.pts2d            = new_pts
+        self.pts2d_vis_weight = new_pts_vis
+        self.contacts         = new_contacts
+        self.floor_contacts   = new_floor_contacts
+        return corrections, canonical_ids, quarantined, pts2d_before, pts2d_vis_before
+
+    def _exclude_unfittable_bodies(self, canonical_ids, quarantined):
+        """Remove bodies the fit cannot constrain from every per-body dict.
+
+        A body with < 2 cameras of evidence (e.g. an extra body from an
+        over-counted init) cannot be triangulated; fitting it produces a
+        depth-unconstrained ghost whose chaotic parameters destabilise the
+        OTHER bodies through the joint optimization. Exclusion requires two
+        independent signals: (a) cross-view re-ID never adopted the body and
+        (b) fewer than 2 cameras reach gate-level support. Quarantined bodies
+        (double-booked by the association) are excluded unconditionally —
+        their data is ambiguous, and a body constrained by contradictory
+        detections corrupts every other body through the shared solve.
+        """
+        canonical_ids = canonical_ids - quarantined   # quarantine overrides re-ID immunity
+        removable = []
+        for body_id in self.pts2d.keys():
+            if body_id in quarantined:
+                removable.append((body_id, "its detections were double-booked by the "
+                                           "cross-view association (quarantined)"))
+                continue
+            if body_id in canonical_ids:
+                continue
+            supports = self._view_support_fractions(body_id) or []
+            n_supported = sum(1 for s in supports if s >= self._VIEW_SUPPORT_MIN_FRAME_FRAC)
+            if n_supported < 2:
+                removable.append((body_id, f"cross-view re-ID never adopted it as a person "
+                                           f"and only {n_supported} camera(s) reach gate-level "
+                                           f"support for it, so it cannot be meaningfully "
+                                           f"triangulated"))
+        if removable and len(removable) == len(self.poses):
+            if quarantined:
+                raise RuntimeError(
+                    "ma_3d: every body is either quarantined by a re-ID conflict or has "
+                    "fewer than 2 cameras of evidence — nothing is left to fit. Inspect the "
+                    "cross-view association (groups logged above) and this sequence's 2D inputs.")
+            print("ma_3d: every body has fewer than 2 cameras of evidence — keeping them all "
+                  "(refusing to empty the scene); check this sequence's 2D inputs.")
+            return
+        for body_id, reason in removable:
+            for attr in ("pts2d", "pts2d_vis_weight", "contacts", "floor_contacts",
+                         "hand_joints2d", "poses", "smplx_betas", "smplx_trans"):
+                getattr(self, attr).pop(body_id, None)
+            for attr in ("triangulated_3d_points", "triangulated_contact",
+                         "triangulated_floor_contact"):
+                d = getattr(self, attr)
+                if isinstance(d, dict):
+                    d.pop(body_id, None)
+            print(f"ma_3d: excluding body {body_id} from the fit — {reason}; fitting it "
+                  f"would produce a wrongly-constrained body that also degrades the other "
+                  f"bodies through the joint optimization.")
+
     def fit(self, optim_verts:bool=True, optim_cfg=None):
         time_start = time.time()
         use_v_template = optim_cfg["use_v_template"]
@@ -632,16 +872,12 @@ class OptimizeSMPLX:
         #       preceded the re-ID inside the loop is eliminated, and
         #   (B) re-ID runs exactly once — running it on every optimization stage
         #       would be wasteful (it is idempotent once pts2d is corrected).
-        from collections import Counter
         from utils.epipolar_association import mvpose_style_associate_and_triangulate_temporal
         from utils.reid_viz import visualize_reid, plot_reid_stats
 
-        # Triangulate initial 3D points from the raw (possibly label-swapped) detections.
-        triangulated_points_world_dict, _, floor_contact_world_dict, contact_world_dict = \
-            self.triangulate_3d_from_2d_points(skip_first_t_frames=0)
-        self.triangulated_3d_points     = triangulated_points_world_dict
-        self.triangulated_contact       = contact_world_dict
-        self.triangulated_floor_contact = floor_contact_world_dict
+        # No triangulation happens before re-ID: the association below works on
+        # 2D trajectories only, and the one triangulation the fit consumes runs
+        # AFTER the corrections.
 
         # Multi-view temporal association to resolve label swaps across cameras.
         print("Running multi-view re-ID association...")
@@ -662,48 +898,13 @@ class OptimizeSMPLX:
         )
         print(f"Cross-view re-ID took {time.time() - _reid_t0:.2f} seconds.")
 
-        # Re-assign pts2d using re-ID group associations.
-        # group['body_ids'] maps cam_id -> original body_id detected as this
-        # physical person in that camera.  Snapshot the original assignment
-        # first so the visualisation can show before/after.
-        pts2d_before_viz     = self.pts2d
-        pts2d_vis_before_viz = self.pts2d_vis_weight
+        # Re-assign pts2d (+vis/contacts) according to the re-ID groups; the
+        # *_before snapshots feed the before/after visualisation below.
+        (corrections, canonical_ids, quarantined,
+         pts2d_before_viz, pts2d_vis_before_viz) = self._apply_reid_corrections(groups_per_t)
 
-        new_pts            = copy.deepcopy(self.pts2d)
-        new_pts_vis        = copy.deepcopy(self.pts2d_vis_weight)
-        new_contacts       = copy.deepcopy(self.contacts)
-        new_floor_contacts = copy.deepcopy(self.floor_contacts)
-        corrections        = []   # each swap: {cam_id, group_idx, from_body_id, to_body_id}
-
-        for group_idx, group in enumerate(groups_per_t):
-            # Canonical person_id: majority vote across cameras, tie-break by min id.
-            counts       = Counter(group['body_ids'].values())
-            canonical_id = min(counts, key=lambda bid: (-counts[bid], bid))
-            print(f"Re-ID group {group_idx}: canonical_id={canonical_id}, "
-                  f"body_ids per cam={group['body_ids']}")
-            for cam_id, orig_body_id in group['body_ids'].items():
-                if orig_body_id != canonical_id:
-                    corrections.append({
-                        "cam_id":       cam_id,
-                        "group_idx":    group_idx,
-                        "from_body_id": orig_body_id,
-                        "to_body_id":   canonical_id,
-                    })
-                new_pts[canonical_id][cam_id]     = self.pts2d[orig_body_id][cam_id]
-                new_pts_vis[canonical_id][cam_id] = self.pts2d_vis_weight[orig_body_id][cam_id]
-                if self.contacts[orig_body_id] is not None:
-                    new_contacts[canonical_id][cam_id]       = self.contacts[orig_body_id][cam_id]
-                    new_floor_contacts[canonical_id][cam_id] = self.floor_contacts[orig_body_id][cam_id]
-
-        print(f"Re-ID: {len(corrections)} label-swap corrections across "
-              f"{len({c['cam_id'] for c in corrections})} camera(s).")
-
-        self.pts2d            = new_pts
-        self.pts2d_vis_weight = new_pts_vis
-        self.contacts         = new_contacts
-        self.floor_contacts   = new_floor_contacts
-
-        # Re-triangulate with the corrected 2D assignments.
+        # Triangulate with the corrected 2D assignments (the fit's only
+        # full triangulation pass).
         triangulated_points_world_dict, _, floor_contact_world_dict, contact_world_dict = \
             self.triangulate_3d_from_2d_points(skip_first_t_frames=0)
         self.triangulated_3d_points     = triangulated_points_world_dict
@@ -727,6 +928,10 @@ class OptimizeSMPLX:
                 )
             except Exception as e:
                 print(f"[reid_viz] Visualisation failed (non-fatal): {e}")
+
+        # Drop bodies the fit cannot constrain (quarantined or < 2 cameras).
+        self._exclude_unfittable_bodies(canonical_ids, quarantined)
+
         # ── Per-stage optimization loop ───────────────────────────────────────
 
         for run_name in optim_cfg["optim"].keys():
