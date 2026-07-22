@@ -54,6 +54,7 @@ from lib.datasets.utils_eval import gen_trans_from_patch_cv, expand_to_aspect_ra
 from kornia.geometry.transform import warp_affine
 from kornia.filters import gaussian_blur2d
 from utils.post_video_from_imgs import process_sequence
+from utils.collage import labeled_collage
 import argparse
 from collections.abc import Mapping
 from omegaconf import OmegaConf, DictConfig, ListConfig
@@ -322,19 +323,27 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
                     cv2.circle(pred_uncertainty_img, (int(x_pred), int(y_pred)), 4, (0, int(255*(1-sigma)), int(255*sigma)), -1)
                     count += 1
 
-                cv2.putText(pred_img, f"{frame_n:05d}", (10, 20), fontScale=1, color=(0, 0, 255), fontFace=cv2.FONT_HERSHEY_SIMPLEX, thickness=3)
-                cv2.putText(pred_vis_img, f"Pred_vis", (10, 20), fontScale=1, color=(0, 0, 255), fontFace=cv2.FONT_HERSHEY_SIMPLEX, thickness=3)
-                cv2.putText(pred_not_vis_img, f"Pred_not_vis", (10, 20), fontScale=1, color=(0, 0, 255), fontFace=cv2.FONT_HERSHEY_SIMPLEX, thickness=3)
-                cv2.putText(pred_uncertainty_img, f"Pred_uncertainty", (10, 20), fontScale=1, color=(0, 0, 255), fontFace=cv2.FONT_HERSHEY_SIMPLEX, thickness=3)
-
                 uv_img = cv2.resize(uv_img, (pred_img.shape[0], pred_img.shape[0]))[:, :, :3]
 
-                pred_img = np.concatenate([pred_img, uv_img, pred_vis_img, pred_not_vis_img, pred_uncertainty_img], axis=1)
+                # Banner-labeled collage: labels live on a strip above each tile
+                # (rendered post-downscale with a TrueType font) instead of
+                # cv2.putText on the pixels, which came out blurry in the video.
+                tiles = [(pred_img, "Input crop")]
                 if mask_crop is not None:
                     img_mask = (mask_crop.repeat(3, axis=-1) * 255).astype(np.uint8)
-                    pred_img = np.concatenate([pred_img, img_mask], axis=1)
-                    pred_img = np.concatenate([pred_img, pred_contact_img, pred_floor_contact_img], axis=1)
-                pred_img = cv2.resize(pred_img, (pred_img.shape[1]//2, pred_img.shape[0]//2))
+                    tiles.append((img_mask, "Segmentation mask"))
+                tiles += [
+                    (uv_img, "UV visibility"),
+                    (pred_vis_img, "Visible landmarks"),
+                    (pred_not_vis_img, "Occluded landmarks"),
+                    (pred_uncertainty_img, "Uncertainty (red = high)"),
+                ]
+                if mask_crop is not None:
+                    tiles += [
+                        (pred_contact_img, "Contact (green)"),
+                        (pred_floor_contact_img, "Floor contact (green)"),
+                    ]
+                pred_img = labeled_collage(tiles, downscale=2, corner_text=f"frame {frame_n:05d}")
 
                 os.makedirs(folder_path, exist_ok=True)
                 cv2.imwrite(f"{folder_path}/img_{frame_n:04d}.jpg", pred_img)
