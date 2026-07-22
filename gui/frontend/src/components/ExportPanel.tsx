@@ -230,7 +230,7 @@ export function ExportJobStatus({ job }: { job: Job | null }) {
               ? <span className="inline-flex items-center gap-2 text-status-failed"><AlertTriangle className="w-4 h-4" /> {job.error}</span>
               : <span className="inline-flex items-center gap-2 text-status-completed"><Check className="w-4 h-4" /> {multi ? `exported ${res.filter(r => r.ok).length}/${res.length} sequences · ${job.outputs.length} file(s)` : `wrote ${job.outputs.length} file(s)`}</span>}
             {multi ? (
-              <ul className="mt-2 space-y-0.5">
+              <ul className="mt-2 space-y-0.5 max-h-48 overflow-y-auto pr-1">
                 {res.map(r => (
                   <li key={`${r.tag}/${r.capture}/${r.seq}`} className={`flex items-center gap-1.5 text-xs ${r.ok ? 'text-foreground-faint' : 'text-status-failed'}`}>
                     {r.ok ? <Check className="w-3 h-3 flex-shrink-0" /> : <AlertTriangle className="w-3 h-3 flex-shrink-0" />}
@@ -239,7 +239,7 @@ export function ExportJobStatus({ job }: { job: Job | null }) {
                 ))}
               </ul>
             ) : job.outputs.length > 0 ? (
-              <ul className="mt-2 space-y-0.5">
+              <ul className="mt-2 space-y-0.5 max-h-48 overflow-y-auto pr-1">
                 {job.outputs.map(o => (
                   <li key={o} className="flex items-start gap-1.5 text-foreground-faint text-xs font-mono"><FolderOpen className="w-3 h-3 flex-shrink-0 mt-0.5" /><span className="min-w-0 break-all">{o}</span></li>
                 ))}
