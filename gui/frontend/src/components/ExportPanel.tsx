@@ -40,7 +40,7 @@ export function fmtWhen(mtime?: number): string {
     { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-export function ExportPanel({ targets, readiness, onNeedTools, setupLabel }: {
+export function ExportPanel({ targets, readiness, onNeedTools, setupLabel, hideJobStatus = false, onJobChange }: {
   /** Sequences to export — one runs a single export, many run a sequential batch. */
   targets: ExportTarget[];
   /** Pass readiness to share one source of truth (tab); omit to let the panel fetch it (results). */
@@ -51,6 +51,11 @@ export function ExportPanel({ targets, readiness, onNeedTools, setupLabel }: {
    *  onNeedTools — used on the results page to point at the Exporter tab. Omit on
    *  the Exporter tab itself, where the setup panel is already present (no link). */
   setupLabel?: string;
+  /** Suppress the inline job status/results/log so a host can render it elsewhere
+   *  (the Exporter workbench shows it in a dedicated log card via ExportJobStatus). */
+  hideJobStatus?: boolean;
+  /** Notified whenever the internal job state changes, so a host can mirror it. */
+  onJobChange?: (job: Job | null) => void;
 }) {
   const [ownReady, setOwnReady] = useState<Readiness | null>(null);
   const ready = readiness !== undefined ? readiness : ownReady;
@@ -89,6 +94,9 @@ export function ExportPanel({ targets, readiness, onNeedTools, setupLabel }: {
     const t = setInterval(async () => setJob(await jget<Job>(`/api/exporter/job/${job.id}`)), 1500);
     return () => clearInterval(t);
   }, [job]);
+
+  // Mirror the internal job to a host that renders the status elsewhere.
+  useEffect(() => { onJobChange?.(job); }, [job, onJobChange]);
 
   const chosen = ALL_FORMATS.filter(f => formats[f.id]).map(f => f.id);
   const needsBlender = chosen.some(f => ALL_FORMATS.find(x => x.id === f)?.blender);
@@ -192,49 +200,57 @@ export function ExportPanel({ targets, readiness, onNeedTools, setupLabel }: {
           </button>
           {targets.length === 0 && <span className="text-foreground-faint text-xs">choose at least one sequence</span>}
         </div>
-        {job && (
-          <div className="mt-3 text-sm">
-            {job.state === 'running' && (
-              <span className="inline-flex items-center gap-2 text-status-running">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                {job.progress && job.progress.total > 1
-                  ? `exporting ${Math.min(job.progress.done + 1, job.progress.total)}/${job.progress.total}${job.progress.current ? ` — ${job.progress.current}` : ''}…`
-                  : 'exporting…'}
-              </span>
-            )}
-            {(job.state === 'ready' || job.state === 'error') && (() => {
-              const res = job.results ?? [];
-              const multi = res.length > 1;
-              return (
-                <div>
-                  {job.state === 'error'
-                    ? <span className="inline-flex items-center gap-2 text-status-failed"><AlertTriangle className="w-4 h-4" /> {job.error}</span>
-                    : <span className="inline-flex items-center gap-2 text-status-completed"><Check className="w-4 h-4" /> {multi ? `exported ${res.filter(r => r.ok).length}/${res.length} sequences · ${job.outputs.length} file(s)` : `wrote ${job.outputs.length} file(s)`}</span>}
-                  {multi ? (
-                    <ul className="mt-2 space-y-0.5">
-                      {res.map(r => (
-                        <li key={`${r.tag}/${r.capture}/${r.seq}`} className={`flex items-center gap-1.5 text-xs ${r.ok ? 'text-foreground-faint' : 'text-status-failed'}`}>
-                          {r.ok ? <Check className="w-3 h-3 flex-shrink-0" /> : <AlertTriangle className="w-3 h-3 flex-shrink-0" />}
-                          <span className="truncate">{r.capture}/{r.seq} — {r.ok ? `${r.outputs.length} file(s)` : (r.error || 'failed')}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : job.outputs.length > 0 ? (
-                    <ul className="mt-2 space-y-0.5">
-                      {job.outputs.map(o => (
-                        <li key={o} className="flex items-start gap-1.5 text-foreground-faint text-xs font-mono"><FolderOpen className="w-3 h-3 flex-shrink-0 mt-0.5" /><span className="min-w-0 break-all">{o}</span></li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </div>
-              );
-            })()}
-            {job.state === 'running' && job.log_tail.length > 0 && (
-              <pre className="mt-2 text-[11px] text-foreground-faint font-mono max-h-32 overflow-auto whitespace-pre-wrap break-all">{job.log_tail.slice(-8).join('\n')}</pre>
-            )}
-          </div>
-        )}
+        {!hideJobStatus && job && <div className="mt-3"><ExportJobStatus job={job} /></div>}
       </div>
+    </div>
+  );
+}
+
+/** The live export job status — running progress, per-sequence results, output
+ *  paths and a log tail. Presentational (null when there's no job) so it can be
+ *  rendered inline by ExportPanel or in a separate log card on the workbench. */
+export function ExportJobStatus({ job }: { job: Job | null }) {
+  if (!job) return null;
+  return (
+    <div className="text-sm">
+      {job.state === 'running' && (
+        <span className="inline-flex items-center gap-2 text-status-running">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          {job.progress && job.progress.total > 1
+            ? `exporting ${Math.min(job.progress.done + 1, job.progress.total)}/${job.progress.total}${job.progress.current ? ` — ${job.progress.current}` : ''}…`
+            : 'exporting…'}
+        </span>
+      )}
+      {(job.state === 'ready' || job.state === 'error') && (() => {
+        const res = job.results ?? [];
+        const multi = res.length > 1;
+        return (
+          <div>
+            {job.state === 'error'
+              ? <span className="inline-flex items-center gap-2 text-status-failed"><AlertTriangle className="w-4 h-4" /> {job.error}</span>
+              : <span className="inline-flex items-center gap-2 text-status-completed"><Check className="w-4 h-4" /> {multi ? `exported ${res.filter(r => r.ok).length}/${res.length} sequences · ${job.outputs.length} file(s)` : `wrote ${job.outputs.length} file(s)`}</span>}
+            {multi ? (
+              <ul className="mt-2 space-y-0.5">
+                {res.map(r => (
+                  <li key={`${r.tag}/${r.capture}/${r.seq}`} className={`flex items-center gap-1.5 text-xs ${r.ok ? 'text-foreground-faint' : 'text-status-failed'}`}>
+                    {r.ok ? <Check className="w-3 h-3 flex-shrink-0" /> : <AlertTriangle className="w-3 h-3 flex-shrink-0" />}
+                    <span className="truncate">{r.capture}/{r.seq} — {r.ok ? `${r.outputs.length} file(s)` : (r.error || 'failed')}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : job.outputs.length > 0 ? (
+              <ul className="mt-2 space-y-0.5">
+                {job.outputs.map(o => (
+                  <li key={o} className="flex items-start gap-1.5 text-foreground-faint text-xs font-mono"><FolderOpen className="w-3 h-3 flex-shrink-0 mt-0.5" /><span className="min-w-0 break-all">{o}</span></li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        );
+      })()}
+      {job.state === 'running' && job.log_tail.length > 0 && (
+        <pre className="mt-2 text-[11px] text-foreground-faint font-mono max-h-32 overflow-auto whitespace-pre-wrap break-all">{job.log_tail.slice(-8).join('\n')}</pre>
+      )}
     </div>
   );
 }

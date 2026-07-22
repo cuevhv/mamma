@@ -134,7 +134,7 @@ function truncate(s: string, n: number): string {
  * surface a friendly fallback message so users know the file isn't
  * corrupted — they just need a native player.
  */
-function VideoPlayer({ relPath }: { relPath: string }) {
+export function VideoPlayer({ relPath }: { relPath: string }) {
   const [status, setStatus] = useState<'loading' | 'ok' | 'failed'>('loading');
   const [launching, setLaunching] = useState(false);
   // Re-mounting via key={relPath} would also work, but resetting state

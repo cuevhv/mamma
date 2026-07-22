@@ -11,6 +11,7 @@ export const STEP_LABELS: Record<string, string> = {
   ma_2d: '2D Landmarks',
   ma_3d: '3D Fitting',
   ma_vis: 'Visualization',
+  export: 'Exported animation files',
 };
 
 export function stepLabel(name: string): string {
