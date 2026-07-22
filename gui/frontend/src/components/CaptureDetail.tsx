@@ -96,6 +96,11 @@ interface CaptureData {
   cams?: string[];
   camFps?: number | null;
   calib?: string | null;
+  /** Resolved absolute calib path (null when it doesn't exist on disk) and
+   *  whether it's a plain file — only then is the card's name clickable;
+   *  a calib DIRECTORY stays plain text (no single file to show). */
+  calibPath?: string | null;
+  calibIsFile?: boolean;
   dataPath?: string | null;
   captureJsonPath?: string | null;
   ioiRoot?: string | null;
@@ -675,7 +680,25 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       <StatItem label="Sequences" value={String(numberOfSequences)} />
                       <StatItem label="Runs" value={String(taskOptions.length)} />
                       {captureData.calib && (
-                        <StatItem label="Calibration" value={captureData.calib} title={captureData.calib} mono />
+                        captureData.calibIsFile && captureData.calibPath ? (
+                          <StatItem
+                            label="Calibration"
+                            mono
+                            value={
+                              <button
+                                onClick={() => setTaskConfigViewer({ name: captureData.calib!, path: captureData.calibPath! })}
+                                title={`View calibration file (${captureData.calibPath})`}
+                                className="max-w-full truncate text-primary hover:underline cursor-pointer"
+                              >
+                                {captureData.calib}
+                              </button>
+                            }
+                          />
+                        ) : (
+                          // Calib dirs (or unresolvable paths) have no single
+                          // file to show — name stays plain text.
+                          <StatItem label="Calibration" value={captureData.calib} title={captureData.calib} mono />
+                        )
                       )}
                     </div>
                     {captureData.captureJsonPath && (

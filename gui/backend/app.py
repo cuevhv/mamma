@@ -815,6 +815,8 @@ def get_capture_detail(capture_name):
     cams: list[str] = []
     cam_fps = None
     calib = None
+    calib_path = None      # resolved absolute path, when it exists on disk
+    calib_is_file = False  # True → the card renders the name as a view button
     data_path = None
     content = None
     capture_json_path = details.get("capture_json_path")
@@ -831,6 +833,17 @@ def get_capture_detail(capture_name):
                 calib_val = content.get("calib")
                 if isinstance(calib_val, str) and calib_val:
                     calib = os.path.basename(calib_val)
+                    # Resolve like _resolve_calib_arg: relative paths anchor
+                    # to the capture.json's directory. Only a plain FILE gets
+                    # a clickable name in the card — a calib directory stays
+                    # text (there's no single file to show).
+                    raw = calib_val.strip().replace("\\", "/")
+                    resolved = raw if os.path.isabs(raw) else os.path.normpath(
+                        os.path.join(os.path.dirname(os.path.abspath(capture_json_path)), raw)
+                    )
+                    if os.path.exists(resolved):
+                        calib_path = resolved
+                        calib_is_file = os.path.isfile(resolved)
                 cap_root_abs = _resolve_capture_root_abs(capture_json_path, content)
                 data_path = _display_capture_path(cap_root_abs)
         except (OSError, ValueError):
@@ -855,6 +868,8 @@ def get_capture_detail(capture_name):
         "cams": cams,
         "camFps": cam_fps,
         "calib": calib,
+        "calibPath": calib_path,
+        "calibIsFile": calib_is_file,
         "dataPath": data_path,
         "captureJsonPath": capture_json_path,
         "ioiRoot": details.get("ioi_root"),
