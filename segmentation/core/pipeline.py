@@ -104,6 +104,17 @@ DEFAULT_ASSIGNMENT_CONFIG = {
     "masks": {
         "merge_duplicate_tracklets": True,
         "merge_iou_threshold": 0.95,
+        # Track-then-match seed prescreen: bound the seeded tracklets to the
+        # top-M candidates per init subject (epipolar+CLIP shortlist) before
+        # any tracking runs. "auto" (default) = engage only when detections >
+        # N*M AND epipolar calibration is available — clean scenes are
+        # untouched by construction; "off" = seed every detection (pre-v1.1.0
+        # behaviour). Identity is still decided after tracking by the remap.
+        # Validated on 444 archived ttm camera events (0 subject drops) +
+        # GT-silhouette no-op check; see experimental_scripts/
+        # seed_prescreen_validation.html (private).
+        "seed_prescreen": "auto",
+        "seed_candidates_per_subject": 3,
         "truncate_relatched_tracklets": True,
         "relatch_iou": 0.9,
         "relatch_min_run_frames": 5,
@@ -207,6 +218,9 @@ class SegmentMultipleFrames:
         self.expected_subjects = None
         self.subject_feature_bank = {}
         self.subject_crop_bank = {}
+        # Cameras completed this run, usable as geometric references by the
+        # track-then-match seed prescreen (see _prescreen_seed_candidates).
+        self._prescreen_refs = []
         if assignment_config:
             self.set_assignment_config(assignment_config)
         self.device = get_device()
@@ -3723,7 +3737,188 @@ class SegmentMultipleFrames:
             best_dets = sorted(best_dets, key=lambda x: float(x[3]), reverse=True)[:max_seed]
         return best_frame, best_dets
 
-    def _detect_and_track_local(self, frames, output_path, frame_id=None, expected_subjects=None):
+    def _register_prescreen_reference(self, cam_data, output_path, obj_ids, mask_data=None):
+        """Record a completed camera as a geometric reference for the seed
+        prescreen of later cameras. Its per-frame mask PNGs give exact
+        same-frame subject positions; the slim mask cache is the fallback."""
+        try:
+            self._prescreen_refs.append({
+                "cam_name": str(cam_data.get("cam_name", "?")) if isinstance(cam_data, dict) else "?",
+                "cam_data": cam_data,
+                "mask_dir": os.path.join(output_path, "masks"),
+                "obj_ids": [int(o) for o in obj_ids],
+                "mask_data": mask_data,
+            })
+        except Exception as exc:  # noqa: BLE001 — a bad ref must not fail the camera
+            self._log_warn(f"Could not register prescreen reference: {exc}")
+
+    def _prescreen_ref_point(self, ref, oid, frame_idx):
+        """Subject ``oid``'s image position in a reference camera at
+        ``frame_idx``: exact-frame from the per-frame mask PNG when present,
+        else the nearest sampled centroid from the slim mask cache."""
+        png = os.path.join(ref["mask_dir"], f"mask_{int(frame_idx):04d}_{int(oid) + 1:02d}.png")
+        if os.path.isfile(png):
+            m = cv2.imread(png, cv2.IMREAD_GRAYSCALE)
+            if m is not None and m.max() > 0:
+                return self._mask_centroid_xy1(m > 0)
+        md = ref.get("mask_data")
+        if md is not None and oid in md:
+            return self._reference_point_from_mask_data(md[oid], frame_idx)
+        return None
+
+    def _prescreen_seed_candidates(self, cam_name, frames, detections, seed_frame,
+                                   mask_data, source_cam_data, target_cam_data):
+        """Bound the track-then-match seed set to the strongest candidates per
+        init subject (top-M per subject, union) BEFORE any tracking runs.
+
+        Propagation cost and GPU memory scale with the number of seeded
+        tracklets, so a bystander-heavy view (12+ detections for a 1-subject
+        scene) can exhaust the GPU even with memory pruning on. Shortlisting
+        reuses the same epipolar+CLIP scoring the cross-camera remap already
+        trusts for the final identity decision, asked a strictly easier
+        question: not "which candidate IS subject s" but "which M candidates
+        could be". Identity is still decided after tracking, by the remap,
+        with multi-frame evidence. Per-subject slots (never a global top-K)
+        mean an occluded subject only competes with candidates for its own
+        identity, never with brighter bystanders matching someone else.
+        References are the init camera plus every camera already completed in
+        this run: multiple epipolar lines intersect, collapsing the
+        depth-ambiguity of a single reference view.
+
+        Engages only when len(detections) > N*M and epipolar calibration is
+        available; otherwise returns ``detections`` unchanged, so clean scenes
+        stay byte-identical. Every dropped candidate is logged with its
+        scores. Any internal error falls back to the unfiltered detections
+        (current validated behaviour), loudly.
+        """
+        mask_cfg = self.assignment_config.get("masks", {}) or {}
+        mode = str(mask_cfg.get("seed_prescreen", "off") or "off").strip().lower()
+        if mode in ("off", "false", "0", "no", "disabled", "none"):
+            return detections
+        explicit = mode in ("on", "true", "1", "yes", "enabled")
+
+        subjects = sorted(int(o) for o in (mask_data or {}).keys())
+        n_subjects = len(subjects)
+        m_per = max(2, int(mask_cfg.get("seed_candidates_per_subject", 3) or 3))
+        k = len(detections)
+        if n_subjects == 0 or k <= n_subjects * m_per:
+            return detections
+
+        try:
+            # ── References: init camera + every camera completed this run ──
+            refs = []
+            if isinstance(source_cam_data, dict):
+                init_name = str(source_cam_data.get("cam_name", "") or "")
+                refs.append({
+                    "cam_name": init_name or "init",
+                    "cam_data": source_cam_data,
+                    "mask_dir": os.path.join(self.output_path, init_name, "masks"),
+                    "obj_ids": subjects,
+                    "mask_data": mask_data,
+                })
+            refs.extend(self._prescreen_refs)
+
+            usable = []
+            for ref in refs:
+                f_matrix = self._compute_fundamental_matrix(ref["cam_data"], target_cam_data)
+                if f_matrix is not None:
+                    usable.append((ref, f_matrix))
+            if not usable:
+                log = self._log_warn if explicit else self._log_info
+                log(f"[{cam_name}] Seed prescreen: no epipolar calibration available — "
+                    f"appearance-only shortlisting is unreliable, keeping all {k} detections.")
+                return detections
+
+            cfg = self._get_matching_cfg()
+            clip_weight = float(cfg.get("clip_weight", 0.35))
+            epipolar_weight = float(cfg.get("epipolar_weight", 0.65))
+            image_size = frames.image_size if len(frames) > 0 else None
+            sigma_px, max_dist_px, _ = self._resolve_epipolar_px_params(cfg, image_size=image_size)
+
+            # Candidate centroids (bbox centers — well within the epipolar
+            # sigma of a mask centroid) and CLIP features (one batched forward).
+            cand_pts = []
+            for _crop, _feat, bbox, _score in detections:
+                x1, y1, x2, y2 = [float(v) for v in np.asarray(bbox).reshape(-1)[:4]]
+                cand_pts.append(np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0, 1.0], dtype=np.float64))
+            feats = self._encode_clip_batch([d[0] for d in detections])
+            cand_feats = F.normalize(torch.stack([f.reshape(-1) for f in feats], dim=0), dim=1)
+
+            s_clip = np.zeros((n_subjects, k), dtype=np.float32)
+            for row, oid in enumerate(subjects):
+                gallery, _ = self._get_subject_gallery(mask_data, oid)
+                if gallery is None:
+                    continue
+                _, sims = cosine_knn(cand_feats, gallery, topk=1)
+                s_clip[row] = sims.squeeze(1).cpu().numpy()
+
+            epi_sum = np.zeros((n_subjects, k), dtype=np.float64)
+            epi_cnt = np.zeros((n_subjects,), dtype=np.int32)
+            for ref, f_matrix in usable:
+                for row, oid in enumerate(subjects):
+                    if oid not in ref.get("obj_ids", subjects):
+                        continue
+                    ref_pt = self._prescreen_ref_point(ref, oid, seed_frame)
+                    if ref_pt is None:
+                        continue
+                    scores_this_ref = np.zeros((k,), dtype=np.float64)
+                    ok = True
+                    for col in range(k):
+                        score, _dist = self._epipolar_score(
+                            f_matrix=f_matrix, x1=ref_pt, x2=cand_pts[col],
+                            sigma_px=sigma_px, max_dist_px=max_dist_px)
+                        if score is None:
+                            ok = False
+                            break
+                        scores_this_ref[col] = score
+                    if ok:
+                        epi_sum[row] += scores_this_ref
+                        epi_cnt[row] += 1
+
+            fused = np.zeros((n_subjects, k), dtype=np.float64)
+            for row in range(n_subjects):
+                if epi_cnt[row] > 0:
+                    fused[row] = (epipolar_weight * (epi_sum[row] / epi_cnt[row])
+                                  + clip_weight * s_clip[row])
+                else:
+                    fused[row] = s_clip[row]
+
+            keep = set()
+            for row in range(n_subjects):
+                for col in np.argsort(-fused[row])[:m_per]:
+                    keep.add(int(col))
+            # Never track fewer candidates than there are subjects.
+            if len(keep) < min(n_subjects, k):
+                for col in np.argsort(-fused.max(axis=0)):
+                    keep.add(int(col))
+                    if len(keep) >= min(n_subjects, k):
+                        break
+
+            dropped = [c for c in range(k) if c not in keep]
+            if not dropped:
+                return detections
+            n_ref_names = [r["cam_name"] for r, _ in usable]
+            self._log_info(
+                f"[{cam_name}] Seed prescreen: keeping {len(keep)} of {k} detections "
+                f"(top-{m_per} per subject x {n_subjects} subject(s); references: "
+                f"{', '.join(n_ref_names)}).")
+            for col in dropped:
+                row = int(np.argmax(fused[:, col]))
+                epi_part = (epi_sum[row, col] / epi_cnt[row]) if epi_cnt[row] > 0 else float("nan")
+                self._log_info(
+                    f"[{cam_name}] Seed prescreen: dropping detection {col} "
+                    f"(bbox center {cand_pts[col][0]:.0f},{cand_pts[col][1]:.0f}): best fused score "
+                    f"{fused[row, col]:.3f} vs subject {subjects[row]} (epi {epi_part:.3f}, "
+                    f"clip {s_clip[row, col]:.3f}) — outside every subject's top-{m_per}.")
+            return [detections[i] for i in sorted(keep)]
+        except Exception as exc:  # noqa: BLE001 — fall back to validated behaviour, loudly
+            self._log_warn(
+                f"[{cam_name}] Seed prescreen failed ({type(exc).__name__}: {exc}) — "
+                f"keeping all {k} detections (pre-prescreen behaviour).")
+            return detections
+
+    def _detect_and_track_local(self, frames, output_path, frame_id=None, expected_subjects=None,
+                                mask_data=None, source_cam_data=None, target_cam_data=None):
         """Detect people on one seed frame, seed each as an arbitrary LOCAL obj id,
         propagate forward+reverse, and post-process. Backend-neutral track step for
         the track-then-match path (sam2 / sam3 / sam3_prompt_light) — no cross-camera
@@ -3739,6 +3934,10 @@ class SegmentMultipleFrames:
         if not detections:
             self._log_warn(f"[{cam_name}] No person detections for track-then-match seeding.")
             return None, None, None
+        if mask_data is not None:
+            detections = self._prescreen_seed_candidates(
+                cam_name, frames, detections, best_frame,
+                mask_data, source_cam_data, target_cam_data)
         self._log_info(
             f"[{cam_name}] Seeding {len(detections)} local tracklets on frame {best_frame} "
             "(track-then-match)."
@@ -3806,7 +4005,9 @@ class SegmentMultipleFrames:
         updates the feature bank — gallery stays init + multiview-bootstrap."""
         cam_name = frames.cam_name
         local_ids, video_segments, best_frame = self._detect_and_track_local(
-            frames, output_path, expected_subjects=expected_subjects)
+            frames, output_path, expected_subjects=expected_subjects,
+            mask_data=mask_data, source_cam_data=source_cam_data,
+            target_cam_data=target_cam_data)
         if local_ids is None:
             # No tracklets in this camera (nothing detected/tracked). Return a
             # truthful empty result — never the init camera's mask_data, which
@@ -3820,6 +4021,11 @@ class SegmentMultipleFrames:
             source_cam_data=source_cam_data, target_cam_data=target_cam_data,
         )
         save_masks = self._build_masks_from_remap(frames, video_segments, id_remap, output_path)
+        # This camera's per-frame masks are now on disk — register it as a
+        # geometric reference for later cameras' seed prescreen.
+        self._register_prescreen_reference(
+            target_cam_data if isinstance(target_cam_data, dict) else {},
+            output_path, obj_ids=sorted(set(id_remap.values())), mask_data=save_masks)
         if hasattr(video_segments, "close"):
             video_segments.close()
         if torch.cuda.is_available():
