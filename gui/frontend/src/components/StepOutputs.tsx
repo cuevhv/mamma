@@ -64,6 +64,15 @@ function personIdOf(name: string): string | null {
   return m ? m[2] : null;
 }
 
+// The per-sequence config each step dumps into its output root, so the header
+// can offer a `cfg` shortcut. ma_masks writes the resolved assignment config
+// (reflects --sam_version / --cfg + injected flags); ma_3d copies the selected
+// --config_file verbatim. Steps without an entry get no cfg button.
+const STEP_CONFIG_FILE: Record<string, string> = {
+  ma_masks: 'config.yaml',
+  ma_3d: 'run_config.yaml',
+};
+
 /**
  * One step's slice of the Outputs explorer. Owns its own breadcrumb/listing
  * state so the parent can render N of these stacked vertically without each
@@ -100,6 +109,9 @@ export function StepOutputs({
    *  user can copy it and open it in their OS file explorer. */
   const [absPath, setAbsPath] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  /** Filename of this step's dumped run-config (see STEP_CONFIG_FILE) when it
+   *  exists at the step root, else null. Drives the header `cfg` button. */
+  const [cfgFile, setCfgFile] = useState<string | null>(null);
   const sectionRef = useRef<HTMLDivElement | null>(null);
 
   // Reset back to the step's root when the surrounding selection (task /
@@ -107,6 +119,27 @@ export function StepOutputs({
   useEffect(() => {
     setRelPath(baseRelPath);
   }, [baseRelPath]);
+
+  // Probe the step root for this step's dumped run-config so the header can
+  // show a `cfg` shortcut. Independent of in-section navigation (the file
+  // always sits at baseRelPath, not in subfolders) and of collapse state, so
+  // the button behaves like out/err. Hidden when the run predates config
+  // dumping or the step doesn't emit one.
+  useEffect(() => {
+    const wanted = STEP_CONFIG_FILE[step];
+    setCfgFile(null);
+    if (!wanted || !baseRelPath) return;
+    const controller = new AbortController();
+    fetch(`/api/files/list?path=${encodeURIComponent(baseRelPath)}`, { signal: controller.signal })
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => {
+        if (data && Array.isArray(data.files) && data.files.some((f: FileEntry) => f.name === wanted)) {
+          setCfgFile(wanted);
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [step, baseRelPath]);
 
   // Optional scroll-to-this-step on mount (deep-link from Tasks tab).
   useEffect(() => {
@@ -222,9 +255,19 @@ export function StepOutputs({
             </span>
           )}
         </button>
-        {(headerExtras || outLog || errLog) && (
+        {(headerExtras || cfgFile || outLog || errLog) && (
           <div className="flex items-center gap-1 pl-1 pr-2 shrink-0">
             {headerExtras}
+            {cfgFile && (
+              <button
+                type="button"
+                onClick={() => onOpenText(`${baseRelPath}/${cfgFile}`, cfgFile)}
+                title={`View the config used for this ${stepLabel(step)} run (${cfgFile})`}
+                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono text-foreground-muted hover:text-foreground hover:bg-surface-3 ring-1 ring-inset ring-border transition-colors"
+              >
+                <FileCode2 className="w-3 h-3" /> cfg
+              </button>
+            )}
             {outLog && (
               <button
                 type="button"

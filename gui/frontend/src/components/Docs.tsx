@@ -13,6 +13,7 @@ const SECTIONS: Section[] = [
   { id: 'pipeline',      title: 'Pipeline stages' },
   { id: 'input-modes',   title: 'Input modes' },
   { id: 'presets',       title: 'Presets and captures' },
+  { id: 'export',        title: 'Export animations' },
   { id: 'commands',      title: 'Useful commands' },
   { id: 'gui',           title: 'Running the GUI' },
   { id: 'layout',        title: 'Repository layout' },
@@ -280,7 +281,45 @@ python -m inference run \\
             </ul>
           </Section>
 
-          <Section id="commands" index={7} title="Useful commands">
+          <Section id="export" index={7} title="Export animations">
+            <p>
+              Once <Step name="ma_3d" /> has finished, the SMPL-X fit can be exported to
+              animation formats. In the GUI, the <Strong>Exporter</Strong> tab batch-exports
+              any run's sequences, and each capture's Results page has a per-sequence{' '}
+              <Strong>Export animation</Strong> panel; both offer the same formats.
+            </p>
+            <Table
+              head={['Format', 'What it is', 'Needs Blender?']}
+              rows={[
+                ['.npz', 'SMPL-X Blender add-on animation file (AMASS-style), round-trip validated', 'no'],
+                ['.fbx', 'rigged skeleton + skinned mesh + animation (Unity, Unreal)', 'yes'],
+                ['.abc', 'Alembic vertex/geometry cache (Houdini, Maya, render engines)', 'yes'],
+                ['.usd', 'USD scene (UE5, Unity, Houdini import natively)', 'yes'],
+                ['.bvh', 'skeleton-only motion for mocap retargeting', 'yes'],
+              ]}
+            />
+            <p>
+              The <InlineCode>.npz</InlineCode> works with nothing beyond the{' '}
+              <InlineCode>mamma</InlineCode> env; the rigged formats need a one-time
+              download of a portable Blender + the SMPL-X add-on via the{' '}
+              <Strong>Export tools</Strong> section of the Exporter tab (or{' '}
+              <InlineCode>data/download_blender.sh</InlineCode> +{' '}
+              <InlineCode>data/download_smplx_blender_addon.sh</InlineCode>).
+              The CLI equivalent:
+            </p>
+            <Code>{`python optimization/export_blender.py \\
+  --ma-3d-dir  output/ma_3d/<tag>/<capture> \\
+  --seq-name   <sequence> \\
+  --ma-cap-dir output/ma_cap/<tag>/<capture> \\
+  --out-dir    output/export/<sequence> \\
+  --formats    npz,fbx,abc,bvh,usd`}</Code>
+            <p>
+              All options (units, grounding, up-axis, fps) and the format conventions
+              are documented in <InlineCode>docs/EXPORT.md</InlineCode>.
+            </p>
+          </Section>
+
+          <Section id="commands" index={8} title="Useful commands">
             <Code>{`python -m inference --help                                # all subcommands
 python -m inference run --help                            # run flags
 python -m inference run-step --help                       # run-step flags
@@ -289,7 +328,7 @@ python -m inference doctor --task path/to/run.json        # validate a bound run
 python scripts/smoke_test.py                              # full regression (~5 min)`}</Code>
           </Section>
 
-          <Section id="gui" index={8} title="Running the GUI">
+          <Section id="gui" index={9} title="Running the GUI">
             <p>
               A browser UI lives under <PathCode>gui/</PathCode>. Pipeline execution calls the same{' '}
               <InlineCode>inference</InlineCode> runner the CLI uses, so anything that runs from the CLI
@@ -308,12 +347,13 @@ gui/scripts/prod.sh --skip-build   # reuse existing build/`}</Code>
             </p>
           </Section>
 
-          <Section id="layout" index={9} title="Repository layout">
+          <Section id="layout" index={10} title="Repository layout">
             <Code>{`.
 README.md                       project overview
 docs/INSTALL.md                 environment + dependency installation
 docs/DATASETS.md                dataset catalog + per-script download usage
 docs/YOUR-DATA.md               how to run on your own multi-view footage
+docs/EXPORT.md                  exporting the fit to npz / FBX / Alembic / BVH / USD
 docs/steps.md                   step → directory → builder mapping + DAG
 
 inference/                      orchestration: env, runner, step builders, doctor CLI
@@ -329,7 +369,7 @@ gui/                            Flask backend + Vite/React frontend
 scripts/                        smoke tests + utilities`}</Code>
           </Section>
 
-          <Section id="resources" index={10} title="Resources">
+          <Section id="resources" index={11} title="Resources">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <ResourceCard accent="primary"   href="https://mamma.is.tue.mpg.de/"            title="Project page" desc="The official MAMMA landing page." />
               <ResourceCard accent="completed" href="https://arxiv.org/pdf/2506.13040"        title="Paper (PDF)"   desc="Read the paper (CVPR 2026 oral)." />
