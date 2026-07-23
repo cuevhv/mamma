@@ -250,6 +250,7 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             target=_flag("--use-vposer", valued=False), default=False,
             help="A learned prior of realistic human poses; a fix for heavy occlusion, not a "
                  "general quality boost. It can bias the fit toward generic poses and reduce accuracy."
+                 "Make sure the VPoser model is already downloaded."
             ,
         ),
     ],
