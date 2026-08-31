@@ -15,7 +15,8 @@ OPACITY = 0.6
 
 
 class Renderer:
-    def __init__(self, focal_length_px, img_w, img_h, principal_p_x, principal_p_y, faces):
+    def __init__(self, focal_length_px, img_w, img_h, principal_p_x, principal_p_y, faces,
+                 focal_length_px_y=None):
 
         try:
             self.renderer = pyrender.OffscreenRenderer(
@@ -35,13 +36,14 @@ class Renderer:
             ) from e
         self.camera_center = [principal_p_x, principal_p_y]
         self.focal_length = focal_length_px
+        self.focal_length_y = focal_length_px if focal_length_px_y is None else focal_length_px_y
         self.faces = faces
 
     def render_front_view(self, verts, bg_img_bgr=None, bg_color=(0, 0, 0, 0), return_depth=False):
         scene = pyrender.Scene(bg_color=bg_color, ambient_light=np.ones(3) * 0)
         camera = pyrender.camera.IntrinsicsCamera(
             fx=self.focal_length,
-            fy=self.focal_length,
+            fy=self.focal_length_y,
             cx=self.camera_center[0],
             cy=self.camera_center[1],
         )

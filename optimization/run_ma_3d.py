@@ -704,6 +704,11 @@ def main(optim_cfg_fn, cam_names, metadata_data_pth:str, imgs_pth:str, paths: Pa
     optim_cfg["tri_irls"] = bool(getattr(cli_args, "tri_irls", False))
     if optim_cfg["tri_irls"]:
         print("[tri_irls] Robust (IRLS) triangulation ENABLED for the 3D seed.")
+    # Opt-in temporal outlier gate on the 3D seed (bridges teleport frames before the fit).
+    optim_cfg["tri_outlier_gate"] = bool(getattr(cli_args, "tri_outlier_gate", False))
+    if optim_cfg["tri_outlier_gate"]:
+        print("[tri-gate] Temporal outlier gate on the 3D seed ENABLED "
+              "(bridges isolated teleport frames from bad masks / re-ID).")
     # Preflight: if any stage (via --use-vposer OR a yaml recipe like
     # *_occlusion_vposer) uses the VPoser prior, verify the optional package
     # and weights NOW — failing seconds in beats a ModuleNotFoundError after
@@ -989,6 +994,13 @@ def parser():
                            "solve, re-solve with Cauchy weights on each observation's reprojection "
                            "residual against the cross-view consensus, so a camera that barely "
                            "sees a person self-suppresses (~hundreds-of-px residuals -> ~0 weight). ")
+    args.add_argument('--tri-outlier-gate', '--tri_outlier_gate', dest='tri_outlier_gate',
+                      action='store_true',
+                      help="Opt-in temporal outlier gate on the triangulated 3D seed: detect "
+                           "isolated frames where a majority of cameras agree on a wrong 3D "
+                           "point (the 'teleport' flicker from bad masks / re-ID), then bridge "
+                           "them by interpolating the seed and dropping their 2D so no stage's "
+                           "reprojection re-teleports the body. Default off; bit-identical when off.")
     args.add_argument('--tf32', action='store_true',
                       help="Faster optimization on modern NVIDIA GPUs; however it might give worse results. "
                            "Keep it off for final, best-quality fits.")

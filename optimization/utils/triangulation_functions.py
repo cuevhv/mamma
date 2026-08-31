@@ -107,3 +107,123 @@ def triangulate_batch_irls(pts2d_list, Ks_list, extrs_list, vis_list=None,
         Xw, ok = triangulate_batch(pts2d_list, Ks_list, extrs_list, vis_list=vis_list,
                                    weights_list=weights, **kw)
     return Xw, ok
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Temporal outlier gate on a triangulated 3D trajectory (opt-in, --tri-outlier-gate)
+#
+# Bad masks / re-ID occasionally make a majority of cameras agree on a wrong 3D
+# point for a few isolated frames. The optimizer then locks onto it and the body
+# "teleports" metres away and back (a one/two-frame flicker). These pure helpers
+# detect such transient excursions on the triangulated trajectory and report the
+# frame runs to bridge, so the caller can repair the seed and drop the offending
+# 2D before optimizing. No optimizer state here, so they unit-test in isolation.
+
+
+def _masked_median_center(X, valid_mask):
+    """Per-frame robust body centre: median over the frame's valid landmarks.
+
+    X:          [T, N, 3] triangulated world points.
+    valid_mask: [T, N] bool.
+    Returns (centers [T,3], usable [T] bool); usable[t] is False when frame t has
+    no valid landmark (centre left at 0 there and ignored by callers).
+    """
+    T = X.shape[0]
+    centers = X.new_zeros((T, 3))
+    usable = torch.zeros(T, dtype=torch.bool, device=X.device)
+    for t in range(T):
+        m = valid_mask[t]
+        if bool(m.any()):
+            centers[t] = X[t][m].median(dim=0).values
+            usable[t] = True
+    return centers, usable
+
+
+def _rolling_median_center(centers, usable, half_window):
+    """Temporal median of `centers` over a centred window, ignoring unusable frames.
+    The window median tracks genuine locomotion, so sustained motion is never
+    treated as an outlier (only transient deviations from the local trend are)."""
+    T = centers.shape[0]
+    out = centers.clone()
+    for t in range(T):
+        lo, hi = max(0, t - half_window), min(T, t + half_window + 1)
+        sel = usable[lo:hi]
+        if bool(sel.any()):
+            out[t] = centers[lo:hi][sel].median(dim=0).values
+    return out
+
+
+def detect_translation_outlier_runs(X, valid_mask, k=8.0, abs_floor=0.30,
+                                    half_window=7, max_gap=4):
+    """Detect transient global-translation outliers on a triangulated trajectory.
+
+    A frame is flagged when its robust centre deviates from the local temporal
+    median by more than ``thr = max(abs_floor, k * MAD(step))``, where MAD(step)
+    is the median absolute frame-to-frame step of that body (a robust per-body
+    motion scale). Only *transient* flagged runs (length <= max_gap) bounded on
+    both sides by usable, non-flagged frames are returned as interpolatable gaps.
+
+    Returns (runs, flagged, info):
+      runs:    list of (a, b) inclusive index ranges safe to bridge.
+      flagged: [T] bool of every frame over threshold.
+      info:    {'thr', 'mad', 'n_flagged'} diagnostics.
+    """
+    centers, usable = _masked_median_center(X, valid_mask)
+    med = _rolling_median_center(centers, usable, half_window)
+    dev = torch.linalg.norm(centers - med, dim=1)                      # [T]
+
+    step = torch.linalg.norm(centers[1:] - centers[:-1], dim=1)        # [T-1]
+    pair_ok = usable[1:] & usable[:-1]
+    if bool(pair_ok.any()):
+        s = step[pair_ok]
+        mad = float((s - s.median()).abs().median())
+    else:
+        mad = 0.0
+    thr = max(float(abs_floor), float(k) * mad)
+
+    flagged = (dev > thr) & usable
+    runs = []
+    T = X.shape[0]
+    t = 0
+    while t < T:
+        if bool(flagged[t]):
+            a = t
+            while t < T and bool(flagged[t]):
+                t += 1
+            b = t - 1
+            interpolatable = (
+                (b - a + 1) <= max_gap
+                and a - 1 >= 0 and b + 1 < T
+                and bool(usable[a - 1]) and bool(usable[b + 1])
+                and not bool(flagged[a - 1]) and not bool(flagged[b + 1])
+            )
+            # Confirmation: keep the run only if its frames genuinely leave the
+            # straight bridge between the bounding frames. Sustained (near-linear)
+            # motion lies on its own bridge, so this rejects the boundary false
+            # positives the one-sided window median can produce during fast motion;
+            # a real teleport is far off the bridge and survives.
+            if interpolatable:
+                c0, c1 = centers[a - 1], centers[b + 1]
+                span = (b + 1) - (a - 1)
+                excursion = 0.0
+                for tt in range(a, b + 1):
+                    w = (tt - (a - 1)) / span
+                    pred = (1.0 - w) * c0 + w * c1
+                    excursion = max(excursion, float(torch.linalg.norm(centers[tt] - pred)))
+                if excursion > thr:
+                    runs.append((a, b))
+        else:
+            t += 1
+    return runs, flagged, {"thr": thr, "mad": mad, "n_flagged": int(flagged.sum())}
+
+
+def interpolate_points_over_runs(X, runs):
+    """Linear per-landmark interpolation of X:[T,N,3] across each (a,b) run, using
+    the bounding frames X[a-1] and X[b+1]. Mutates X in place and returns it."""
+    for a, b in runs:
+        L = b - a + 1
+        x0, x1 = X[a - 1], X[b + 1]                                    # [N,3] each
+        for i in range(1, L + 1):
+            w = i / (L + 1)
+            X[a + i - 1] = (1.0 - w) * x0 + w * x1
+    return X

@@ -45,6 +45,10 @@ class OptimizeSMPLX:
         self.up_axis = up_axis           # signed world up-axis for the contact .rrd
         # Opt-in robust triangulation (--tri-irls): cross-view residual (default off)
         self.tri_irls = bool(optim_cfg.get("tri_irls", False)) if isinstance(optim_cfg, dict) else False
+        # Opt-in temporal outlier gate on the triangulated 3D seed (--tri-outlier-gate):
+        # bridges isolated "teleport" frames before optimizing (default off).
+        self.tri_outlier_gate = bool(optim_cfg.get("tri_outlier_gate", False)) if isinstance(optim_cfg, dict) else False
+        self.tri_outlier_gate_cfg = (optim_cfg.get("outlier_gate", {}) if isinstance(optim_cfg, dict) else {}) or {}
         intrinsics_np = world_params["cam_intrinsics"]
         extrinsics_np = world_params["cam_extrinsics"]
         self.cam_heights = world_params["cam_height"]
@@ -862,6 +866,81 @@ class OptimizeSMPLX:
                   f"would produce a wrongly-constrained body that also degrades the other "
                   f"bodies through the joint optimization.")
 
+    def _gate_triangulation_outliers(self, valid_mask_dict, cfg):
+        """Bridge transient triangulation "teleports" on the 3D seed (opt-in via
+        --tri-outlier-gate). Bad masks / re-ID can make a majority of cameras
+        agree on a wrong 3D point for one or two isolated frames; the fit then
+        locks onto it and the body jumps metres away and back.
+
+        For each detected transient excursion, for that body, we:
+          (1) interpolate the triangulated points across the gap, so first_run's
+              l2_loss_3d_points pin lands at the correct location; and
+          (2) zero the 2D targets there for every camera, so no stage's
+              reprojection can pull the body back to the wrong place. We zero the
+              points themselves (not just the visibility weight, which is clipped
+              up to vis_clip_value and so cannot suppress a view) exactly as the
+              view-support gate does; proj_pts_loss masks a landmark by
+              pts2d.sum(-1) > 0.
+
+        The frame is then treated as "this body is unobserved here" and bridged by
+        interpolation plus pose-continuity priors. Abstains on trajectories that
+        are too broken to interpolate. Bit-identical to before when the flag is off
+        (this method is never called)."""
+        k           = float(cfg.get("k", 8.0))
+        abs_floor   = float(cfg.get("abs_floor", 0.30))
+        half_window = int(cfg.get("half_window", 7))
+        max_gap     = int(cfg.get("max_gap", 4))
+        max_frac    = float(cfg.get("max_flagged_frac", 0.15))
+
+        for body_id, X in self.triangulated_3d_points.items():
+            vm = valid_mask_dict[body_id]
+            runs, flagged, info = triang_funcs.detect_translation_outlier_runs(
+                X, vm, k=k, abs_floor=abs_floor, half_window=half_window, max_gap=max_gap)
+            T = X.shape[0]
+            if info["n_flagged"] > max_frac * T:
+                print(f"[tri-gate] body {body_id}: {info['n_flagged']}/{T} frames flagged "
+                      f"(> {max_frac:.0%}, thr={info['thr']:.2f} m); trajectory too broken, "
+                      f"abstaining (no repair).")
+                continue
+            if not runs:
+                if info["n_flagged"]:
+                    print(f"[tri-gate] body {body_id}: {info['n_flagged']} flagged frame(s) "
+                          f"but none interpolatable (clip edge or run > {max_gap}); left as-is.")
+                continue
+            with torch.no_grad():
+                triang_funcs.interpolate_points_over_runs(X, runs)
+                n_cams = len(self.pts2d[body_id])
+                for a, b in runs:
+                    for cam in range(n_cams):
+                        self.pts2d[body_id][cam][a:b + 1] = 0.0
+                        if self.pts2d_vis_weight[body_id] is not None:
+                            self.pts2d_vis_weight[body_id][cam][a:b + 1] = 0.0
+                        if self.contacts[body_id] is not None:
+                            self.contacts[body_id][cam][a:b + 1] = 0.0
+                        if self.floor_contacts[body_id] is not None:
+                            self.floor_contacts[body_id][cam][a:b + 1] = 0.0
+            frames = ", ".join(f"{a}..{b}" if b > a else f"{a}" for a, b in runs)
+            n_frames = sum(b - a + 1 for a, b in runs)
+            print(f"[tri-gate] body {body_id}: bridged {n_frames} frame(s) [{frames}] "
+                  f"(thr={info['thr']:.2f} m, mad={info['mad']*1000:.0f} mm).")
+
+        # Second .rrd from the REPAIRED seed, alongside the pre-gate
+        # intermediate_triangulated_points.rrd (written inside triangulation), so
+        # the raw and gated seed can be compared before/after in Rerun. Best-effort.
+        try:
+            from utils.contact_rrd import write_contact_rrd
+            order = list(self.triangulated_3d_points.keys())
+            write_contact_rrd(
+                os.path.join(self.save_prediction_fn, "intermediate_triangulated_points_gated.rrd"),
+                [self.triangulated_3d_points[b] for b in order],
+                [self.triangulated_contact[b] for b in order],
+                [self.triangulated_floor_contact[b] for b in order],
+                valid_mask=[valid_mask_dict[b] for b in order],
+                up_axis=self.up_axis,
+            )
+        except Exception as e:
+            print(f"[tri-gate] gated .rrd skipped: {e}")
+
     def fit(self, optim_verts:bool=True, optim_cfg=None):
         time_start = time.time()
         use_v_template = optim_cfg["use_v_template"]
@@ -905,11 +984,17 @@ class OptimizeSMPLX:
 
         # Triangulate with the corrected 2D assignments (the fit's only
         # full triangulation pass).
-        triangulated_points_world_dict, _, floor_contact_world_dict, contact_world_dict = \
+        triangulated_points_world_dict, triangulated_valid_mask_dict, floor_contact_world_dict, contact_world_dict = \
             self.triangulate_3d_from_2d_points(skip_first_t_frames=0)
         self.triangulated_3d_points     = triangulated_points_world_dict
         self.triangulated_contact       = contact_world_dict
         self.triangulated_floor_contact = floor_contact_world_dict
+
+        # Opt-in (--tri-outlier-gate): bridge transient triangulation "teleports"
+        # (a body jumping metres away for a frame or two on bad masks / re-ID)
+        # before the fit locks onto them. No-op when the flag is off.
+        if self.tri_outlier_gate:
+            self._gate_triangulation_outliers(triangulated_valid_mask_dict, self.tri_outlier_gate_cfg)
 
         # Debug visualisations: before/after image overlays + per-camera stats.
         if self.cam_metadata_fns is not None:
