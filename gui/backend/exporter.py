@@ -169,10 +169,18 @@ def _export_base(output_dir: str | None) -> Path:
 def _export_one(jid: str, spec: dict) -> tuple[bool, list[str], str | None]:
     """Run one sequence's Blender export. Returns (ok, output_files, error)."""
     out_dir = _export_base(spec.get("output_dir")) / spec["tag"] / spec["capture"] / spec["seq"]
+    # World orientation: the task config's global.up_axis is authoritative
+    # (same trust model as ma_vis / the preview blob); pose-based "auto"
+    # detection remains the fallback for imported runs and misreads
+    # floor-work sequences (task 139 exported everyone lying down).
+    up_axis = (spec.get("up_axis") or "").strip() or _task_up_axis(spec.get("tag", ""))
     cmd = [sys.executable, str(_REPO_ROOT / "optimization" / "export_blender.py"),
            "--ma-3d-dir", spec["ma_3d_dir"], "--seq-name", spec["seq"],
            "--out-dir", str(out_dir), "--formats", ",".join(spec["formats"]),
            "--unit", spec.get("unit", "m"),
+           # = form: a negative axis ("-y") as a separate token reads as an
+           # option flag to argparse (task 118).
+           f"--up-axis={up_axis}",
            "--blender-format", spec.get("blender_format", "auto")]
     if not spec.get("ground", True):
         cmd.append("--no-ground")
@@ -220,27 +228,50 @@ def _safe_mtime(path: str) -> float:
         return 0.0
 
 
+def _output_roots() -> list[Path]:
+    """Every place completed results may live: the local default output root
+    plus each distinct root recorded on task rows (cluster runs record the
+    profile's workspace, readable here through its local mount). Local root
+    first; de-duplicated; existing dirs only."""
+    roots = [_OUTPUT]
+    try:
+        import db  # gui/backend module; on sys.path when the app serves
+        for r in db.get_distinct_output_roots():
+            p = Path(r).expanduser()
+            if p not in roots:
+                roots.append(p)
+    except Exception:  # noqa: BLE001 — discovery must not break the tab
+        pass
+    return [p for p in roots if p.is_dir()]
+
+
 def _exportable_sequences() -> list[dict]:
-    """Scan output/ma_3d/<tag>/<capture>/<seq>/ for smplx_params_body_id-*.npz."""
-    seqs = []
-    for params in sorted(glob.glob(str(_OUTPUT / "ma_3d" / "*" / "*" / "*" / "smplx_params_body_id-*.npz"))):
-        seq_dir = Path(params).parent
-        seq, capture, tag = seq_dir.name, seq_dir.parent.name, seq_dir.parent.parent.name
-        key = (tag, capture, seq)
-        existing = next((s for s in seqs if s["_key"] == key), None)
-        if existing:
-            existing["people"] += 1
-            continue
-        ma_cap = _OUTPUT / "ma_cap" / tag / capture
-        seqs.append({
-            "_key": key, "tag": tag, "capture": capture, "seq": seq, "people": 1,
-            "ma_3d_dir": str(seq_dir.parent),
-            "ma_cap_dir": str(ma_cap) if ma_cap.is_dir() else "",
-            "already_exported": (_OUTPUT / "export" / tag / capture / seq).is_dir(),
-            "mtime": _safe_mtime(params),  # result write time, for a "when" hint in the UI
-        })
-    for s in seqs:
-        s.pop("_key", None)
+    """Scan <root>/ma_3d/<tag>/<capture>/<seq>/ for smplx_params_body_id-*.npz
+    across every known output root (see :func:`_output_roots`)."""
+    seqs: list[dict] = []
+    seen_prev: set = set()      # keys found in earlier roots (earlier root wins)
+    for root in _output_roots():
+        here: dict[tuple, dict] = {}
+        for params in sorted(glob.glob(str(root / "ma_3d" / "*" / "*" / "*" / "smplx_params_body_id-*.npz"))):
+            seq_dir = Path(params).parent
+            seq, capture, tag = seq_dir.name, seq_dir.parent.name, seq_dir.parent.parent.name
+            key = (tag, capture, seq)
+            if key in seen_prev:
+                continue
+            if key in here:      # one npz per person: same-root repeats = people
+                here[key]["people"] += 1
+                continue
+            ma_cap = root / "ma_cap" / tag / capture
+            here[key] = {
+                "tag": tag, "capture": capture, "seq": seq, "people": 1,
+                "ma_3d_dir": str(seq_dir.parent),
+                "ma_cap_dir": str(ma_cap) if ma_cap.is_dir() else "",
+                "already_exported": (root / "export" / tag / capture / seq).is_dir()
+                                    or (_OUTPUT / "export" / tag / capture / seq).is_dir(),
+                "mtime": _safe_mtime(params),  # result write time, for a "when" hint in the UI
+            }
+        seen_prev.update(here)
+        seqs.extend(here.values())
     return seqs
 
 
@@ -294,16 +325,39 @@ def _anchor_repo(path: str) -> Path:
 
 def _blob_is_current(out: Path) -> bool:
     """True when the cached blob was written by the current schema version.
-    The version field leads the JSON, so sniffing the head avoids parsing MBs."""
+    The version field leads the JSON, so sniffing the head avoids parsing MBs.
+    v3: up-axis comes from the task config (auto-detection misread
+    floor-work sequences); the bump regenerates mis-oriented v2 blobs."""
     try:
         with open(out, "r", encoding="utf-8") as f:
-            return '"version": 2' in f.read(64)
+            return '"version": 3' in f.read(64)
     except OSError:
         return False
 
 
+def _task_up_axis(tag: str) -> str:
+    """The authoritative world up axis for a run, from its frozen config.
+
+    ``tag`` is the output id, which for GUI runs is the task id; imported /
+    foreign runs fall back to 'auto' (pose-based detection)."""
+    try:
+        import db  # gui/backend module; available when serving
+        path = db.get_task_json_path(int(str(tag).strip()))
+        if path and os.path.isfile(path):
+            import json as _json
+            with open(path, "r", encoding="utf-8") as f:
+                g = (_json.load(f) or {}).get("global") or {}
+            ax = str(g.get("up_axis") or "").strip().lower()
+            if ax.lstrip("+-") in ("x", "y", "z"):
+                return ax
+    except Exception:  # noqa: BLE001 — best effort, detection is the fallback
+        pass
+    return "auto"
+
+
 def _preview_scene_blob(tag: str, capture: str, seq: str, ma_3d_dir: str,
-                        ma_cap_dir: str = "") -> tuple[Path | None, str | None]:
+                        ma_cap_dir: str = "",
+                        up_axis: str = "auto") -> tuple[Path | None, str | None]:
     """Return (path to a fresh scene3d.json, error). Generates via
     ``visualization.preview_scene`` (a ~1-2 s numpy subprocess) unless a
     cache newer than every source npz already exists."""
@@ -318,8 +372,11 @@ def _preview_scene_blob(tag: str, capture: str, seq: str, ma_3d_dir: str,
     with _preview_lock:
         if out.is_file() and out.stat().st_mtime >= src_mtime and _blob_is_current(out):
             return out, None
+        # --up-axis uses the = form: a negative axis value ("-y") as a
+        # separate token reads as an option flag to argparse (task 118).
         cmd = [sys.executable, "-m", "visualization.preview_scene",
-               "--ma-3d-dir", str(root), "--seq-name", seq, "--out", str(out)]
+               "--ma-3d-dir", str(root), "--seq-name", seq, "--out", str(out),
+               f"--up-axis={up_axis or 'auto'}"]
         if ma_cap_dir:
             cmd += ["--ma-cap-dir", str(_anchor_repo(ma_cap_dir))]
         try:
@@ -372,7 +429,15 @@ def register_routes(app) -> None:
     @app.post("/api/exporter/export")
     def _exporter_export():
         body = request.get_json(silent=True) or {}
-        opts = {k: body.get(k) for k in ("formats", "unit", "ground", "blender_format", "fps", "output_dir")}
+        # Drop absent keys instead of carrying them as None. `_export_one`
+        # reads these with `spec.get(key, default)`, and a key present-but-None
+        # defeats every one of those defaults: `--unit`/`--blender-format` get
+        # a None into argv (TypeError from subprocess), and `ground` silently
+        # inverts, since `not None` is True and appends `--no-ground`. Testing
+        # `is not None` rather than truthiness so an explicit `ground: false`
+        # still reaches _export_one.
+        opts = {k: body[k] for k in ("formats", "unit", "ground", "blender_format", "fps", "output_dir")
+                if body.get(k) is not None}
         # `sequences` = batch (per-seq identity dicts sharing the top-level options);
         # otherwise the top-level body is a single sequence (back-compat).
         raw = body.get("sequences") or [body]
@@ -406,7 +471,8 @@ def register_routes(app) -> None:
         tag = q["tag"] or seq_dir.parent.name or "run"
         capture = q["capture"] or seq_dir.name or "capture"
         blob, err = _preview_scene_blob(tag, capture, q["seq"], q["ma_3d_dir"],
-                                        ma_cap_dir=q["ma_cap_dir"])
+                                        ma_cap_dir=q["ma_cap_dir"],
+                                        up_axis=_task_up_axis(tag))
         if err:
             return jsonify({"error": err}), 500 if "failed" in err or "timed" in err else 404
         resp = send_file(blob, mimetype="application/json")

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
-import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw, RotateCcw, Box } from 'lucide-react';
+import { ArrowLeft, X, FileJson, ChevronLeft, ChevronRight, ChevronDown, Film, Maximize2, Video, RotateCw, RotateCcw, Box, Copy } from 'lucide-react';
 import { NewTaskForm, type ReRunInit } from './NewTaskForm';
 import { toast } from 'sonner';
 import { ALL_STEPS, buildProcessRows, rowRollupStatus, RowStatus } from './ProcessTable';
@@ -833,64 +833,127 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
         <div className="grid grid-cols-1 gap-6">
           <div className="lg:col-span-1">
             <div className="bg-surface-1 border border-border-subtle rounded-xl p-6 shadow-sm shadow-black/30 ring-1 ring-inset ring-white/[0.02]">
-              <h3 className="text-foreground text-lg font-medium tracking-tight mb-1">Outputs explorer</h3>
-              <p className="text-foreground-muted text-xs mb-4">
-                One section per pipeline step — pick a task and a sequence, every step's outputs are listed below.
-              </p>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium">Task</label>
-                    {selectedTask?.outputId && (
-                      <button
-                        type="button"
-                        onClick={() => setReRunTarget({
-                          taskId: selectedTask.id,
-                          captureJsonPath: captureData.captureJsonPath!,
-                          outputId: selectedTask.outputId!,
-                          outputDir: selectedTask.outputPath || '',
-                          seqNames: selectedTask.sequenceNames || [],
-                        })}
-                        title="Re-run this task: redo the steps you pick into a new run. This run stays untouched."
-                        className="inline-flex items-center gap-1 text-primary text-[11px] font-medium hover:underline"
-                      >
-                        <RotateCcw className="w-3 h-3" /> Re-run some steps with different configuration…
-                      </button>
-                    )}
-                  </div>
-                  <select
-                    value={selectedTaskId}
-                    onChange={e => setSelectedTaskId(e.target.value)}
-                    disabled={taskOptions.length === 0}
-                    className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors disabled:opacity-50"
-                  >
-                    {taskOptions.length === 0 && <option value="">No runs yet</option>}
-                    {taskOptions.map(t => (
-                      <option key={t.taskId} value={t.taskId} className="bg-surface-2">
-                        {formatTaskId(t.taskId)} — {truncate(t.outputId, 24)} {STATUS_GLYPH[t.status]} {t.status}{t.relativeTime ? ` · ${t.relativeTime}` : ''}
-                      </option>
-                    ))}
-                  </select>
+              {/* Header: what this panel is (left) + the task/sequence
+                  choosers (right). The full-bleed divider below draws the
+                  line between "choose" and "results". */}
+              <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 mb-4">
+                <div className="min-w-[14rem]">
+                  <h3 className="text-foreground text-lg font-medium tracking-tight mb-1">Outputs explorer</h3>
+                  <p className="text-foreground-muted text-xs">
+                    Pick a task and a sequence; every step's outputs are listed below.
+                  </p>
                 </div>
-                <div>
-                  <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium mb-1.5 block">
-                    {selectedTaskId ? <>Sequences of selected task {formatTaskId(selectedTaskId)}</> : 'Sequence'}
-                  </label>
-                  <select
-                    value={selectedSequence}
-                    onChange={e => setSelectedSequence(e.target.value)}
-                    className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors"
-                  >
-                    {sequenceOptions.length === 0 && <option value="">No sequences found</option>}
-                    {sequenceOptions.map(sequence => (
-                      <option key={sequence.name} value={sequence.name} className="bg-surface-2">
-                        {sequence.name}
-                      </option>
-                    ))}
-                  </select>
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="w-full sm:w-80">
+                    <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium mb-1.5 block">Task</label>
+                    <select
+                      value={selectedTaskId}
+                      onChange={e => setSelectedTaskId(e.target.value)}
+                      disabled={taskOptions.length === 0}
+                      className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors disabled:opacity-50"
+                    >
+                      {taskOptions.length === 0 && <option value="">No runs yet</option>}
+                      {taskOptions.map(t => (
+                        <option key={t.taskId} value={t.taskId} className="bg-surface-2">
+                          {formatTaskId(t.taskId)} — {truncate(t.outputId, 24)} {STATUS_GLYPH[t.status]} {t.status}{t.relativeTime ? ` · ${t.relativeTime}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="w-full sm:w-[28rem]">
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <label className="text-foreground-muted text-[11px] uppercase tracking-wider font-medium block">
+                        {selectedTaskId ? <>Sequences of task {formatTaskId(selectedTaskId)}</> : 'Sequence'}
+                      </label>
+                      {sequenceOptions.length > 1 && (() => {
+                        const seqIdx = sequenceOptions.findIndex(s => s.name === selectedSequence);
+                        const navBtn = 'p-0.5 rounded border border-border text-foreground-muted ' +
+                          'hover:text-foreground hover:bg-surface-3 disabled:opacity-30 ' +
+                          'disabled:cursor-not-allowed transition-colors';
+                        return (
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <button type="button" disabled={seqIdx <= 0}
+                              onClick={() => setSelectedSequence(sequenceOptions[seqIdx - 1].name)}
+                              title="Previous sequence" className={navBtn}>
+                              <ChevronLeft className="w-3.5 h-3.5" />
+                            </button>
+                            <span className="text-foreground-faint text-[11px] tabular-nums">
+                              {seqIdx + 1}/{sequenceOptions.length}
+                            </span>
+                            <button type="button"
+                              disabled={seqIdx < 0 || seqIdx >= sequenceOptions.length - 1}
+                              onClick={() => setSelectedSequence(sequenceOptions[seqIdx + 1].name)}
+                              title="Next sequence" className={navBtn}>
+                              <ChevronRight className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <select
+                      value={selectedSequence}
+                      onChange={e => setSelectedSequence(e.target.value)}
+                      className="w-full bg-surface-2 border border-border rounded-md px-3 py-2 text-foreground text-sm focus:outline-none focus:border-primary/60 focus:ring-2 focus:ring-primary/20 transition-colors"
+                    >
+                      {sequenceOptions.length === 0 && <option value="">No sequences found</option>}
+                      {sequenceOptions.map(sequence => (
+                        <option key={sequence.name} value={sequence.name} className="bg-surface-2">
+                          {sequence.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
+
+              {/* Choose | results separation: full-bleed across the card. */}
+              <div className="border-t border-border-subtle -mx-6 mb-4" />
+
+              {selectedTaskId && selectedSequence && (
+                <div className="flex items-center gap-3 mb-3 group" title={selectedSequence}>
+                  {/* The name is the centered anchor: the left rule and the
+                      right container are both flex-1, so the id/copy trail
+                      the name without pulling it off center. */}
+                  <div className="h-px flex-1 bg-border-subtle" />
+                  <span className="text-foreground text-base font-normal font-mono truncate min-w-0 max-w-[70%]">
+                    {selectedSequence}
+                  </span>
+                  <div className="flex-1 flex items-center gap-2 min-w-0">
+                    <span className="flex-shrink-0 text-foreground-subtle text-xs font-mono">
+                      {formatTaskId(selectedTaskId)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(selectedSequence)
+                          .then(() => toast.success('Sequence name copied'))
+                          .catch(() => toast.error('Could not copy'));
+                      }}
+                      title="Copy sequence name"
+                      className="flex-shrink-0 p-0.5 rounded text-foreground-faint opacity-0 group-hover:opacity-100 hover:text-foreground transition-opacity"
+                    >
+                      <Copy className="w-3 h-3" />
+                    </button>
+                    <div className="h-px flex-1 bg-border-subtle" />
+                  {selectedTask?.outputId && (
+                    <button
+                      type="button"
+                      onClick={() => setReRunTarget({
+                        taskId: selectedTask.id,
+                        captureJsonPath: captureData.captureJsonPath!,
+                        outputId: selectedTask.outputId!,
+                        outputDir: selectedTask.outputPath || '',
+                        seqNames: selectedTask.sequenceNames || [],
+                      })}
+                      title="Re-run this task: redo the steps you pick into a new run. This run stays untouched."
+                      className="flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-primary-muted border border-primary/30 text-primary text-[11px] font-medium hover:border-primary/50 hover:bg-primary-muted-strong transition-colors"
+                    >
+                      <RotateCcw className="w-3 h-3" /> Re-run…
+                    </button>
+                  )}
+                  </div>
+                </div>
+              )}
 
               {availableProcesses.length === 0 ? (
                 <div className="text-foreground-subtle text-sm text-center py-8">
@@ -1020,11 +1083,15 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                 <VideoPlayer relPath={playingVideoRelPath} />
               )}
               {playingImageRelPath && (
-                <div className="flex max-h-[82vh] items-center justify-center overflow-hidden rounded-lg bg-black/30 p-2">
+                /* overflow-y-auto (not hidden): a portrait image (e.g. the
+                   stacked anchor visualizations) renders at full width and
+                   scrolls vertically instead of being clipped at 82vh.
+                   items-start so the scroll starts at the image's top. */
+                <div className="flex max-h-[82vh] items-start justify-center overflow-y-auto rounded-lg bg-black/30 p-2">
                   <img
                     src={`/api/files/image?path=${encodeURIComponent(playingImageRelPath)}`}
                     alt={playingImageRelPath.split('/').pop()}
-                    className="block max-h-full max-w-full w-auto h-auto object-contain"
+                    className="block max-w-full w-auto h-auto"
                   />
                 </div>
               )}

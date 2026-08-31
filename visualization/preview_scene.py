@@ -93,7 +93,7 @@ def _recorded_fps(ma_cap_dir, seq_name: str) -> int | None:
 
 
 def build_scene(ma_3d_dir, seq_name: str, *, model_npz=None, fps: int = 30,
-                ma_cap_dir=None) -> dict:
+                ma_cap_dir=None, up_axis: str = "auto") -> dict:
     seq_dir = Path(ma_3d_dir) / seq_name
     params = sorted(glob(str(seq_dir / "smplx_params_body_id-*.npz")))
     if not params:
@@ -118,11 +118,15 @@ def build_scene(ma_3d_dir, seq_name: str, *, model_npz=None, fps: int = 30,
 
     skin_idx, skin_w = _top4_weights(weights[:, :_NUM_JOINTS])
 
-    # ONE scene-level up-axis + floor, same detection the Blender exporter
-    # uses (pooled joints of every body).
+    # ONE scene-level up-axis + floor, same machinery the Blender exporter
+    # uses. An explicit up_axis (the task config's global.up_axis, passed by
+    # the exporter API) is authoritative; "auto" pose-based detection is the
+    # fallback only, since it misreads floor-work sequences where the
+    # dancers actually lie on the ground (task 139 post-mortem: detected -y
+    # in a z-up scene and the viewer showed everyone flat).
     from optimization.export_blender import _scene_orient_and_floor
     (up_vec, up_idx, src, conf), floor = _scene_orient_and_floor(
-        str(seq_dir), params, "auto", fps)
+        str(seq_dir), params, up_axis or "auto", fps)
     axis = "xyz"[up_idx]
     up_axis = axis if up_vec[up_idx] >= 0 else f"-{axis}"
     log.info("up-axis %s (source=%s confidence=%.2f) floor=%s", up_axis, src, conf,
@@ -160,7 +164,7 @@ def build_scene(ma_3d_dir, seq_name: str, *, model_npz=None, fps: int = 30,
         })
 
     return {
-        "version": 2,
+        "version": 3,
         "seq": seq_name,
         "fps": int(fps),
         # "recorded" = the capture's own rate (gt/global.npz) is baked in;
@@ -192,11 +196,16 @@ def main(argv=None) -> int:
                    help="fallback frame rate; the ma_cap recorded rate wins when available")
     p.add_argument("--ma-cap-dir", default=None,
                    help="ma_cap output dir (parent of <seq>/) — source of the recorded fps")
+    p.add_argument("--up-axis", default="auto",
+                   help="World up axis ('z', 'y', '-y', ...). Pass the task "
+                        "config's global.up_axis; 'auto' pose-detection is "
+                        "the fallback and misreads floor-work sequences")
     args = p.parse_args(argv)
 
     t0 = time.perf_counter()
     scene = build_scene(args.ma_3d_dir, args.seq_name, model_npz=args.model_npz,
-                        fps=args.fps, ma_cap_dir=args.ma_cap_dir)
+                        fps=args.fps, ma_cap_dir=args.ma_cap_dir,
+                        up_axis=args.up_axis)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")

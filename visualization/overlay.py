@@ -53,6 +53,46 @@ if platform.system() != "Windows":
     os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 
+def _fix_pyopengl_egl_querier() -> None:
+    """Work around a PyOpenGL 3.1.0 bug that kills every overlay worker.
+
+    ``OpenGL/extensions.py`` coerces the queried specifier to bytes, then does
+    ``specifier.startswith(self.prefix)``. Every querier declares ``prefix`` as
+    bytes via ``as_8_bit(...)`` except the EGL one, which declares the plain
+    str ``'EGL_'`` (``OpenGL/raw/EGL/_types.py``). Since ``hasExtension``
+    iterates *all* registered queriers, any EGL extension check then raises::
+
+        TypeError: startswith first arg must be bytes or a tuple of bytes, not str
+
+    On a cluster node that takes out the whole render worker pool at once; the
+    serial retry below recovers most cameras but the first one through can
+    still be lost, leaving a truncated mp4 while the step exits 0.
+
+    pyrender 0.1.45 hard-pins ``PyOpenGL==3.1.0``, so the fixed release (3.1.7)
+    is not reachable by dependency resolution alone -- hence this patch. It is
+    a no-op on 3.1.7+, where the attribute is already bytes. Runs at import, so
+    it also applies inside spawned workers (they re-import this module).
+
+    Verified on the cluster (2026-08-14, node g196): with the stock
+    ``mamma_v1.1.0.sif`` every overlay worker fails and one camera's mp4 is
+    truncated at 34 frames; with this patch all cameras render in the worker
+    pool (task 151: 4x300 frames, zero failures).
+    """
+    try:
+        import OpenGL.EGL  # noqa: F401  (importing is what registers _EGLQuerier)
+        from OpenGL import extensions as _gl_extensions
+    except Exception:  # pragma: no cover - no GL stack here; nothing to patch
+        return
+    for querier in getattr(_gl_extensions.ExtensionQuerier, "registered", []):
+        for attr in ("prefix", "version_prefix"):
+            value = getattr(querier, attr, None)
+            if isinstance(value, str):
+                setattr(querier, attr, value.encode("ascii"))
+
+
+_fix_pyopengl_egl_querier()
+
+
 # Process-pool worker globals (filled by the initializer).
 _WORKER_VERTICES: Optional[List[np.ndarray]] = None
 _WORKER_BODY_IDS: Optional[List[int]] = None
@@ -145,7 +185,8 @@ class OverlayRenderer:
             device = os.environ.get("EGL_DEVICE_ID", "<unset>")
             raise RuntimeError(
                 "Failed to initialize pyrender offscreen renderer "
-                f"(PYOPENGL_PLATFORM={backend}, EGL_DEVICE_ID={device}). "
+                f"(PYOPENGL_PLATFORM={backend}, EGL_DEVICE_ID={device}, "
+                f"cause: {e!r}). "
                 "Pass --skip-overlay to bypass overlay rendering."
             ) from e
         self._fx, self._fy, self._cx, self._cy = fx, fy, cx, cy
@@ -251,29 +292,71 @@ def _compute_output_size(
     return out_w, out_h, out_w / float(src_w), out_h / float(src_h)
 
 
+def _ffmpeg_candidates() -> list:
+    """ffmpeg executables to try, most robust first.
+
+    imageio-ffmpeg's bundled binary is statically linked, so it survives
+    environments where a distro ffmpeg breaks on injected host libraries
+    (apptainer ``--nv`` shadows libOpenCL and a dynamically linked ffmpeg
+    dies with a symbol lookup error before encoding a single frame). The
+    system ffmpeg is the fallback."""
+    cands = []
+    try:
+        import imageio_ffmpeg
+        cands.append(imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception:  # noqa: BLE001 — optional dependency
+        pass
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        cands.append(sys_ffmpeg)
+    return cands
+
+
 def _reencode_to_h264(path: Path) -> None:
     """Best-effort re-encode to H.264/yuv420p for browser playback.
 
-    Silently no-ops if ``ffmpeg`` is not on the PATH or the encode fails.
-    """
-    if shutil.which("ffmpeg") is None or not path.exists():
+    Tries each ffmpeg candidate with a sanitized library path; keeps the
+    mp4v file and logs a loud warning if every candidate fails (an mp4v
+    video plays in native players but NOT in browsers)."""
+    if not path.exists():
         return
+    cands = _ffmpeg_candidates()
+    if not cands:
+        log.warning("no ffmpeg available; %s stays mp4v (browsers will not "
+                    "play it)", path)
+        return
+    env = dict(os.environ)
+    # Container runtimes prepend injected host libs (/.singularity.d/libs);
+    # ffmpeg needs none of them and a distro build can bind the wrong
+    # libOpenCL there. Drop those entries for the child only.
+    llp = [p for p in env.get("LD_LIBRARY_PATH", "").split(":")
+           if p and ".singularity.d" not in p and "/.apptainer" not in p]
+    env["LD_LIBRARY_PATH"] = ":".join(llp)
     tmp = path.with_suffix(".tmp.mp4")
-    try:
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(path),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart",
-                str(tmp),
-            ],
-            check=True,
-        )
-        os.replace(tmp, path)
-    except subprocess.CalledProcessError:
-        if tmp.exists():
-            tmp.unlink()
+    for exe in cands:
+        try:
+            subprocess.run(
+                [
+                    exe, "-y", "-hide_banner", "-loglevel", "error",
+                    "-i", str(path),
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    str(tmp),
+                ],
+                check=True,
+                env=env,
+            )
+            os.replace(tmp, path)
+            return
+        except (subprocess.CalledProcessError, OSError) as e:
+            log.warning("ffmpeg re-encode via %s failed: %s", exe, e)
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+    log.warning("%s stays mp4v (all ffmpeg candidates failed); browsers "
+                "will not play it", path)
 
 
 def _resolve_image_path(cam: Camera, frame_idx: int, prefix: str) -> Optional[Path]:
@@ -439,6 +522,7 @@ def _render_one_camera(
         log.warning("camera %s: failed to open VideoWriter for %s", cam.name, out_path)
         return CameraOverlayResult(cam.name, None, 0, time.perf_counter() - t0)
 
+    frames_written = 0
     try:
         with OverlayRenderer(
             fx=float(cam.intrinsics[0, 0]) * sx,
@@ -467,8 +551,16 @@ def _render_one_camera(
                 ]
                 rendered = renderer.render(verts_cam, colors, background_bgr=bg)
                 writer.write(rendered)
+                frames_written += 1
     finally:
         writer.release()
+        if frames_written == 0:
+            # A zero-frame mp4 is a ~258-byte husk that reads as a corrupted
+            # result downstream (GUI, collage). Absent beats broken.
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
 
     elapsed = time.perf_counter() - t0
     log.info(

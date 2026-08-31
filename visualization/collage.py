@@ -175,6 +175,10 @@ def make_preview_collage(
             out_path, n_written, rows, cols, len(caps),
         )
         if n_written == 0:
+            try:
+                out_path.unlink()      # zero-frame husk: absent beats broken
+            except OSError:
+                pass
             return False
         _reencode_to_h264(out_path)
         return True
