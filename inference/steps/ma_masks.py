@@ -112,12 +112,16 @@ def _preset_supplies_sam_checkpoint(flags) -> bool:
 def _resolve_sam_version(flags) -> str:
     """Read --sam_version from the preset's flags. Returns the LAST
     occurrence to match argparse semantics (a later override wins over
-    an earlier one in the same flags list). Defaults to
-    ``sam3_prompt`` (the shipped-preset default; the segmentation
-    subprocess's own argparse default is ``sam2``, so callers MUST be
-    explicit if they rely on a version other than sam3_prompt)."""
+    an earlier one in the same flags list).
+
+    Defaults to ``sam2`` because that is what the segmentation
+    subprocess's own argparse defaults to when the flag is absent: the
+    injection decision must mirror what will actually run. (The old
+    ``sam3_prompt`` fallback made a bare-flags config run sam2 WITHOUT a
+    checkpoint injection: fine locally where cwd-relative weights exist,
+    a guaranteed FileNotFoundError on cluster nodes.)"""
     flag_list = list(flags)
-    found: str = "sam3_prompt"
+    found: str = "sam2"
     for i, f in enumerate(flag_list):
         if f == "--sam_version" and i + 1 < len(flag_list):
             found = flag_list[i + 1]

@@ -86,7 +86,7 @@ Source: [`segmentation/run_ma_masks.py`](../segmentation/run_ma_masks.py).
 - `--expected_subjects N` — force the person count (auto-detected when unset).
 - `--init_frame N` — frame index used for person-detection initialisation.
 - `--interactive` — click-to-init through a GUI instead of YOLO auto-detect.
-- `--undistort` — apply Vicon-radial-2 undistortion before segmentation.
+- `--undistort` — apply lens undistortion (any supported model) before segmentation.
 
 #### `ma_2d`
 
@@ -296,3 +296,15 @@ for both engines, CLI and GUI) is documented in
 [`docker/README.md`](../docker/README.md); build files:
 [`docker/Dockerfile`](../docker/Dockerfile), [`docker/mamma.def`](../docker/mamma.def).
 Engines mix freely across steps in one preset.
+
+
+### Camera fan-out (cluster only)
+
+`ma_masks.fanout_cameras: true` in a run-config splits each sequence's
+ma_masks work into one cluster job per camera: an init job defines the
+identities, then the remaining cameras run as parallel jobs that resume the
+init cache and process one view each. Downstream steps wait for all cameras.
+Concurrency is capped by `ma_masks.submit_cfg.max_jobs` (DAGMan `MAXJOBS`).
+Local runs ignore the key. Trade-off: cross-camera identity references
+reduce to the init camera (measured equivalent on calibrated captures);
+wall time drops roughly by the concurrency factor.

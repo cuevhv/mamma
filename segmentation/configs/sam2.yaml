@@ -1,7 +1,7 @@
 # SAM2 configuration — recommended for most use cases.
 #
-# SAM2 tracks each object independently, supports multi-frame anchor prompts,
-# and is robust on dense multi-person scenes.
+# SAM2 tracks each object independently and is robust on dense multi-person
+# scenes.
 #
 # Usage:
 #   python run_ma_masks.py --sam_version sam2 --assignment_cfg configs/sam2.yaml ...
@@ -73,10 +73,18 @@ matching:
   # are discarded as noise.
   min_mask_area_ratio: 0.01
 
-  # ── Multi-frame anchors ──────────────────────────────────────────────────
-  # Anchors are additional box prompts injected at multiple frames before SAM
-  # propagation. They help SAM recover from tracking drift during occlusions
-  # or fast motion. SAM2 handles these well.
+  # Down-weight seed/prompt frames near the clip boundaries (an endpoint seed
+  # doubles the worst-case propagation distance). Length-scaled: full effect
+  # from ~3000 frames, inert at <=1000, so short clips are untouched.
+  seed_center_bias: 0.5
+
+  # ── Multi-frame anchors (legacy cross-camera strategy only) ──────────────
+  # Anchor prompts used when cross_camera_strategy resolves to match_then_track
+  # (the no-calibration fallback): non-init cameras are seeded from anchor
+  # detections matched to the init ids. The default track_then_match path does
+  # not use anchors, and the init camera always uses a single init-frame
+  # prompt per ID (multi-frame init anchors poison identity memory on
+  # similar-looking people and were removed).
 
   # Maximum anchor prompts per person. 0 = auto (computed from sequence length
   # and min_anchor_frame_gap). Set to 1 to disable multi-frame anchors.
@@ -107,20 +115,6 @@ matching:
   # the lower-scoring one is reassigned to a different frame.
   anchor_enforce_cross_id_uniqueness: true
   anchor_conflict_iou: 0.65
-
-  # ── Init camera anchors ──────────────────────────────────────────────────
-  # Same anchor concept but for the init camera (first camera processed).
-  # When enabled, the init camera gets multi-frame prompts before propagation,
-  # not just a single init-frame prompt.
-
-  # Enable multi-frame anchors on the init camera.
-  init_anchor_enable: true
-
-  # Minimum CLIP score for init-camera anchor candidates.
-  init_anchor_score_threshold: 0.2
-
-  # Max anchors per person on init camera. 0 = auto (same logic as max_anchors_per_id).
-  init_anchor_max_per_id: 0
 
   # ── Cross-camera scoring ─────────────────────────────────────────────────
   # When matching people from camera A to camera B, each detection gets a
@@ -164,6 +158,14 @@ masks:
   merge_duplicate_tracklets: true
   merge_iou_threshold: 0.95
 
+  # Identity-continuity cleanup. The continuity gate drops transient
+  # teleport/duplicate mask stretches (bit-identical on clean footage);
+  # collapse recovery re-detects a person lost to a tracker takeover and
+  # re-seeds only that sub-range, abstaining when the overlap has no
+  # takeover-scale boundary jump (genuine full-contact convergence).
+  mask_continuity_gate: true
+  recover_collapsed_tracklets: true
+
   # Step 2: Discard tracklets whose mask is too small on most frames.
   # A tracklet is discarded if its mask is below tiny_tracklet_min_area_ratio
   # (fraction of image area) on more than (1 - tiny_tracklet_min_frame_ratio)
@@ -187,6 +189,16 @@ masks:
   #     tracker before propagation (commits identity early).
   cross_camera_strategy: auto
 
+  # Cross-camera identity consensus (optional post-process, core/consensus.py):
+  # after all cameras finish, tracklet identities are voted per time segment
+  # against every other camera's tracklets (epipolar line-to-bbox), repairing
+  # mid-tracklet swaps a single camera cannot detect (two similar people
+  # crossing paths). Relabels mask PNGs only; abstains under ambiguity.
+  # auto (default: on when >=2 calibrated cameras) | false | true.
+  cross_camera_consensus: auto
+  consensus_min_margin_px: 40.0
+  consensus_min_segment_frames: 45
+
   # Seed selection for track_then_match seeds EVERY detected person on the seed frame
   # and lets the cross-camera remap prune surplus by identity (CLIP + epipolar), instead
   # of pre-trimming to the expected subject count by raw detection confidence — which
@@ -203,20 +215,12 @@ sam:
   # before it also get masks. Disable only if you always start from frame 0.
   propagate_reverse: true
 
-  # ── Memory bounding for long / many-camera clips (issue #14) ──────────────
+  # ── Memory bounding for long / many-camera clips ──────────────────────────
   # SAM loads the whole decoded video at init_state, so VRAM grows with frame
   # count. These knobs cap it; masks are identical (offload only moves tensors).
   offload_video_to_cpu: true       # keep decoded frames on host RAM, stream to GPU (≈free; bounds VRAM)
   offload_state_to_cpu: auto        # per-frame memory bank on host. auto = on past offload_state_min_frames; or true/false
   offload_state_min_frames: 1500    # frame count above which "auto" enables offload_state_to_cpu
-  # Store decoded frames as float16 — ~halves the HOST frame tensor (not VRAM:
-  # offload already keeps frames on the host). Opt-in & NOT byte-identical: ~94%
-  # of masks stay within IoU >= 0.99, but the lower input precision can drop a
-  # tiny/distant subject on borderline frames (measured: a 0.08%-of-frame mask
-  # vanished for ~6 frames). Prefer lazy_frame_loading below — it bounds host RAM
-  # more (-42% vs -19% @400f) AND is byte-identical; use fp16 only for an extra
-  # squeeze when that isn't enough. (issue #14)
-  fp16_frames: false
 
   # Lazy frame loading: load frames on demand (a small window in RAM) instead of
   # all N, bounding host RAM on long clips (offload bounds VRAM, not host). Two
@@ -225,9 +229,12 @@ sam:
   #   - mp4 input: cv2 chunk streaming (no disk extraction); near-identical to
   #     native decode (edge-pixel, ~0.99 IoU) and ~+24% wall from re-decoding.
   # Turn on when a long video would otherwise run out of host RAM; leave off for
-  # short clips that already fit. Off by default. (issue #14)
-  lazy_frame_loading: false
+  # short clips that already fit. "auto" enables it from lazy_min_frames up
+  # (mirrors offload_state_to_cpu: auto), so short clips keep the eager path.
+  lazy_frame_loading: auto
+  lazy_min_frames: 1500             # frame count above which "auto" enables it
   lazy_frame_window: 8              # window size for the image/frame (LRU) path
+  lazy_video_chunk: 64              # mp4 decode buffer, frames (host RAM ~2x chunk; lower on low-RAM machines)
 
   # Memory-state pruning: drop the per-frame mask-memory SAM no longer attends to
   # (everything outside a window around the current frame and around anchors), so
@@ -235,7 +242,7 @@ sam:
   # GT-equivalent, NOT byte-identical: the reverse propagation pass can still
   # reach pruned frames, so masks may differ by edge pixels (measured mean IoU
   # >=0.999 vs eager). Off by default. memory_keep_window must be >= the model's
-  # attention reach (16). (issue #14)
+  # attention reach (16).
   prune_memory_state: false
   memory_keep_window: 32
 
@@ -247,13 +254,13 @@ exports:
   # Render per-person crop-summary + t-SNE + cross-camera debug PNGs. Off by
   # default — these are pure matplotlib debugging aids and cost wall time. The
   # mask PNGs, masks.npy cache, and the img_bbx crops that drive cross-camera
-  # matching are produced regardless. Also settable via --debug_crop_summary. (issue #14)
+  # matching are produced regardless. Also settable via --debug_crop_summary.
   debug_crop_summary: false
 
   # Keep full-res frames + masks in masks.npy (~10x larger). Off by default:
   # masks.npy is slimmed to what matching/resume actually need (per-person
   # centroids + crops + CLIP features); the full-res masks remain on disk as the
-  # per-frame mask PNGs. Also settable via --debug_full_masks_npy. (issue #14)
+  # per-frame mask PNGs. Also settable via --debug_full_masks_npy.
   debug_full_masks_npy: false
 
   # Convert mask overlay images to MP4 video.

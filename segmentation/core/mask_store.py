@@ -1,7 +1,7 @@
 """Disk-backed store for per-frame, per-object segmentation masks.
 
-Background (issue #14)
-----------------------
+Background
+----------
 ``run_propagation`` used to collect SAM's output into an in-RAM dict shaped
 ``{frame_idx: {obj_id: bool_ndarray}}`` holding **every** frame's
 full-resolution masks for an entire camera at once. For a 40 s, multi-person
@@ -37,7 +37,7 @@ def _as_stored(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     arr = np.asarray(mask)
     shape = np.asarray(arr.shape, dtype=np.int64)
-    bits = np.packbits(arr.astype(bool).reshape(-1))
+    bits = np.packbits((arr > 0).reshape(-1))
     return bits, shape
 
 
@@ -90,7 +90,13 @@ class MaskStore:
             payload[f"s{int(oid)}"] = shape
             ids.append(int(oid))
         payload["ids"] = np.asarray(sorted(ids), dtype=np.int64)
-        np.savez(self._path(fidx), **payload)
+        # Compressed: packed binary person masks deflate extremely well
+        # (measured 756 KB -> 4 KB/frame on a salsa-resolution blob at
+        # +1.7 ms/frame, <1% of the propagation budget), which keeps the
+        # per-camera store in the tens-of-MB range instead of several GB
+        # (a single ~4900-frame camera can fill the node's /tmp with ~3 GB uncompressed).
+        # Reads are transparently decompressed by np.load.
+        np.savez_compressed(self._path(fidx), **payload)
         self._index[fidx] = self._path(fidx)
 
     # ---- reading --------------------------------------------------------

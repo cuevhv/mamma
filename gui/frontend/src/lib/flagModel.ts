@@ -8,7 +8,7 @@
  * the single place that knows how a setting's value is encoded as flag tokens.
  *
  * A flag entry is a shell fragment (the runner `shlex.split`s each one), e.g.
- * "--sam_version sam2" or "--lazy-frames". We treat the first whitespace-
+ * "--sam_version sam2" or "--undistort". We treat the first whitespace-
  * delimited word as the flag name and the remainder as its value.
  */
 

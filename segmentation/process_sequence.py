@@ -29,8 +29,34 @@ from core.video_reader import cam_data_from_video
 # previous `YOLO_CKPT = "weights/yolo12x.pt"` was a relative path that
 # only resolved when this script was invoked with cwd=segmentation/, which
 # was fragile and undocumented.
-SAM2_CKPT = os.environ.get("SAM2_CHECKPOINT", "weights/sam2.1_hiera_large.pt")
+# Default sam2 checkpoint: the repo's staged weights, resolved relative to
+# THIS file so it works from any cwd (local checkout and the synced cluster
+# repo share the layout). Explicit --sam_checkpoint always wins; the MAMMA
+# runner also injects it from MAMMA_SAM2_CHECKPOINT (inference/assets.py),
+# the same convention as every other asset. sam2 needs a real file path
+# (upstream API); sam3 needs none (SAM3_CKPT is a HuggingFace model id that
+# self-resolves), which is why only sam2 has a path here.
+SAM2_CKPT = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), os.pardir,
+    "data", "weights", "sam2", "sam2.1_hiera_large.pt"))
 SAM2_CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
+# Model config per checkpoint family; --sam_checkpoint picks the matching
+# architecture by filename (sam2.1_hiera_<size>.pt naming, Meta's release).
+SAM2_CFGS_BY_NAME = {
+    "base_plus": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+    "small": "configs/sam2.1/sam2.1_hiera_s.yaml",
+    "tiny": "configs/sam2.1/sam2.1_hiera_t.yaml",
+    "large": "configs/sam2.1/sam2.1_hiera_l.yaml",
+}
+
+
+def sam2_cfg_for_checkpoint(ckpt_path):
+    """Model config matching a SAM2 checkpoint filename (default: large)."""
+    name = os.path.basename(str(ckpt_path or ""))
+    for key, cfg in SAM2_CFGS_BY_NAME.items():
+        if key in name:
+            return cfg
+    return SAM2_CFG
 SAM3_CKPT = "facebook/sam3"
 SAM3_CFG = None
 
@@ -294,8 +320,7 @@ def process_seq(
         # Image directory mode: each subdirectory is a camera
         cam_dirs = find_image_cam_dirs(images_root_dir, cam_names=cam_names)
         if not cam_dirs:
-            _log("ERROR", f"No camera image directories found under '{images_root_dir}'.")
-            return
+            raise RuntimeError(f"No camera image directories found under '{images_root_dir}'.")
 
         if cam_init is None:
             cam_init = cam_names[0] if cam_names else os.path.basename(cam_dirs[0])
@@ -320,8 +345,7 @@ def process_seq(
     elif videos_dir:
         video_files = find_video_files(videos_dir, cam_names=cam_names)
         if not video_files:
-            _log("ERROR", f"No video files found under '{videos_dir}'.")
-            return
+            raise RuntimeError(f"No video files found under '{videos_dir}'.")
 
         if cam_init is None:
             cam_init = cam_names[0] if cam_names else os.path.splitext(os.path.basename(video_files[0]))[0]
@@ -369,8 +393,7 @@ def process_seq(
     else:
         ioi_npz_paths = find_ioi_npz_paths(data_folder, cam_names=cam_names)
         if not ioi_npz_paths:
-            _log("ERROR", f"No IOI files found under '{data_folder}'.")
-            return
+            raise RuntimeError(f"No IOI files found under '{data_folder}'.")
 
         if cam_init is None:
             cam_init = cam_names[0] if cam_names else os.path.basename(ioi_npz_paths[0]).split(".")[0]
@@ -465,8 +488,8 @@ def process_seq(
     _log("INFO", f"Init camera: {cam_init}, {n_cameras} cameras total")
 
     # --- Build pipeline ---
-    cfg = SAM2_CFG if sam_version == "sam2" else SAM3_CFG
     ckpt = sam_checkpoint or (SAM2_CKPT if sam_version == "sam2" else SAM3_CKPT)
+    cfg = sam2_cfg_for_checkpoint(ckpt) if sam_version == "sam2" else SAM3_CFG
     if sam_version == "sam3_prompt":
         cfg = SAM3_CFG
         ckpt = sam_checkpoint or SAM3_CKPT
@@ -504,8 +527,7 @@ def process_seq(
         )
 
     if masks is None:
-        _log("ERROR", "Init-camera segmentation failed. Stopping.")
-        return
+        raise RuntimeError("Init-camera segmentation failed (no usable detections on the init camera); check --cam_init and detection thresholds.")
 
     if expected_subjects is None:
         expected_subjects = pipeline.expected_subjects or len(masks)
@@ -561,10 +583,37 @@ def process_seq(
             f"{', '.join(failed_cameras)}. No outputs were written for them; "
             "re-run to retry (successful cameras' caches are reused).")
 
+    # --- Cross-camera identity consensus (optional post-process) ---
+    # Repairs mid-tracklet swaps a single camera cannot see, by letting the
+    # other cameras vote per time segment. Standalone module; reads slim
+    # caches, renames mask PNGs, touches nothing else. Off by default;
+    # "auto" enables it when >=2 cameras carry calibration.
+    _cons_cfg = (assignment_config or {}).get("masks", {}) \
+        if isinstance(assignment_config, dict) else {}
+    _cons_mode = _cons_cfg.get("cross_camera_consensus", False)
+    from core.consensus import resolve_mode as _cons_resolve, \
+        run_cross_camera_consensus as _cons_run
+    _all_cams = [init_cam_data] + list(remaining)
+    _calibrated = [c for c in _all_cams
+                   if isinstance(c, dict) and "cam_int" in c and "cam_ext" in c]
+    if _cons_resolve(_cons_mode, len(_calibrated)):
+        _by_name = {str(c.get("cam_name")): c for c in _calibrated
+                    if c.get("cam_name")}
+        _cons_cfg = dict(_cons_cfg)
+        _cons_cfg.setdefault("consensus_anchor_cam",
+                             str(init_cam_data.get("cam_name") or ""))
+        if init_frame is not None:
+            _cons_cfg.setdefault("consensus_anchor_frame", int(init_frame))
+        _reports = _cons_run(seq_out_path, _by_name, cfg=_cons_cfg,
+                             log=lambda m: _log("INFO", m))
+        _n = sum(len(r.relabeled) for r in _reports)
+        _log("INFO", f"Cross-camera consensus: {_n} segment(s) relabeled "
+                     f"across {len(_reports)} camera(s).")
+
     # --- Cross-camera consistency check (debug viz) ---
     # Stacks the per-person crop-summary PNGs across cameras; those PNGs are only
     # produced when debug_crop_summary is on, so gate this on the same flag to
-    # avoid empty work by default. (issue #14)
+    # avoid empty work by default.
     _debug_viz = bool(isinstance(assignment_config, dict)
                       and assignment_config.get("exports", {}).get("debug_crop_summary", False))
     if _debug_viz:
@@ -629,7 +678,7 @@ def main(args):
 
     if not os.path.isdir(args.dataset_dir):
         _log("ERROR", f"Dataset directory does not exist: {args.dataset_dir}")
-        return
+        sys.exit(1)
 
     dataset_name = os.path.basename(args.dataset_dir)
     out_dir = os.path.join(args.out, dataset_name)
@@ -637,11 +686,11 @@ def main(args):
 
     if not args.seq_name:
         _log("ERROR", "--seq_name is required.")
-        return
+        sys.exit(1)
     data_folder = os.path.join(args.dataset_dir, args.seq_name)
     if not os.path.isdir(data_folder):
         _log("ERROR", f"Sequence folder does not exist: {data_folder}")
-        return
+        sys.exit(1)
 
     assignment_config = load_assignment_config(args.cfg)
     if assignment_config:

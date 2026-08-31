@@ -71,8 +71,8 @@ def _extra(key: str) -> dict:
 
 def _flags(names: list) -> dict:
     """One toggle backing several store_true flags — all emitted/removed together
-    (e.g. a "Low-memory mode" switch that sets both --lazy-frames and
-    --prune-memory). Reads as ON when ANY of the flags is present.
+    (e.g. one robustness switch that sets several related step flags).
+    Reads as ON when ANY of the flags is present.
     """
     return {"kind": "flags", "flags": list(names)}
 
@@ -172,8 +172,8 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             id="cam_init", label="Subject reference camera", widget="text",
             target=_flag("--cam_init"), default=None, omit_when_default=True,
             placeholder="e.g. IOI_09",
-            note="Camera whose view seeds the people's IDs — every person you want "
-                 "tracked must be visible in that view at least for a few frames. Leave blank to pick the first camera.",
+            note="Camera used to initialize person IDs. Each person you want to track must "
+                 "be clearly visible in this view for at least a few frames. Leave blank to use the first camera.",
             help="Camera used to initialize person identities.",
         ),
         Setting(
@@ -181,13 +181,6 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             target=_flag("--skip_masked_outputs", valued=False, invert=True), default=True,
             help="Write the mask overlay images/MP4 (viz-only, not consumed downstream). "
                  "On by default; turning it off passes --skip_masked_outputs (saves time and disk).",
-        ),
-        Setting(
-            id="low_memory", label="Low-memory mode", widget="toggle",
-            target=_flags(["--lazy-frames", "--prune-memory"]), default=False,
-            help="For long clips that would otherwise run out of memory. Streams frames on "
-                 "demand and prunes the tracker's accumulated per-frame memory, so memory stays "
-                 "roughly flat instead of growing with the clip. Off by default — normal-length clips don't need it.",
         ),
         Setting(
             id="debug_crop_summary", label="Debug masks", widget="toggle",
@@ -238,12 +231,14 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
         ),
         Setting(
             id="occlusion_aware_weights", label="Heavy occlusion-aware", widget="toggle",
-            target=_flags(["--occlusion-aware-weights", "--tri-irls"]), default=False,
+            target=_flags(["--occlusion-aware-weights", "--tri-irls", "--tri-outlier-gate"]), default=False,
             help="Enable to handle extreme occlusion, i.e. when body parts stay hidden "
                  "across the majority of camera views. Turns on occlusion-aware fitting "
-                 "weights plus a slower, occlusion-robust triangulation of the initial "
-                 "3D points. For finer control, set --occlusion-aware-weights and "
-                 "--tri-irls separately as flags in the preset.",
+                 "weights, a slower occlusion-robust triangulation of the initial 3D "
+                 "points, and a gate that bridges isolated 'teleport' frames (a body "
+                 "jumping metres away for a frame or two on bad masks or re-ID). For "
+                 "finer control, set --occlusion-aware-weights, --tri-irls and "
+                 "--tri-outlier-gate separately as flags in the preset.",
         ),
         Setting(
             id="use_vposer", label="Enable Pose Prior (VPoser)", widget="toggle",

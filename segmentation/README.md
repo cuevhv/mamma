@@ -16,8 +16,8 @@ and matches them to the init camera's IDs.
 
 | Mode                              | Description                                                          | YOLO? |
 |-----------------------------------|---------------------------------------------------------------------|:-----:|
-| `--sam_version sam2`              | YOLO detects people → SAM2 tracks with multi-frame bbox anchors      |  Yes  |
-| `--sam_version sam3`              | YOLO detects people → SAM3 tracks (single bbox anchor)               |  Yes  |
+| `--sam_version sam2`              | YOLO detects people → SAM2 tracks from single-frame box prompts      |  Yes  |
+| `--sam_version sam3`              | YOLO detects people → SAM3 tracks (single bbox prompt)               |  Yes  |
 | `--sam_version sam3_prompt`       | SAM3 text prompt `"person"` detects **and** tracks, all in SAM3's full video predictor |  No   |
 | `--sam_version sam3_prompt_light` | Same text prompt `"person"`, but detection runs on SAM3's detector and tracking on the lean SAM3 tracker — lighter than `sam3_prompt` (see Performance below) |  No   |
 
@@ -45,17 +45,14 @@ remapped to the init camera's ids using the CLIP + epipolar signals above
 identity at seed time and lets the remap drop bystanders/outsiders. Control it with
 `--cross-camera-strategy {auto,track_then_match,match_then_track}` (default `auto`:
 track-then-match whenever epipolar calibration is available; `sam3_prompt` always
-tracks-then-matches) or the shortcut `--legacy-cross-camera`.
+tracks-then-matches).
 
-**Long-clip memory flags** (both off by default; see `configs/sam2.yaml` for the
-matching config keys):
-
-- `--lazy-frames` — bound host RAM by loading frames on demand instead of all at
-  once. Image/frame input is byte-identical; mp4 input streams via cv2
-  (near-identical, ~0.99 IoU, ~+24% wall).
-- `--prune-memory` — bound SAM2's growing per-frame memory state (GT-equivalent,
-  edge-pixel differences possible). Currently effective for the SAM2 predictor
-  only; the sam3 tracker backends keep their memory elsewhere.
+**Long-clip memory** is bounded automatically: decoded frames stay on the host
+(`sam.offload_video_to_cpu`), the per-frame memory bank offloads past 1500 frames
+(`sam.offload_state_to_cpu: auto`), and frame loading turns lazy past the same
+length (`sam.lazy_frame_loading: auto`; image input is byte-identical, mp4 input
+streams via cv2 at ~0.99 IoU and ~+24% wall). All knobs live in the `sam:` section
+of the config YAML, including the opt-in `prune_memory_state` for extreme clips.
 
 > **Note**: If SAM’s tracker deteriorates or fails to maintain identity consistency partway through a sequence in a
 > single camera view, for example under severe occlusion, the pipeline does not explicitly detect or correct such
@@ -93,7 +90,7 @@ differences are **VRAM** and **how long a clip each can process**:
 
 Per-camera memory is driven mainly by sequence length. `sam2`, `sam3` and
 `sam3_prompt_light` bound VRAM via CPU offload (`sam.offload_video_to_cpu`,
-`offload_state_to_cpu`, `fp16_frames`); `sam3_prompt` (session API) is capped by an
+`offload_state_to_cpu`); `sam3_prompt` (session API) is capped by an
 internal cache prune (`sam.sam3_prune_cache_window`).
 
 ## Installation
@@ -270,7 +267,7 @@ output/<seq_name>/
         masked_outputs/          # colored overlay video (MP4)
         pre_remap/               # raw SAM3 IDs before remapping (sam3_prompt)
         person_XX_crop_summary.png  # per-person crop samples across frames
-        anchor_report.json       # seed-frame anchor details (init camera; not sam3_prompt)
+- `anchor_report.json` (legacy match_then_track strategy only): anchor prompts used per camera
         anchor_visualizations/   # seed-frame prompt visuals (sam2 / sam3 / sam3_prompt_light)
 ```
 

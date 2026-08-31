@@ -49,7 +49,7 @@ RUN micromamba run -n "${SAM_ENV_NAME}" \
 RUN mkdir -p /opt/masks/weights && \
     wget -q -O /opt/masks/weights/sam2.1_hiera_large.pt \
         https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt || \
-        echo "WARNING: SAM2 weights download failed. Bind-mount or set SAM2_CHECKPOINT."
+        echo "WARNING: SAM2 weights download failed. Bind-mount the weights or pass --sam_checkpoint."
 
 # Clean caches
 RUN micromamba clean --all -y || true

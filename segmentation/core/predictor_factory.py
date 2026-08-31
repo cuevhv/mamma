@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", message=".*pkg_resources.*deprecated.*", categ
 
 logger = logging.getLogger(__name__)
 
-# NOTE: this and _frame_store_fp16 below are process-wide module state read by the
+# NOTE: this is process-wide module state read by the
 # patched SAM loaders. They assume a single active pipeline per process (the runner's
 # model — set once per run, before loading). Two pipelines with different settings in
 # one process would race; revisit if the GUI ever loads pipelines concurrently.
@@ -45,19 +45,6 @@ def clear_frame_filter():
     _frame_name_filter = None
 
 
-# Frame-storage dtype: when True, the patched loaders allocate the decoded-frame
-# tensor as float16 instead of float32, halving the per-clip frame memory (CPU or
-# GPU) at a negligible accuracy cost (per the SAM2 maintainers). Opt-in via the
-# ``sam.fp16_frames`` config; default off keeps outputs byte-identical. (issue #14)
-_frame_store_fp16 = False
-
-
-def set_frame_storage_fp16(enabled: bool):
-    """Enable/disable float16 storage of the decoded-frame tensor."""
-    global _frame_store_fp16
-    _frame_store_fp16 = bool(enabled)
-
-
 # Lazy frame loading: load frames on demand (a small window in RAM) instead of
 # materializing all N decoded frames at once, so host RAM is O(window) not
 # O(num_frames) — the way to bound host RAM on long clips (offload bounds VRAM,
@@ -68,15 +55,23 @@ def set_frame_storage_fp16(enabled: bool):
 #     Byte-identical; cost is re-reading each frame from disk once per pass.
 #   - native mp4 input -> _VideoStreamFrameLoader (cv2 chunk streaming). No disk
 #     extraction; near-identical to the stock decord decode (edge-pixel rounding,
-#     ~0.99 IoU) and ~+24% wall from re-decoding on revisit. Opt-in. (issue #14)
+#     ~0.99 IoU) and ~+24% wall from re-decoding on revisit. Opt-in.
 _lazy_frame_loading = False
 _lazy_window = 8
 _lazy_video_chunk = 64        # frames decoded per cv2 seek on the native-mp4 path
-def set_lazy_frame_loading(enabled: bool, window: int = 8):
-    """Enable/disable lazy (LRU-windowed) decoded-frame loading."""
-    global _lazy_frame_loading, _lazy_window
+
+
+def set_lazy_frame_loading(enabled: bool, window: int = 8, video_chunk: int = 64):
+    """Enable/disable lazy (LRU-windowed) decoded-frame loading.
+
+    ``video_chunk`` sizes the mp4 path's decode buffer (host RAM is about
+    2 x chunk x one decoded frame with the staged chunk included); lower it
+    on low-RAM machines at the cost of more frequent decodes.
+    """
+    global _lazy_frame_loading, _lazy_window, _lazy_video_chunk
     _lazy_frame_loading = bool(enabled)
     _lazy_window = max(1, int(window))
+    _lazy_video_chunk = max(1, int(video_chunk))
 
 
 class _LazyEvictingFrameLoader:
@@ -110,27 +105,64 @@ class _LazyEvictingFrameLoader:
         self._cache = OrderedDict()
         self.video_height = None
         self.video_width = None
+        # Decode-ahead prefetch: SAM walks frames in monotonic sweeps, so
+        # while the GPU processes frame i, background workers decode i+d..
+        # i+d*ahead (d inferred from the request direction). The GPU then
+        # never waits on disk/NFS/decode; identical tensors, earlier.
+        self._prefetch_ahead = min(6, self._window - 1)
+        self._pending = set()
+        self._exec = None
+        self._last_idx = None
+        self._dir = 1
         self[0]  # prime dims (and cache frame 0)
 
     def __len__(self):
         return len(self._paths)
 
-    def __getitem__(self, idx):
-        with self._lock:
-            cached = self._cache.get(idx)
-            if cached is not None:
-                self._cache.move_to_end(idx)
-                return cached
+    def _load_one(self, idx):
         img, self.video_height, self.video_width = self._load(self._paths[idx], self._size)
         img = img.to(self._mean.dtype)
         if not self._offload:
             img = img.to(self._device)
         img = (img - self._mean) / self._std
         with self._lock:
-            self._cache[idx] = img
-            while len(self._cache) > self._window:
-                self._cache.popitem(last=False)  # evict least-recently-used
+            self._pending.discard(idx)
+            if idx not in self._cache:
+                self._cache[idx] = img
+                while len(self._cache) > self._window:
+                    self._cache.popitem(last=False)  # evict least-recently-used
         return img
+
+    def _schedule_prefetch(self, idx):
+        if self._prefetch_ahead < 1:
+            return
+        if self._exec is None:
+            from concurrent.futures import ThreadPoolExecutor
+            # Sized for slow sources: a cold-NFS PNG costs ~175 ms to acquire
+            # while a model step is ~40-120 ms, so 2 workers cannot keep up.
+            self._exec = ThreadPoolExecutor(max_workers=4)
+        with self._lock:
+            if self._last_idx is not None and idx != self._last_idx:
+                self._dir = 1 if idx > self._last_idx else -1
+            self._last_idx = idx
+            targets = []
+            for k in range(1, self._prefetch_ahead + 1):
+                j = idx + self._dir * k
+                if 0 <= j < len(self._paths) and j not in self._cache \
+                        and j not in self._pending:
+                    self._pending.add(j)
+                    targets.append(j)
+        for j in targets:
+            self._exec.submit(self._load_one, j)
+
+    def __getitem__(self, idx):
+        self._schedule_prefetch(idx)
+        with self._lock:
+            cached = self._cache.get(idx)
+            if cached is not None:
+                self._cache.move_to_end(idx)
+                return cached
+        return self._load_one(idx)
 
 
 class _VideoStreamFrameLoader:
@@ -145,7 +177,7 @@ class _VideoStreamFrameLoader:
     Per-frame processing matches the eager path (resize, /255, ``(img-mean)/std``);
     pixels are near-identical to native decode (cv2 vs decord differ by at most
     edge-pixel rounding). cv2 is used rather than decord because decord's reader
-    corrupts the heap after a few dozen random reads. (issue #14)
+    corrupts the heap after a few dozen random reads.
     """
 
     def __init__(self, video_path, image_size, img_mean, img_std,
@@ -156,7 +188,7 @@ class _VideoStreamFrameLoader:
         # is called concurrently. cv2.VideoCapture is a single shared decoder and is NOT
         # thread-safe (concurrent reads segfault), so serialize access with a lock. The
         # export walks frames roughly in order, so the chunk buffer still hits and the
-        # serialization cost is negligible. (issue #14)
+        # serialization cost is negligible.
         self._lock = threading.Lock()
         self._path = video_path
         self._size = image_size
@@ -172,6 +204,16 @@ class _VideoStreamFrameLoader:
         self._buf = {}
         self._buf_chunk = -1
         self._pos = 0  # next frame index the capture will read
+        # Chunk-ahead prefetch state (own capture: cv2 readers are not
+        # shareable across threads). One staged chunk at a time.
+        self._stage_lock = threading.Lock()
+        self._staged = None
+        self._stage_busy = False
+        self._stage_exec = None
+        self._pf_cap = None
+        self._pf_pos = 0
+        self._last_chunk = None
+        self._dir = 1
 
     def __len__(self):
         return self._n
@@ -180,23 +222,38 @@ class _VideoStreamFrameLoader:
         with self._lock:
             c = idx // self._chunk
             if c != self._buf_chunk:
-                self._load_chunk(c)
+                staged = None
+                with self._stage_lock:
+                    if self._staged is not None and self._staged[0] == c:
+                        staged = self._staged
+                        self._staged = None
+                if staged is not None:
+                    self._buf, self._buf_chunk = staged[1], c
+                else:
+                    self._buf = self._decode_chunk(self._cap, c, main=True)
+                    self._buf_chunk = c
+                if self._last_chunk is not None and c != self._last_chunk:
+                    self._dir = 1 if c > self._last_chunk else -1
+                self._last_chunk = c
+                self._stage_ahead(c + self._dir)
             return self._buf[idx]
 
-    def _load_chunk(self, c):
+    def _decode_chunk(self, cap, c, main=False):
         import cv2
         import torch
         start = c * self._chunk
         end = min(start + self._chunk, self._n)
-        if self._pos != start:  # avoid a seek when we're already streaming in order
-            self._cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-            self._pos = start
+        pos_attr = "_pos" if main else "_pf_pos"
+        if getattr(self, pos_attr) != start:  # avoid a seek when streaming in order
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+            setattr(self, pos_attr, start)
         frames = []
         for _ in range(start, end):
-            ok, bgr = self._cap.read()
+            ok, bgr = cap.read()
             if not ok:
-                raise RuntimeError(f"cv2 failed to read frame {self._pos} of '{self._path}'.")
-            self._pos += 1
+                raise RuntimeError(
+                    f"cv2 failed to read frame {getattr(self, pos_attr)} of '{self._path}'.")
+            setattr(self, pos_attr, getattr(self, pos_attr) + 1)
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             rgb = cv2.resize(rgb, (self._size, self._size))
             frames.append(torch.from_numpy(rgb))
@@ -204,8 +261,37 @@ class _VideoStreamFrameLoader:
         if not self._offload:
             batch = batch.to(self._device)
         batch = (batch - self._mean) / self._std
-        self._buf = {start + i: batch[i] for i in range(end - start)}
-        self._buf_chunk = c
+        return {start + i: batch[i] for i in range(end - start)}
+
+    def _stage_ahead(self, c):
+        """Decode chunk ``c`` on a background thread (own cv2 capture) so the
+        next chunk switch swaps in without the GPU waiting on the decoder."""
+        if not (0 <= c * self._chunk < self._n):
+            return
+        with self._stage_lock:
+            if self._stage_busy or (self._staged is not None and self._staged[0] == c):
+                return
+            self._stage_busy = True
+        if self._stage_exec is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._stage_exec = ThreadPoolExecutor(max_workers=1)
+
+        def _work():
+            import cv2
+            try:
+                if self._pf_cap is None:
+                    self._pf_cap = cv2.VideoCapture(self._path)
+                    self._pf_pos = 0
+                buf = self._decode_chunk(self._pf_cap, c, main=False)
+                with self._stage_lock:
+                    self._staged = (c, buf)
+            except Exception:
+                pass  # prefetch is best-effort; the hot path decodes on miss
+            finally:
+                with self._stage_lock:
+                    self._stage_busy = False
+
+        self._stage_exec.submit(_work)
 
 
 def _install_video_lazy_patch(misc_module):
@@ -218,7 +304,6 @@ def _install_video_lazy_patch(misc_module):
     at a time — same O(window) host RAM as the JPG path, no disk extraction. The
     caller (``load_video_frames``) passes the model's own img_mean/img_std, so the
     same patch works for both sam2 and sam3 despite their different normalizations.
-    (issue #14)
     """
     import torch
     if getattr(misc_module, "_mamma_video_lazy_patched", False):
@@ -335,7 +420,7 @@ def _patch_sam2_png_support():
         if num_frames == 0:
             raise RuntimeError(f"no images found in {jpg_folder}")
         img_paths = [os.path.join(jpg_folder, frame_name) for frame_name in frame_names]
-        store_dtype = torch.float16 if _frame_store_fp16 else torch.float32
+        store_dtype = torch.float32
         img_mean = torch.tensor(img_mean, dtype=store_dtype)[:, None, None]
         img_std = torch.tensor(img_std, dtype=store_dtype)[:, None, None]
 
@@ -442,7 +527,7 @@ def _patch_sam3_png_support():
         if num_frames == 0:
             raise RuntimeError(f"no images found in {jpg_folder}")
         img_paths = [os.path.join(jpg_folder, frame_name) for frame_name in frame_names]
-        store_dtype = torch.float16 if _frame_store_fp16 else torch.float32
+        store_dtype = torch.float32
         img_mean = torch.tensor(img_mean, dtype=store_dtype)[:, None, None]
         img_std = torch.tensor(img_std, dtype=store_dtype)[:, None, None]
 
@@ -566,7 +651,7 @@ class _Sam3TextDetectMixin:
     ``model.detector``). Pointing ``self._detector`` at it lets us text-detect
     "person" on a frame with **no extra model load** — a drop-in replacement for
     YOLO that returns the same ``(bbox_xyxy, score)`` the pipeline expects, so
-    anchors / bootstrap / cross-camera matching are reused unchanged. (issue #14)
+    anchors / bootstrap / cross-camera matching are reused unchanged.
     """
 
     _detector = None
@@ -590,7 +675,7 @@ class _Sam3TextDetectMixin:
         # at self.confidence_threshold *inside* grounding (default 0.5), and we
         # cache the processor — so without this, the pipeline's lower-threshold
         # fallback (0.4/0.25/0.15 on hard frames) would be a silent no-op for SAM3.
-        # Set it before set_text_prompt (which runs grounding). (issue #14)
+        # Set it before set_text_prompt (which runs grounding).
         self._text_proc.confidence_threshold = float(conf_thresh)
         # Pass a PIL image: Sam3Processor.set_image reads dims as image.shape[-2:]
         # for arrays, which mis-reads (H,W,3) numpy as width=3 → collapsed x-scale.
@@ -630,7 +715,7 @@ class _Sam3VideoAdapter(_Sam3TextDetectMixin):
         self._video_width = None
         self._video_height = None
         # sam3_prompt_light: keep the detector for text_detect (mixin) — the lean
-        # alternative to the 16x multiplex session predictor. (issue #14)
+        # alternative to the 16x multiplex session predictor.
         self._detector = sam3_model.detector if keep_detector else None
         self._text_proc = None
 
@@ -677,24 +762,106 @@ class _Sam3VideoAdapter(_Sam3TextDetectMixin):
         _, out_obj_ids, _low_res, video_res_masks, *_ = result
         return _, out_obj_ids, video_res_masks
 
-    def propagate_in_video(self, inference_state, reverse=False, **kwargs):
+    def propagate_in_video(self, inference_state, reverse=False,
+                           start_frame_idx=None, max_frame_num_to_track=None,
+                           **kwargs):
         """
         Adapt SAM3 tracker's 5-tuple yield to SAM2's 3-tuple.
 
         start_frame_idx=None lets SAM3 auto-detect the first annotation frame,
-        which is critical for reverse propagation (backward from the anchor frame).
-        propagate_preflight=True is only effective on the first call (consolidates
-        temp outputs); subsequent calls (e.g. reverse pass) are a no-op.
+        which is critical for reverse propagation (backward from the anchor
+        frame). Explicit sub-range args are FORWARDED (collapse recovery
+        re-propagates only a run's frames; silently swallowing these kwargs
+        used to turn every recovery into a full-clip pass on this backend).
+        propagate_preflight=True is only effective on the first call
+        (consolidates temp outputs); subsequent calls are a no-op.
         """
         for result in self._tracker.propagate_in_video(
             inference_state=inference_state,
-            start_frame_idx=None,
-            max_frame_num_to_track=None,
+            start_frame_idx=start_frame_idx,
+            max_frame_num_to_track=max_frame_num_to_track,
             reverse=reverse,
             propagate_preflight=True,
         ):
             frame_idx, obj_ids, _low_res, video_res_masks, _scores = result
             yield frame_idx, obj_ids, video_res_masks
+
+
+class _HostImageBatchView:
+    """List-like view over a host-resident decoded-frame tensor that returns
+    DEVICE slices on indexing.
+
+    SAM3's video inference packs the whole video into ``BatchedDatapoint.
+    img_batch`` and copies it to the GPU wholesale, but every consumer only
+    ever reads per-frame slices (``img_batch[img_ids]``), and the image model
+    already branches on non-tensor batches. Keeping the tensor on host and
+    moving each requested slice bounds VRAM to O(slice) instead of O(video).
+    """
+
+    # Pin only small batches: pin_memory() COPIES the tensor, so pinning a
+    # multi-GB video transiently doubles host RAM for a ~1 ms/frame transfer
+    # saving that the model step dwarfs anyway.
+    _PIN_MAX_BYTES = 2 << 30
+
+    def __init__(self, images, device):
+        import torch  # noqa: F401 — module avoids a top-level torch import
+        if images.nbytes <= self._PIN_MAX_BYTES:
+            try:
+                images = images.pin_memory()
+            except RuntimeError:
+                pass  # pinning is a throughput optimization, never a requirement
+        self._images = images
+        self.device = device
+
+    def __len__(self):
+        return len(self._images)
+
+    @property
+    def shape(self):
+        return self._images.shape
+
+    @property
+    def dtype(self):
+        return self._images.dtype
+
+    def __getitem__(self, ids):
+        import torch
+        if torch.is_tensor(ids):
+            ids = ids.to("cpu")
+        return self._images[ids].to(self.device, non_blocking=True)
+
+    def to(self, *args, **kwargs):
+        return self  # absorb further copy attempts; slices move on demand
+
+
+def _patch_sam3_prompt_host_batch():
+    """Keep ``BatchedDatapoint.img_batch`` on the host during sam3_prompt
+    session start, honoring ``offload_video_to_cpu`` end to end (the session
+    request only offloads INGESTION; without this the batch construction
+    re-uploads the full video tensor to the GPU)."""
+    try:
+        from sam3.model import sam3_video_inference as svi
+    except Exception:
+        return
+    if getattr(svi, "_mamma_host_img_batch", False):
+        return
+    orig = svi.copy_data_to_device
+
+    def copy_keep_img_batch_on_host(data, device, *args, **kwargs):
+        import torch
+        img = getattr(data, "img_batch", None)
+        if img is not None and torch.is_tensor(img) and img.dim() == 4 \
+                and img.device.type == "cpu" and str(device) != "cpu":
+            import dataclasses
+            rest = {f.name: getattr(data, f.name) for f in dataclasses.fields(data)
+                    if f.name != "img_batch"}
+            rest = {k: orig(v, device, *args, **kwargs) for k, v in rest.items()}
+            return type(data)(img_batch=_HostImageBatchView(img, device), **rest)
+        return orig(data, device, *args, **kwargs)
+
+    svi.copy_data_to_device = copy_keep_img_batch_on_host
+    svi._mamma_host_img_batch = True
+    logger.info("sam3_prompt: video batch stays on host; frames stream to GPU per slice.")
 
 
 class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
@@ -727,7 +894,7 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
         self._video_height = None
         # Reuse the predictor's own (already-loaded) image detector for text_detect
         # (mixin) — replaces the redundant YOLO call in the multi-view bootstrap,
-        # with no extra model load. (issue #14)
+        # with no extra model load.
         self._detector = getattr(getattr(self._predictor, "model", None), "detector", None)
         self._text_proc = None
 
@@ -757,10 +924,20 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
         if applied:
             logger.info("SAM3 tracking overrides applied: " + ", ".join(applied))
 
-    def start_session(self, video_path):
-        """Start a session on a video (directory of frames or MP4)."""
+    def start_session(self, video_path, offload_video_to_cpu=False):
+        """Start a session on a video (directory of frames or MP4).
+
+        ``offload_video_to_cpu`` is forwarded to the session request (bounds
+        INGESTION VRAM: the upstream default uploads the whole fp16 video
+        tensor at decode) and additionally keeps the tracking batch's
+        ``img_batch`` on host (see ``_patch_sam3_prompt_host_batch``), so
+        session VRAM is bounded by per-frame slices end to end.
+        """
+        if offload_video_to_cpu:
+            _patch_sam3_prompt_host_batch()
         response = self._predictor.handle_request(
-            request=dict(type="start_session", resource_path=video_path)
+            request=dict(type="start_session", resource_path=video_path,
+                         offload_video_to_cpu=bool(offload_video_to_cpu))
         )
         self._session_id = response["session_id"]
         # Cache video dimensions from the inference state
@@ -832,7 +1009,7 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
 
         If ``sink`` is provided it is called as ``sink(frame_idx, {obj_id: mask})``
         for each frame and nothing is accumulated — bounded memory, used by the
-        pipeline to stream masks straight to a disk-backed store (issue #14).
+        pipeline to stream masks straight to a disk-backed store.
         Otherwise the full ``{frame_idx: {obj_id: mask}}`` dict is returned
         (back-compatible).
 
@@ -845,7 +1022,7 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
         peak cache is bounded to ~2W frames. We already stream each frame's masks
         out via ``sink`` and never re-query, so this is dead weight here — but the
         prune is gated and parity-checked because the bidirectional pass can
-        re-read cached frames. (issue #14)
+        re-read cached frames.
         """
         import numpy as np
         video_segments = {} if sink is None else None
@@ -872,7 +1049,7 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
                 sink(frame_idx, masks)
             else:
                 video_segments[frame_idx] = masks
-            # Bound the session output cache (issue #14): drop entries outside the
+            # Bound the session output cache: drop entries outside the
             # sliding window around the just-emitted frame; never drop keep_frames.
             if cfo is not None:
                 lo, hi = frame_idx - W, frame_idx + W

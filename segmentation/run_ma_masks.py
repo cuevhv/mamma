@@ -33,6 +33,7 @@ Examples:
 """
 import argparse
 import os
+import sys
 
 # Force matplotlib's non-interactive backend before any import below pulls
 # in ``matplotlib.pyplot`` (core.pipeline does, at module load). Without
@@ -63,7 +64,7 @@ Input modes:
   Use --videos_dir to read MP4 video files instead (frames are extracted automatically).
 
 SAM backends:
-  --sam_version sam2   SAM2 (default, faster propagation, requires anchors for drift)
+  --sam_version sam2   SAM2 (default, faster propagation)
   --sam_version sam3   SAM3 (better tracking quality, auto-downloads from HuggingFace)
 """,
     )
@@ -164,10 +165,6 @@ SAM backends:
                              'per-camera track then whole-tracklet remap. '
                              'match_then_track: legacy — commit identity at seed time. '
                              '(sam3_prompt is always track-then-match regardless.)')
-    parser.add_argument('--legacy-cross-camera', '--legacy_cross_camera',
-                        dest='legacy_cross_camera', action='store_true',
-                        help='Shortcut for --cross-camera-strategy match_then_track.')
-
     # --- Configuration ---
     parser.add_argument('--cfg', '--assignment_cfg', default=None,
                         dest='cfg',
@@ -177,15 +174,6 @@ SAM backends:
                         help='Skip collage video generation at the end')
     parser.add_argument('--skip_masked_outputs', action='store_true',
                         help='Skip overlay visualization images and MP4 (saves time/disk)')
-    parser.add_argument('--lazy-frames', '--lazy_frames', dest='lazy_frames', action='store_true',
-                        help='Bound host RAM by loading frames on demand (a small window) '
-                             'instead of all at once — needed for long videos that would '
-                             'otherwise run out of RAM. Sets sam.lazy_frame_loading. mp4 input '
-                             'streams via cv2 (near-identical, ~+24%% wall); image/frame input '
-                             'is byte-identical. Off by default (short clips do not need it).')
-    parser.add_argument('--prune-memory', '--prune_memory', dest='prune_memory', action='store_true',
-                        help='Also bound SAM2 per-frame memory state on very long clips '
-                             '(sets sam.prune_memory_state; GT-equivalent, edge-pixel).')
     parser.add_argument('--debug_crop_summary', action='store_true',
                         help='Render per-person crop-summary + t-SNE + cross-camera '
                              'debug PNGs (off by default; pure viz, costs wall time). '
@@ -205,14 +193,6 @@ SAM backends:
         # automation must not see a "successful" run that produced nothing.
         parser.error(f"--yolo_checkpoint is required for --sam_version {args.sam_version}.")
 
-    if args.prune_memory and args.sam_version in ("sam3", "sam3_prompt_light"):
-        # The prune targets the SAM2 predictor's per-object memory; the sam3
-        # tracker keeps its state in a consolidated output_dict it never touches.
-        logger.warning(
-            f"--prune-memory currently has no effect for --sam_version {args.sam_version} "
-            "(it bounds the SAM2 predictor's memory only) — expect memory to still "
-            "grow on long clips.")
-
     # Auto-select config based on sam_version if not specified
     if args.cfg is None:
         if args.sam_version in ("sam3", "sam3_prompt", "sam3_prompt_light"):
@@ -222,7 +202,7 @@ SAM backends:
 
     if not os.path.isfile(args.cfg):
         logger.error(f"Config file not found: {args.cfg}")
-        return
+        sys.exit(1)
 
     logger.info("run_ma_masks entry point")
     for k, v in vars(args).items():
@@ -232,7 +212,7 @@ SAM backends:
         data_folder = os.path.join(args.ma_cap_dir, args.seq_name)
         if not os.path.isdir(data_folder):
             logger.error(f"Sequence folder does not exist: {data_folder}")
-            return
+            sys.exit(1)
         # Default dataset_name = basename(ma_cap_dir); --dataset_name overrides.
         dataset_name = args.dataset_name or os.path.basename(args.ma_cap_dir)
     else:
@@ -241,7 +221,7 @@ SAM backends:
             logger.error(
                 "Either --ma_cap_dir or one of --videos_dir/--images_root_dir is required."
             )
-            return
+            sys.exit(1)
         # data_folder is only used for the basename in seq_out_path
         # and (when ma_cap_dir is set) for resolving relative frame-source paths.
         data_folder = args.seq_name
@@ -259,7 +239,7 @@ SAM backends:
 
     if videos_dir and not os.path.isdir(videos_dir):
         logger.error(f"Videos directory does not exist: {videos_dir}")
-        return
+        sys.exit(1)
 
     # Resolve images_root_dir: if relative AND ma_cap_dir is set, check under data_folder first
     images_root_dir = args.images_root_dir
@@ -270,11 +250,11 @@ SAM backends:
 
     if images_root_dir and not os.path.isdir(images_root_dir):
         logger.error(f"Images root directory does not exist: {images_root_dir}")
-        return
+        sys.exit(1)
 
     if videos_dir and images_root_dir:
         logger.error("Cannot use both --videos_dir and --images_root_dir. Pick one.")
-        return
+        sys.exit(1)
 
     out_dir = os.path.join(args.out, dataset_name) if dataset_name else args.out
 
@@ -292,7 +272,7 @@ SAM backends:
                 "masks to match against. Either add it to --cam_names or omit --cam_names "
                 "to process all cameras."
             )
-            return
+            sys.exit(1)
 
     assignment_config = load_assignment_config(args.cfg)
     if assignment_config:
@@ -306,16 +286,6 @@ SAM backends:
         # Collage requires masked_outputs videos, so skip it too
         args.skip_collage = True
 
-    if args.lazy_frames:
-        if assignment_config is None:
-            assignment_config = {}
-        assignment_config.setdefault("sam", {})["lazy_frame_loading"] = True
-
-    if args.prune_memory:
-        if assignment_config is None:
-            assignment_config = {}
-        assignment_config.setdefault("sam", {})["prune_memory_state"] = True
-
     if args.debug_crop_summary:
         if assignment_config is None:
             assignment_config = {}
@@ -326,13 +296,7 @@ SAM backends:
             assignment_config = {}
         assignment_config.setdefault("exports", {})["debug_full_masks_npy"] = True
 
-    if args.legacy_cross_camera and args.cross_camera_strategy not in (None, "match_then_track"):
-        logger.warning(
-            f"Both --legacy-cross-camera and --cross-camera-strategy "
-            f"{args.cross_camera_strategy!r} given; --legacy-cross-camera wins "
-            "(using match_then_track)."
-        )
-    strategy = "match_then_track" if args.legacy_cross_camera else args.cross_camera_strategy
+    strategy = args.cross_camera_strategy
     if strategy:
         if assignment_config is None:
             assignment_config = {}

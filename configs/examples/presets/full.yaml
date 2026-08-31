@@ -25,8 +25,6 @@ ma_masks:
   repo_path: segmentation
   flags:
   - --sam_version sam2
-  - --lazy-frames
-  - --prune-memory
 ma_2d:
   engine: conda
   enabled: true

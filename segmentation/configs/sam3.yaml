@@ -4,9 +4,8 @@
 # multi-person scenes (3-6 people). For SAM3's unmodified defaults,
 # use configs/sam3_default.yaml instead.
 #
-# SAM3 uses joint object consolidation, so multi-frame anchors are automatically
-# disabled (capped to 1 per ID at runtime). Single-frame prompting works well
-# on the init camera. Cross-camera tracking may degrade on dense scenes (6+ people).
+# SAM3 uses joint object consolidation; single-frame prompting works well on
+# the init camera. Cross-camera tracking may degrade on dense scenes (6+ people).
 #
 # Usage:
 #   python run_ma_masks.py --sam_version sam3 --assignment_cfg configs/sam3.yaml ...
@@ -59,9 +58,9 @@ matching:
   # are discarded as noise.
   min_mask_area_ratio: 0.01
 
-  # Multi-frame anchors disabled for SAM3 (enforced at runtime regardless
-  # of this setting — SAM3's joint consolidation makes them counterproductive).
-  init_anchor_enable: false
+  # Down-weight seed/prompt frames near the clip boundaries (length-scaled;
+  # inert at <=1000 frames).
+  seed_center_bias: 0.5
 
   # Maximum number of candidate frames scanned when selecting a single prompt
   # frame for SAM3. The actual number scales with clip length and is capped
@@ -107,6 +106,12 @@ masks:
   merge_duplicate_tracklets: true
   merge_iou_threshold: 0.95
 
+  # Continuity gate: drops transient teleport/duplicate mask stretches.
+  mask_continuity_gate: true
+  # Collapse recovery does SAM2-specific state surgery; it safely no-ops on
+  # the SAM3 backends, so it stays off here.
+  recover_collapsed_tracklets: false
+
   # Step 2: Discard tracklets whose mask is too small on most frames.
   # A tracklet is discarded if its mask is below tiny_tracklet_min_area_ratio
   # (fraction of image area) on more than (1 - tiny_tracklet_min_frame_ratio)
@@ -131,6 +136,16 @@ masks:
   # (sam3_prompt always uses track-then-match by construction, regardless of this.)
   cross_camera_strategy: auto
 
+  # Cross-camera identity consensus (optional post-process, core/consensus.py):
+  # after all cameras finish, tracklet identities are voted per time segment
+  # against every other camera's tracklets (epipolar line-to-bbox), repairing
+  # mid-tracklet swaps a single camera cannot detect (two similar people
+  # crossing paths). Relabels mask PNGs only; abstains under ambiguity.
+  # false (default) | auto (on when >=2 calibrated cameras) | true.
+  cross_camera_consensus: false
+  consensus_min_margin_px: 40.0
+  consensus_min_segment_frames: 45
+
   # Seed selection for track_then_match seeds EVERY detected person on the seed frame
   # and lets the cross-camera remap prune surplus by identity (CLIP + epipolar), instead
   # of pre-trimming to the expected subject count by raw detection confidence — which
@@ -146,30 +161,33 @@ sam:
   # Propagate both forward and backward from anchor frames.
   propagate_reverse: true
 
-  # ── Memory bounding for long / many-camera clips (issue #14) ──────────────
-  # Applies to `--sam_version sam3` (the tracker, which uses init_state). In
-  # `sam3_prompt` mode the session API bounds memory via its own defaults
-  # (max_cond_frames_in_attn=4); the disk-backed mask store bounds host RAM in
-  # all modes regardless. Masks are identical (offload only moves tensors).
+  # ── Memory bounding for long / many-camera clips ──────────────────────────
+  # Applies to `--sam_version sam3` (the tracker, via init_state) AND to
+  # `sam3_prompt` INGESTION (forwarded into the session start
+  # request; validated: VRAM stays flat while all frames load to host).
+  # KNOWN GAP: the session then repacks the video into its tracking batch and
+  # copy_data_to_device()s it wholesale (_construct_initial_input_batch,
+  # ~28 GB at 4.9k frames), ignoring this flag: long sam3_prompt clips still
+  # need a big GPU until that second upload is patched (consumers are
+  # per-frame slices; upstream has an on-the-fly feature branch to target).
+  # The disk-backed mask store bounds host RAM in all modes regardless.
+  # Masks are identical (offload only moves tensors).
   offload_video_to_cpu: true       # keep decoded frames on host RAM, stream to GPU (≈free; bounds VRAM)
   offload_state_to_cpu: auto        # per-frame memory bank on host. auto = on past offload_state_min_frames; or true/false
   offload_state_min_frames: 1500    # frame count above which "auto" enables offload_state_to_cpu
-  # Store decoded frames as float16 — ~halves the HOST frame tensor (not VRAM:
-  # offload already keeps frames on the host). Opt-in & NOT byte-identical (~94%
-  # of masks within IoU >= 0.99, but can drop a tiny/distant subject on borderline
-  # frames). Prefer lazy_frame_loading (more host-RAM savings, byte-identical);
-  # use fp16 only as an extra squeeze. (issue #14)
-  fp16_frames: false
 
   # Lazy frame loading: load frames on demand (a small window in RAM) instead of
   # all N, bounding host RAM on long clips (offload only bounds VRAM). Two backends:
   #   - image / frame-folder input: LRU window, byte-identical, re-reads from disk.
   #   - mp4 input: cv2 chunk streaming (no disk extraction); near-identical to
   #     native decode (edge-pixel) and ~+24% wall from re-decoding.
-  # Off by default. Applies to sam3 (tracker) / sam3_prompt_light; sam3_prompt's
-  # session API manages its own frames. (issue #14)
-  lazy_frame_loading: false
+  # "auto" (default) enables it from lazy_min_frames up. Applies to
+  # sam3 (tracker) / sam3_prompt_light; sam3_prompt's session API manages its
+  # own frames.
+  lazy_frame_loading: auto
+  lazy_min_frames: 1500
   lazy_frame_window: 8
+  lazy_video_chunk: 64
 
   # Memory-state pruning: drop per-frame mask-memory SAM no longer attends to, so
   # stored state stays bounded on long clips. GT-equivalent (edge-pixel), off by
@@ -177,7 +195,7 @@ sam:
   # tracker backends (sam3 / sam3_prompt_light) keep their memory in a
   # consolidated output_dict that this prune does not touch, so their state
   # still grows on long clips (sam3_prompt has its own sam3_prune_cache_window
-  # below). (issue #14)
+  # below).
   prune_memory_state: false
   memory_keep_window: 32
 
@@ -233,12 +251,12 @@ sam3_tracking:
 exports:
   # Render per-person crop-summary + t-SNE + cross-camera debug PNGs (pure viz;
   # off by default, costs wall time). Mask PNGs / masks.npy / matching crops are
-  # produced either way. Also settable via --debug_crop_summary. (issue #14)
+  # produced either way. Also settable via --debug_crop_summary.
   debug_crop_summary: false
 
   # Keep full-res frames + masks in masks.npy (~10x larger). Off by default:
   # masks.npy is slimmed to centroids + crops + features; full masks remain as
-  # the per-frame PNGs. Also settable via --debug_full_masks_npy. (issue #14)
+  # the per-frame PNGs. Also settable via --debug_full_masks_npy.
   debug_full_masks_npy: false
 
   export_masked_outputs_mp4: true

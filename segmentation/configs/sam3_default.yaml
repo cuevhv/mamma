@@ -55,9 +55,6 @@ matching:
   # are discarded as noise.
   min_mask_area_ratio: 0.01
 
-  # Multi-frame anchors disabled for SAM3 (enforced at runtime regardless
-  # of this setting — SAM3's joint consolidation makes them counterproductive).
-  init_anchor_enable: false
 
   # Maximum number of candidate frames scanned when selecting a single prompt
   # frame for SAM3. The actual number scales with clip length and is capped
@@ -115,6 +112,21 @@ masks:
 sam:
   # Propagate both forward and backward from anchor frames.
   propagate_reverse: true
+
+  # Memory bounding (infrastructure, not tracking behavior — kept identical
+  # to sam3.yaml so this preset stays usable on modest GPUs and host RAM):
+  # offload moves tensors without changing masks; lazy loading auto-enables
+  # past lazy_min_frames; the cache prune bounds sam3_prompt's session cache.
+  offload_video_to_cpu: true
+  offload_state_to_cpu: auto
+  offload_state_min_frames: 1500
+  lazy_frame_loading: auto
+  lazy_min_frames: 1500
+  lazy_frame_window: 8
+  lazy_video_chunk: 64
+  prune_memory_state: false
+  memory_keep_window: 32
+  sam3_prune_cache_window: 32
 
 # ─── SAM3 tracking overrides (sam3_prompt mode) ─────────────────────────────
 # Override SAM3's internal tracking config at runtime. These are applied
