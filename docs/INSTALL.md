@@ -216,7 +216,7 @@ Override-able env keys (declared in [`inference/assets.py`](../inference/assets.
 | `MAMMA_SAM2_CHECKPOINT`       | `data/weights/sam2/sam2.1_hiera_large.pt`                     | ma_masks (`--sam_checkpoint`, only when `--sam_version sam2`) |
 | `MAMMA_SMPLX_LOCKHEAD_MODELS` | `data/body_models/smplx_locked_head`                          | ma_3d (`--smplx-models`)     |
 | `MAMMA_DOWNSAMPLED_VERTS_PKL` | `data/body_models/downsampled_verts/verts_512.pkl`            | ma_2d + ma_3d (`--downsampled-verts`) |
-| `MAMMA_MA2D_CHECKPOINT`       | `data/weights/ma_2d/mamma_mask_full_cvpr.ckpt`                | ma_2d (`--weights`, after task.json) |
+| `MAMMA_MA2D_CHECKPOINT`       | `../data/weights/ma_2d/mamma_mask_full_cvpr__HIDEN.ckpt`                | ma_2d (`--weights`, after task.json) |
 | `MAMMA_BUN_MODELS`            | (none — set only when `use_bun_model: True`)                  | ma_3d (`--bun-models`)       |
 | `MAMMA_PART_MESH_PATH`        | (none — set only when the SDF loss is enabled)                | ma_3d (`--part-mesh`)        |
 

@@ -15,6 +15,7 @@ Hanz Cuevas Velasquez<sup>1\*</sup>, Anastasios Yiannakidis<sup>1\*</sup>, Soyon
 </div>
 
 ## News
+- [2026-08] v1.1.0 released: export (FBX / ABC / BVH / USD) and a redesigned GUI.
 - [2026-06] 🎉 MAMMA being presented at CVPR 2026
 - [2026-06] Code released (inference + training)
 
@@ -112,6 +113,21 @@ python -m inference run \
   --capture <path/to/capture>.json \
   --out-tag run01 -v
 ```
+
+### Export to animation formats
+
+Once `ma_3d` has run, export the SMPL-X fit to `.npz` (SMPL-X Blender add-on), `.fbx`, `.abc` (Alembic), `.bvh`, and `.usd`:
+
+```bash
+python optimization/export_blender.py \
+  --ma-3d-dir  output/ma_3d/run01/<capture> \
+  --seq-name   <seq_name> \
+  --ma-cap-dir output/ma_cap/run01/<capture> \
+  --out-dir    output/export/<seq_name> \
+  --formats    npz,fbx,abc,bvh,usd
+```
+
+The `.npz` needs nothing beyond the `mamma` env; the rigged formats use a portable Blender and the SMPL-X Blender add-on (one-time downloads, also available from the GUI's **Exporter** tab). All options and conventions: **[docs/EXPORT.md](docs/EXPORT.md)**.
 
 ---
 
