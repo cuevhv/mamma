@@ -69,6 +69,13 @@ class JsonlSink(StatusSink):
         {"ts": <unix_seconds>, "step": "<name>", "seq": "<name>",
          "status": "<state>", "pid": <int|null>}
 
+    Frame/camera counts (after ma_cap) travel as a separate record type,
+    distinguished by ``"event": "counts"`` and carrying no ``status`` key,
+    so status-only readers skip them:
+
+        {"ts": ..., "step": ..., "seq": ..., "event": "counts",
+         "num_frames": <int|null>, "num_cameras": <int|null>}
+
     The file is opened in line-buffered append mode so external readers
     (``tail -f``, CI log parsers) see updates as they happen.
     """
@@ -88,6 +95,17 @@ class JsonlSink(StatusSink):
         self._fp.write(json.dumps(record) + "\n")
         log.info("status: %s[%s] -> %s%s", step_name, seq_name, status,
                  f" pid={pid}" if pid else "")
+
+    def record_counts(self, step_name, seq_name, num_frames, num_cameras):
+        record = {
+            "ts": time.time(),
+            "step": step_name,
+            "seq": seq_name,
+            "event": "counts",
+            "num_frames": num_frames,
+            "num_cameras": num_cameras,
+        }
+        self._fp.write(json.dumps(record) + "\n")
 
     def close(self) -> None:
         try:

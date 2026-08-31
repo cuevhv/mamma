@@ -16,7 +16,6 @@ import sys
 
 from . import __version__
 from .assets import dump_env_example
-from .cli import doctor, run, run_step
 from .env import bootstrap_env
 
 USAGE = """\
@@ -27,6 +26,10 @@ MAMMA local pipeline runner.
 commands:
   run                Run the full pipeline DAG end-to-end
   run-step           Run a single pipeline step
+  run-cell           Run a single (step, sequence) cell (one DAG node)
+  submit-cluster     Generate + submit an HTCondor DAG (run on a login node)
+  submit-remote      Submit a run to a remote cluster over SSH + track it
+  cluster            Manage cluster profiles (list / show / add / test)
   doctor             Pre-flight validator (env, step reqs, optional task file)
   dump-env-example   Print/write a `.env.example` template from the registry
 
@@ -87,11 +90,30 @@ def main(argv=None) -> None:
         sys.exit(0)
 
     cmd, rest = argv[0], argv[1:]
+    # Lazy per-command imports keep the cluster-side commands (submit-cluster,
+    # run-cell) from pulling the client-only CLIs (submit-remote, cluster),
+    # which depend on yaml / the local env. That lets those two run on a bare
+    # cluster python3 with no third-party packages installed.
     if cmd == "run":
+        from .cli import run
         run.main(rest)
     elif cmd == "run-step":
+        from .cli import run_step
         run_step.main(rest)
+    elif cmd == "run-cell":
+        from .cli import run_cell
+        run_cell.main(rest)
+    elif cmd == "submit-cluster":
+        from .cli import submit_cluster
+        submit_cluster.main(rest)
+    elif cmd == "submit-remote":
+        from .cli import submit_remote
+        submit_remote.main(rest)
+    elif cmd == "cluster":
+        from .cli import cluster
+        cluster.main(rest)
     elif cmd == "doctor":
+        from .cli import doctor
         doctor.main(rest)
     elif cmd == "dump-env-example":
         _dump_env_example_main(rest)

@@ -256,6 +256,11 @@ CORS(app)
 from data_readiness import register_routes as _register_data_readiness  # noqa: E402
 _register_data_readiness(app)
 
+# Remote-cluster profiles + preflight (/api/clusters/*). Backend picker for
+# submitting runs to an HTCondor cluster instead of this machine.
+from cluster_api import cluster_bp  # noqa: E402
+app.register_blueprint(cluster_bp)
+
 # Dataset library (Home → "MAMMA Datasets" card). Self-contained module:
 # registers /api/datasets/* routes. See dataset_downloader.py.
 from dataset_downloader import register_routes as _register_dataset_downloader  # noqa: E402
@@ -308,17 +313,21 @@ class TaskQueue:
     # ---- public API used by routes -----------------------------------
 
     def enqueue(self, *, task_id: int, task_json_path: str, output_id: str,
-                output_dir: str, jobs_log_dir: str) -> None:
+                output_dir: str, jobs_log_dir: str,
+                cluster_profile: str | None = None) -> None:
         """Schedule a task for runner spawn. Returns immediately.
 
         The task's processes were already inserted in DB with status
         'Queued' (see ``db.create_entry``), so this just hands the id
-        plus the spawn arguments to the coordinator."""
+        plus the spawn arguments to the coordinator. ``cluster_profile``
+        (when set) makes the spawned runner submit + track a remote DAG
+        instead of running the pipeline locally."""
         spawn_kwargs = {
             "task_json_path": task_json_path,
             "output_id": output_id,
             "output_dir": output_dir,
             "jobs_log_dir": jobs_log_dir,
+            "cluster_profile": cluster_profile,
         }
         with self._cond:
             self._pending.append((task_id, spawn_kwargs))
@@ -404,11 +413,13 @@ class TaskQueue:
                 return None
             cfg = load_config_file(row["task_json_path"]) or {}
             g = cfg.get("global") or {}
+            _backend, _profile = db.get_task_backend(task_id)
             return {
                 "task_json_path": row["task_json_path"],
                 "output_id": row["output_id"] or "",
                 "output_dir": row["output_path"] or g.get("out_dir") or DEFAULT_OUTPUT_DIR,
                 "jobs_log_dir": g.get("jobs_log_dir") or os.path.join(row["output_path"] or DEFAULT_OUTPUT_DIR, "logs"),
+                "cluster_profile": _profile if _backend == "cluster" else None,
             }
         except Exception as e:
             print(f"---> WARN: _reconstruct_spawn_kwargs(task_id={task_id}) failed: {e}")
@@ -451,11 +462,13 @@ class TaskQueue:
             ).start()
 
     def _spawn_runner(self, *, task_id: int, task_json_path: str, output_id: str,
-                      output_dir: str, jobs_log_dir: str) -> subprocess.Popen:
+                      output_dir: str, jobs_log_dir: str,
+                      cluster_profile: str | None = None) -> subprocess.Popen:
         """The one and only `subprocess.Popen` site for runners. Same
         argv as the pre-queue code; flipped processes Queued -> Waiting
         in DB just before launch so the runner's status-sink takes over
-        cleanly."""
+        cleanly. When ``cluster_profile`` is set the runner submits +
+        tracks a remote DAG (runner_main's --cluster-profile mode)."""
         runner_log = os.path.join(jobs_log_dir, LOCAL_USER, str(task_id), "runner.log")
         os.makedirs(os.path.dirname(runner_log), exist_ok=True)
         log_fp = open(runner_log, "ab", buffering=0)
@@ -463,12 +476,15 @@ class TaskQueue:
         # immediately mark its first step Running without racing the
         # transition.
         db.bump_task_processes_from_queued_to_waiting(task_id)
+        argv = [sys.executable, "-m", "runner_main",
+                "--task", task_json_path,
+                "--task-id", str(task_id),
+                "--out-tag", str(output_id),
+                "--log-tag", str(task_id)]
+        if cluster_profile:
+            argv += ["--cluster-profile", cluster_profile]
         proc = subprocess.Popen(
-            [sys.executable, "-m", "runner_main",
-             "--task", task_json_path,
-             "--task-id", str(task_id),
-             "--out-tag", str(output_id),
-             "--log-tag", str(task_id)],
+            argv,
             stdout=log_fp,
             stderr=subprocess.STDOUT,
             cwd=os.path.dirname(os.path.abspath(__file__)),
@@ -1589,6 +1605,52 @@ def _deep_merge(base, override):
     return base
 
 
+def _apply_cluster_engine(task_overrides, preset_global=None):
+    """Resolve an effective ``engine: 'cluster'`` into concrete execution
+    fields, and decide whether this run routes to a cluster.
+
+    The effective engine/profile is the override when present (an explicit
+    ``''`` override means "cleared: use per-step engines"), else the value
+    STORED in the preset's global block, so a saved cluster preset routes
+    correctly with zero overrides. When the effective engine is 'cluster',
+    the profile's REQUIRED execution environment (apptainer .sif / conda env
+    / docker image) and the profile name are written into
+    ``task_overrides['global']``: overrides win the deep-merge, so the
+    frozen config, validation, and command preview see a real engine and
+    never the word 'cluster' (this also supersedes any stale sif stored in
+    the preset). Returns ``(error, cluster_profile)``; ``cluster_profile``
+    is None for non-cluster runs.
+    """
+    if not isinstance(task_overrides, dict):
+        return None, None
+    ovg = task_overrides.get("global") or {}
+    pg = preset_global or {}
+    eng = ovg["engine"] if "engine" in ovg else pg.get("engine")
+    if (str(eng or "")).strip().lower() != "cluster":
+        return None, None
+    profile_name = (ovg["cluster_profile"] if "cluster_profile" in ovg
+                    else pg.get("cluster_profile"))
+    profile_name = (str(profile_name or "")).strip()
+    if not profile_name:
+        return "Engine 'cluster' needs a cluster profile: select or create one.", None
+    try:
+        from inference.cluster.profile import load_profile
+        prof = load_profile(profile_name)
+    except Exception as e:  # noqa: BLE001 — missing/corrupt profile file
+        return f"Cluster profile {profile_name!r}: {e}", None
+    exec_eng, loc = prof.execution_env()
+    if exec_eng is None:
+        return (f"{loc}. Set the Environment in the cluster profile: steps on "
+                "the cluster execute in that environment."), None
+    ovg["engine"] = exec_eng
+    field = {"apptainer": "sif_path", "conda": "conda_env",
+             "docker": "docker_image"}[exec_eng]
+    ovg[field] = loc
+    ovg["cluster_profile"] = profile_name
+    task_overrides["global"] = ovg
+    return None, profile_name
+
+
 @app.route("/api/tasks/preview-commands", methods=["POST"])
 def preview_task_commands():
     """Resolve the EXACT per-step shell command the runner would execute for
@@ -1628,6 +1690,18 @@ def preview_task_commands():
     if not capture_json_path or not preset_path or not seq_names:
         return jsonify({"error": "Missing required parameters"}), 400
 
+    # Effective engine 'cluster' (override, else stored in the preset) ->
+    # the profile's execution env, so the preview shows the exact command
+    # the cluster nodes will run.
+    _pv_preset_g = {}
+    try:
+        _pv_preset_g = (load_config_file(preset_path) or {}).get("global") or {}
+    except Exception:  # noqa: BLE001
+        pass
+    _cluster_err, _ = _apply_cluster_engine(task_overrides, _pv_preset_g)
+    if _cluster_err:
+        return jsonify({"error": _cluster_err}), 400
+
     try:
         task_data = materialize_run_config(
             preset_path,
@@ -1640,6 +1714,15 @@ def preview_task_commands():
             overrides=task_overrides or None,
             sequence_major=sequence_major,
         )
+        # Mirror start_task: an effective global Engine choice (override,
+        # else stored in the preset) overrides per-step engines so the
+        # preview shows the exact (e.g. apptainer) command.
+        _pvg = (task_overrides.get("global") or {}) if isinstance(task_overrides, dict) else {}
+        _pv_eng = _pvg["engine"] if "engine" in _pvg else _pv_preset_g.get("engine")
+        if _pv_eng:
+            for _k, _v in task_data.items():
+                if _k != "global" and isinstance(_v, dict):
+                    _v["engine"] = _pv_eng
     except Exception as e:
         return jsonify({"error": f"Failed to materialize run config: {e}"}), 400
 
@@ -1774,6 +1857,61 @@ def start_task():
     # (today's behaviour: finish each step across all seqs first).
     sequence_major = bool(data.get("sequenceMajor", False))
 
+    # Execution backend: 'local' (default) runs on this machine; 'cluster'
+    # submits + tracks a remote HTCondor DAG via the named profile. Cluster
+    # runs use a portable, repo-relative out_dir (anchored to the synced repo
+    # under $HOME on the cluster) instead of this host's absolute output dir.
+    # Execution (engine + where-to-run) lives in the preset's global block,
+    # carried in taskOverrides.global and deep-merged into the run-config by
+    # materialize_run_config. cluster_profile ('' / absent) = this machine; a
+    # name routes the run to that cluster. engine/sif_path/docker_image/conda_env
+    # ride along in global and are picked up by the StepBuilder fallback.
+    # The preset's stored global block backs the overrides: a saved engine /
+    # cluster choice routes correctly with zero overrides (the Engine
+    # dropdown pre-selects it from the digest for the same reason).
+    _preset_g = {}
+    try:
+        _preset_g = (load_config_file(preset_path) or {}).get("global") or {}
+    except Exception:  # noqa: BLE001 — a broken preset fails materialize below
+        pass
+
+    # An effective engine 'cluster' resolves to the profile's execution env
+    # before anything else reads the overrides: the frozen config carries a
+    # real engine while cluster_profile routes the submission.
+    _cluster_err, cluster_profile = _apply_cluster_engine(task_overrides, _preset_g)
+    if _cluster_err:
+        return jsonify({"error": _cluster_err}), 400
+
+    _ovg = (task_overrides.get("global") or {}) if isinstance(task_overrides, dict) else {}
+    is_cluster = cluster_profile is not None
+
+    # Cluster runs anchor out_dir/jobs_log_dir at the profile's workspace
+    # NAME in the frozen config itself (not just in the uploaded copy): the
+    # workspace path is written as the cluster nodes see it, and when that
+    # storage is also mounted locally (the recommended setup) the very same
+    # paths let the Results/File explorers read cluster outputs directly.
+    cluster_ws = ""
+    if is_cluster:
+        try:
+            from inference.cluster.profile import load_profile as _load_profile
+            cluster_ws = (_load_profile(cluster_profile).workspace_root or "").rstrip("/")
+        except Exception as e:  # noqa: BLE001 — missing/corrupt profile file
+            return jsonify({"error": f"Cluster profile {cluster_profile!r}: {e}"}), 400
+        if not cluster_ws:
+            return jsonify({"error": f"Cluster profile {cluster_profile!r} "
+                                     "has no workspace_root set"}), 400
+
+    # Cluster output root: an ABSOLUTE user-chosen dir is honored verbatim
+    # (it must be writable by the cluster nodes, e.g. a shared group dir);
+    # empty/relative choices (subdirs of this host's default tree, which the
+    # cluster cannot see) fall back to the profile workspace. Task 140
+    # post-mortem: the fallback used to be unconditional and silently
+    # discarded an explicit /is/cluster/... choice.
+    _raw_out = (data.get("outputDir") or "").strip()
+    cluster_out = ""
+    if is_cluster:
+        cluster_out = _raw_out if os.path.isabs(_raw_out) else f"{cluster_ws}/output"
+
     try:
         processes = [ProcessType[p] for p in processes]
     except KeyError as e:
@@ -1827,19 +1965,55 @@ def start_task():
             capture_json_path,
             seq_names=seq_names,
             cam_names=cameras,
-            out_dir=output_dir,
+            # Cluster runs write under the user's absolute dir or the
+            # profile's workspace; local runs use this host's output dir.
+            out_dir=(cluster_out if is_cluster else output_dir),
             username=LOCAL_USER,
             enabled_steps=[p.name for p in processes],
             overrides=task_overrides or None,
             sequence_major=sequence_major,
         )
+        if is_cluster:
+            # Make capture_json resolve on the cluster: repo-relative if the
+            # selected capture lives under the repo (synced there). Captures
+            # outside the repo (and their footage) must be staged separately;
+            # that path is not auto-handled yet.
+            from inference.env import repo_root as _repo_root
+            _g = task_data.setdefault("global", {})
+            _cj = _g.get("capture_json") or ""
+            _root = str(_repo_root())
+            if _cj and os.path.isabs(_cj) and os.path.abspath(_cj).startswith(_root):
+                _g["capture_json"] = os.path.relpath(os.path.abspath(_cj), _root)
+            # Logs live beside the outputs in the workspace (matches the
+            # pre-upload rewrite in runner_main, so the frozen config and
+            # the uploaded config agree on every path).
+            _g["jobs_log_dir"] = f"{cluster_ws}/logs"
+
+        # An effective global Engine choice (override, else the value saved
+        # in the preset) overrides the preset's per-step engines, so "run
+        # this preset on apptainer/cluster" actually switches every step
+        # (per-step engine normally wins over the global fallback). An
+        # explicit '' override means cleared: per-step engines stand.
+        # sif_path/conda_env/docker_image stay on global and resolve via the
+        # StepBuilder fallback.
+        _eng = _ovg["engine"] if "engine" in _ovg else _preset_g.get("engine")
+        if _eng:
+            for _k, _v in task_data.items():
+                if _k != "global" and isinstance(_v, dict):
+                    _v["engine"] = _eng
     except Exception as e:
         return jsonify({"error": f"Failed to generate run configuration: {e}"}), 500
+
+    # The DB row's output_path must record where outputs REALLY go: the
+    # resolved cluster root for cluster runs, this host's dir for local
+    # runs. Every consumer (Results explorer, thumbnails, DONE checks,
+    # delete-outputs) reads this column.
+    task_output_dir = cluster_out if is_cluster else output_dir
 
     status, task_id, task_json_final_path, output_id = db.create_entry(
         capture_json_path,
         seq_names,
-        output_dir,
+        task_output_dir,
         processes,
         username=LOCAL_USER,
         task_json_server_dir=RUN_CONFIG_DIR,
@@ -1851,6 +2025,10 @@ def start_task():
     )
     if status != "Entry created successfully":
         return jsonify({"error": status}), 500
+
+    # Tag cluster tasks so Stop/hydration/UI can tell them apart from local runs.
+    if is_cluster:
+        db.set_task_backend(task_id, "cluster", cluster_profile)
 
     # Re-run: record the full where-does-every-step-live map in the frozen
     # config (source map, with the steps run NOW repointed at this run's id).
@@ -1879,8 +2057,9 @@ def start_task():
         task_id=task_id,
         task_json_path=task_json_final_path,
         output_id=output_id,
-        output_dir=output_dir,
-        jobs_log_dir=task_data["global"].get("jobs_log_dir", os.path.join(output_dir, "logs")),
+        output_dir=task_output_dir,
+        jobs_log_dir=task_data["global"].get("jobs_log_dir", os.path.join(task_output_dir, "logs")),
+        cluster_profile=cluster_profile if is_cluster else None,
     )
 
     return jsonify({"message": "Task queued", "taskId": task_id}), 201
@@ -2095,6 +2274,42 @@ def save_task_preset():
     return jsonify(_preset_summary(f"{_USER_SUBDIR}/{new_name}", new_path, is_user=True)), 201
 
 
+@app.route("/api/task-presets/<path:name>", methods=["PUT"])
+def update_task_preset(name):
+    """Overwrite an existing USER preset in place: apply the overrides on top
+    of its current content. Curated presets stay immutable (use POST /
+    save-as to fork them). Body: { overrides?, displayName?, description? }.
+    """
+    safe = _safe_preset_name(name)
+    if not safe or not safe.startswith(f"{_USER_SUBDIR}/"):
+        return jsonify({"error": "Only user presets can be saved in place; "
+                                 "use 'Save as preset' to fork a curated one"}), 400
+    path = _preset_path(safe)
+    if not os.path.isfile(path):
+        return jsonify({"error": f"User preset '{name}' not found"}), 404
+    data = request.json or {}
+    try:
+        cfg = load_config_file(path)
+    except (OSError, ValueError) as e:
+        return jsonify({"error": f"Failed to read preset: {e}"}), 500
+    overrides = data.get("overrides") or {}
+    if overrides:
+        _deep_merge(cfg, overrides)
+    display_name = (data.get("displayName") or "").strip()
+    description = (data.get("description") or "").strip()
+    cfg.setdefault("global", {})
+    if display_name:
+        cfg["global"]["display_name"] = display_name
+    if description:
+        cfg["global"]["description"] = description
+    try:
+        with open(path, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except OSError as e:
+        return jsonify({"error": f"Failed to write preset: {e}"}), 500
+    return jsonify(_preset_summary(safe, path, is_user=True))
+
+
 @app.route("/api/task-presets/<path:name>", methods=["DELETE"])
 def delete_task_preset(name):
     """Delete a user-saved preset. Curated presets are read-only and cannot
@@ -2164,6 +2379,14 @@ def _config_digest(path, cfg, *, name, display_name_fallback):
             "endFrame": g.get("end_frame"),
             # Signed world up axis; consumed by ma_3d + ma_vis. None = default (z).
             "upAxis": g.get("up_axis"),
+            # Whole-run execution choice stored in the preset's global block
+            # ('' = none stored: use the per-step engines). The GUI's Engine
+            # dropdown pre-selects from these, so a saved engine/cluster
+            # choice survives a reload instead of looking unsaved.
+            "engine": (g.get("engine") or "").strip(),
+            "sifPath": g.get("sif_path") or "",
+            "dockerImage": g.get("docker_image") or "",
+            "clusterProfile": g.get("cluster_profile") or "",
         },
         "steps": steps_out,
     }
@@ -2404,9 +2627,19 @@ def stop_task(task_id):
 
     pid = task.get("runnerPid")
     if pid and not dropped_from_queue:
+        # Cluster runners distinguish an INTENTIONAL stop (SIGUSR1: cancel
+        # the remote DAG via the scheduler) from an incidental SIGTERM
+        # (shutdown/reboot/kill: detach and leave the DAG running; task 135
+        # was cancelled by an OS update reboot before this split). Local
+        # runners keep SIGTERM as their cancel signal.
         try:
-            os.kill(int(pid), signal.SIGTERM)
-            print(f"Sent SIGTERM to runner pid={pid} for task {task_id}")
+            backend, _prof = db.get_task_backend(task_id)
+        except Exception:  # noqa: BLE001
+            backend = "local"
+        sig = signal.SIGUSR1 if backend == "cluster" else signal.SIGTERM
+        try:
+            os.kill(int(pid), sig)
+            print(f"Sent {sig.name} to runner pid={pid} for task {task_id}")
         except ProcessLookupError:
             print(f"Runner pid={pid} for task {task_id} already exited")
         except Exception as e:

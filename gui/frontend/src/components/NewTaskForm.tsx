@@ -260,6 +260,9 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
   const [selectedCameras, setSelectedCameras] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState('');
   const [outputId, setOutputId] = useState('');
+  // Execution (engine + where-to-run) now lives in the preset's global block
+  // (PresetDigestCard). It flows to the backend via `overrides.global`, so the
+  // form no longer holds engine/cluster state here.
   /** Existing run groups for the picked capture — populated when capture
    *  changes. The form uses this to suggest "continue a previous run"
    *  affordances and surface what's already done. */
@@ -379,7 +382,16 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
         for (const s of d.steps) init[s.name] = s.enabled;
         setStepEnabled(init);   // the run's pipeline; the re-run picks a subset
         setSelectedCameras(d.global.camNames || []);   // fixed to the run's cameras
-        setOverrides({});
+        // Reconstruct the 'cluster' pseudo-engine. Submission resolves
+        // engine 'cluster' into the profile's real engine (apptainer + sif)
+        // before freezing the config, so a cluster run's config stores
+        // engine='apptainer' — but cluster_profile survives. Without this,
+        // the Engine dropdown pre-selects 'apptainer' and, worse,
+        // re-submitting routes the run to THIS machine (cluster routing
+        // only triggers on the literal engine 'cluster').
+        setOverrides(d.global.clusterProfile
+          ? { global: { engine: 'cluster', cluster_profile: d.global.clusterProfile } }
+          : {});
         setCompleted2(true);
       })
       .catch(() => { if (!cancelled) toast.error('Could not reach the backend to load the run config.'); });
@@ -982,6 +994,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
                 onSelectAll={() => setSelectedSeqNames(selectedSeqNames.length === availableSeqNames.length ? [] : [...availableSeqNames])}
                 onRemove={(n) => setSelectedSeqNames(prev => prev.filter(x => x !== n))}
                 placeholder="No sequences selected"
+                searchable
               />
 
               {/* Cameras */}

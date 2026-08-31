@@ -28,7 +28,15 @@ import os
 from pathlib import Path
 from typing import Dict, Optional
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    # python-dotenv is optional: it is only used to load an (also optional)
+    # .env.local. On a minimal python (e.g. a cluster login node with just
+    # the stdlib) the package may be absent; the pipeline still runs, it just
+    # skips the .env.local convenience. Every real MAMMA_* value has a default
+    # or is passed explicitly, so nothing depends on dotenv being present.
+    load_dotenv = None
 
 from .assets import defaults_dict as _registry_defaults
 from .assets import path_keys as _registry_path_keys
@@ -70,9 +78,9 @@ def bootstrap_env() -> None:
             continue
         os.environ.setdefault(key, value)
 
-    # 2. Optional user overrides from .env.local.
+    # 2. Optional user overrides from .env.local (skipped if dotenv is absent).
     local = _REPO_ROOT / ".env.local"
-    if local.exists():
+    if load_dotenv is not None and local.exists():
         load_dotenv(local, override=True)
 
     # 3. Anchor relative path values to the repo root.

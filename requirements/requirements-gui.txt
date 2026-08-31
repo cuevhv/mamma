@@ -1,0 +1,77 @@
+# GUI dependencies (gui/backend/app.py), without the pipeline's vision stack.
+#
+# Every GUI feature works with this file: creating and editing captures,
+# submitting local AND cluster runs, the status matrix, results browsing,
+# calibration preview, thumbnails, the SMPL-X mesh preview, the Exporter,
+# and MammaSyn downloads. What it leaves out is the machinery the pipeline
+# STEPS need (sam2/sam3, ultralytics, open3d, pyrender, detectron2, CUDA
+# torch), because the GUI never imports those: it shells out.
+#
+#     python -m venv .venv-gui && . .venv-gui/bin/activate
+#     pip install -r requirements/requirements-gui.txt
+#
+# ~1.5 GB and well under a minute, vs the full conda install. No CUDA, no
+# compiler, no conda. Works on a laptop with no GPU.
+#
+# THE CATCH, and it is the whole point: this env runs the GUI, not the
+# pipeline. inference/engines.py and every step builder are stdlib-only and
+# build an argv that is executed elsewhere -- `conda run -n mamma ...`, or
+# `apptainer run <sif>`, or docker. So "local runs work" means the GUI can
+# drive them; the steps still need a real pipeline environment to run IN.
+# On a machine with neither a mamma conda env nor a sif, local runs will
+# start and then fail inside the step subprocess. Cluster runs have no such
+# requirement, since the execution env lives on the cluster.
+#
+# Verified end-to-end from exactly this file:
+#   * local ma_cap via engine=conda -> Done, 60 frames / 6 cameras
+#   * cluster ma_cap on HTCondor -> 1-node DAG ran to Done, counts written back
+#   * capture creation (18 sequences), calibration preview (32-camera .rrd),
+#     thumbnails, mesh preview (2 people / 250 frames), Exporter (npz,
+#     round-trip 0.001 mm), MammaSyn catalog + auth
+#
+# One thing to know for cluster runs: the capture json must live under the
+# repo, because app.py rewrites it to a repo-relative path (so the synced
+# checkout can resolve it) only when it sits under the repo root. A capture
+# stored elsewhere submits fine and then fails remote validation.
+#
+# Keep the pins here in sync with the GUI block at the bottom of
+# requirements/requirements.txt, which is where the full install gets
+# the same packages.
+flask
+flask-cors
+python-dotenv>=1.0
+pyyaml>=6.0
+# Creating a capture and the calibration status line import `capture`, whose
+# __init__ eagerly pulls calibration + frame_source + video_reader + undistort
+# + discovery. Across that whole package the only third-party needs are numpy
+# and Pillow (cv2 and decord are imported lazily inside functions, so they stay
+# out of a thin install). Both are prebuilt wheels, no compiler, ~2 s total.
+#
+# numpy bound matched to requirements.txt so a venv that later grows into the
+# full install does not have to downgrade; the thin client works on numpy 2 too.
+numpy<2,>=1.26
+pillow
+# Video thumbnails (sync.py decodes a middle frame) and any other cv2 call
+# site. Headless build: no GUI toolkit, no X11 at runtime.
+opencv-python-headless
+# Calibration preview writes a camera-rig .rrd (gui/backend/calib_preview.py).
+# Pin: rerun-sdk >=0.24 hard-requires numpy>=2, which conflicts with the
+# numpy<2 bound above. Same pin as requirements.txt.
+rerun-sdk==0.23.1
+# MammaSyn dataset downloads (gui/backend/dataset_downloader.py). Pure Python.
+huggingface_hub
+# The Exporter. optimization/export_blender.py builds an SMPL-X model to
+# reconstruct vertices and settle the flat_hand_mean convention
+# (_build_model, called on the main export path), so smplx -> torch is
+# unavoidable here. It is the only feature in this file that needs torch.
+#
+# CPU build on purpose: the export runs a handful of forward passes with
+# no_grad on the CPU, so the CUDA wheel buys nothing and costs ~2 GB. Same
+# 2.5.1 version as requirements.txt, so the two stay in step. If you later
+# grow this venv into a full install, reinstall torch from the cu124 index.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+smplx
+# Production WSGI server used by gui/scripts/prod.sh. dev.sh stays on
+# Flask's built-in Werkzeug server for the debugger + auto-reloader.
+waitress>=3

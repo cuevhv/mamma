@@ -297,8 +297,8 @@ ASSETS: Tuple[InstallationAsset, ...] = (
         ),
         source=MpiSource(
             domain="mamma",
-            # The download.php endpoint maps this to FTP protected/assets/
-            # — confirmed against the live server on 2026-05-27.
+            # The download.php endpoint maps this to FTP protected/assets/,
+            # confirmed against the live server.
             sfile="mamma_assets/verts_512.pkl",
             account_label="MAMMA",
             register_url="https://mamma.is.tue.mpg.de/register.php",

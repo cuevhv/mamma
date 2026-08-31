@@ -116,6 +116,17 @@ def initialize_database():
         existing_cols = {r["name"] for r in cur.execute("PRAGMA table_info(tasks)").fetchall()}
         if "preset_path" not in existing_cols:
             cur.execute("ALTER TABLE tasks ADD COLUMN preset_path TEXT")
+        # Idempotent migration (added 2026-07-28): remote-cluster execution.
+        # `backend` is 'local' (default) or 'cluster'; `cluster_profile` names
+        # the saved profile a cluster task was submitted with. Local tasks keep
+        # backend='local' and a NULL profile. `dag_job_id` continues to hold the
+        # runner_main PID (see set_task_runner_pid) for BOTH backends, so Stop
+        # works uniformly: SIGTERM to that PID, which for a cluster run triggers
+        # a condor_rm in runner_main.
+        if "backend" not in existing_cols:
+            cur.execute("ALTER TABLE tasks ADD COLUMN backend TEXT DEFAULT 'local'")
+        if "cluster_profile" not in existing_cols:
+            cur.execute("ALTER TABLE tasks ADD COLUMN cluster_profile TEXT")
         # Key-value settings store. Holds runtime knobs that survive
         # Flask restarts — currently just the task-queue concurrency
         # limit (default 1). Add new keys by writing them; consumers
@@ -569,6 +580,31 @@ def set_task_runner_pid(task_id, pid):
 update_task_dag_job_id = set_task_runner_pid
 
 
+def set_task_backend(task_id, backend, cluster_profile=None):
+    """Record how a task executes: 'local' (default) or 'cluster' + the
+    profile name it was submitted with."""
+    with create_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE tasks SET backend = ?, cluster_profile = ? WHERE task_id = ?",
+            (backend, cluster_profile, task_id),
+        )
+        conn.commit()
+
+
+def get_task_backend(task_id):
+    """Return (backend, cluster_profile) for a task; ('local', None) if unset."""
+    with create_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT backend, cluster_profile FROM tasks WHERE task_id = ?", (task_id,)
+        )
+        row = cur.fetchone()
+    if not row:
+        return ("local", None)
+    return (row["backend"] or "local", row["cluster_profile"])
+
+
 def get_unfinished_tasks_info():
     with create_connection() as conn:
         cur = conn.cursor()
@@ -863,6 +899,26 @@ def get_concurrency_limit() -> int:
     except (TypeError, ValueError):
         return 1
     return max(1, min(n, 8))
+
+
+def get_distinct_output_roots() -> list[str]:
+    """Distinct non-empty ``tasks.output_path`` values, trailing slash
+    stripped. Cluster tasks record the workspace output root here, so
+    result-discovery features (e.g. the Exporter) can scan every root
+    outputs were ever written to, not just the local default."""
+    with create_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT output_path FROM tasks "
+            "WHERE output_path IS NOT NULL AND output_path != ''"
+        )
+        rows = cur.fetchall()
+    out: list[str] = []
+    for r in rows:
+        v = (r["output_path"] or "").rstrip("/")
+        if v and v not in out:
+            out.append(v)
+    return out
 
 
 def set_concurrency_limit(n: int) -> None:

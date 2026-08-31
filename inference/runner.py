@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import signal
 import threading
 import time
@@ -164,6 +165,77 @@ def run_step(
     return 1 if failed else 0
 
 
+def run_cell(
+    task_path: str,
+    step_name: str,
+    seq: str,
+    *,
+    out_tag: Optional[str] = None,
+    log_tag: Optional[str] = None,
+    sink: Optional[StatusSink] = None,
+    force: bool = False,
+    cell_id: Optional[str] = None,
+    cell_flags: Optional[str] = None,
+) -> int:
+    """Run exactly one ``(step, sequence)`` cell. Returns the child exit code.
+
+    The unit a single HTCondor DAG node executes. Shares the execution path
+    with the DAG walker's inner loop (:func:`get_builder` + DONE guard +
+    :func:`engines.dispatch` + DONE write), so a cluster cell runs identically
+    to the same cell locally. ``seq`` is a resolved sequence NAME, not a
+    seq_id (the cluster emitter resolves names up front).
+    """
+    task_cfg = load_task_config(task_path)
+    step_cfg = task_cfg.get(step_name, {})
+    global_cfg = task_cfg.get("global", {})
+    if cell_flags:
+        # Camera fan-out: this cell runs a subset of the step's work; the
+        # extra flags (--cam_names/--cam_init) come from the DAG node, never
+        # from the stored config, so local reruns stay whole-sequence.
+        step_cfg = dict(step_cfg)
+        step_cfg["flags"] = list(step_cfg.get("flags") or []) + \
+            shlex.split(cell_flags)
+    tag = out_tag or "local"
+    builder = get_builder(step_name, step_cfg, global_cfg, tag)
+    if sink is None:
+        sink = make_sink()
+
+    # DONE-sentinel skip (matches _run_step_inner). ``--force`` bypasses.
+    # Fan-out cells namespace the sentinel: the init cell finishing must not
+    # mark the whole (step, seq) done for its sibling camera cells.
+    done = builder.done_file(seq)
+    if cell_id:
+        done = f"{done}.{cell_id}"
+    if not force and os.path.exists(done):
+        log.info("%s[%s] DONE present at %s; skipping", step_name, seq, done)
+        sink.update(step_name, seq, "Done")
+        _record_ma_cap_counts(builder, step_name, seq, sink)
+        return 0
+
+    out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq)
+    sink.update(step_name, seq, "Running", pid=os.getpid())
+    try:
+        rc = engines.dispatch(builder, seq, out_path, err_path)
+    except Exception as e:  # noqa: BLE001 — mirror _run_step_inner's guard
+        log.exception("%s[%s] engine error: %s", step_name, seq, e)
+        sink.update(step_name, seq, "Failed")
+        return 1
+
+    if rc == 0:
+        try:
+            Path(done).parent.mkdir(parents=True, exist_ok=True)
+            Path(done).touch()
+        except OSError as e:
+            log.warning("%s[%s] could not write DONE sentinel at %s: %s",
+                        step_name, seq, done, e)
+        sink.update(step_name, seq, "Done")
+        _record_ma_cap_counts(builder, step_name, seq, sink)
+    else:
+        sink.update(step_name, seq, "Failed")
+        log.error("%s[%s] exit=%s -- check %s", step_name, seq, rc, err_path)
+    return rc
+
+
 def _ma_cap_counts(seq_dir: str) -> Tuple[Optional[int], Optional[int]]:
     """Derive (num_frames, num_cameras) from a finished ma_cap output dir.
 
@@ -185,9 +257,44 @@ def _ma_cap_counts(seq_dir: str) -> Tuple[Optional[int], Optional[int]]:
             d = np.load(cams[0], allow_pickle=False)
             if "frame_start" in d and "frame_end" in d:
                 num_frames = max(0, int(d["frame_end"]) - int(d["frame_start"]))
+        except ImportError:
+            # Bare cluster python3 (run-cell executes outside the container,
+            # where numpy may not exist): stdlib scalar reader.
+            start = _read_npz_int(cams[0], "frame_start")
+            end = _read_npz_int(cams[0], "frame_end")
+            if start is not None and end is not None:
+                num_frames = max(0, end - start)
         except Exception as e:  # noqa: BLE001 — metadata must never break a run
             log.warning("could not read frame range from %s: %s", cams[0], e)
     return num_frames, num_cameras
+
+
+def _read_npz_int(path: str, member: str) -> Optional[int]:
+    """Read one scalar integer member from an ``.npz`` without numpy.
+
+    An npz is a zip of ``.npy`` members; a scalar int is the npy magic +
+    version, a header dict (descr / fortran_order / shape) and the raw
+    little-endian value. Anything unexpected returns None (best-effort
+    metadata, same contract as :func:`_ma_cap_counts`)."""
+    import ast
+    import struct
+    import zipfile
+    fmts = {"<i8": "<q", "<i4": "<i", "<i2": "<h", "|i1": "<b",
+            "<u8": "<Q", "<u4": "<I", "<u2": "<H", "|u1": "<B"}
+    try:
+        with zipfile.ZipFile(path) as zf, zf.open(member + ".npy") as f:
+            if f.read(6) != b"\x93NUMPY":
+                return None
+            major = f.read(2)[0]
+            hlen = struct.unpack("<H", f.read(2))[0] if major == 1 \
+                else struct.unpack("<I", f.read(4))[0]
+            hdr = ast.literal_eval(f.read(hlen).decode("latin1").strip())
+            fmt = fmts.get(hdr.get("descr", ""))
+            if fmt is None or hdr.get("shape") not in ((), (1,)):
+                return None
+            return int(struct.unpack(fmt, f.read(struct.calcsize(fmt)))[0])
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _record_ma_cap_counts(builder, step_name: str, seq: str, sink: StatusSink) -> None:
@@ -197,7 +304,8 @@ def _record_ma_cap_counts(builder, step_name: str, seq: str, sink: StatusSink) -
     if step_name != "ma_cap":
         return
     # Skip the output scan entirely for sinks that don't persist counts
-    # (CLI/headless PrintSink/JsonlSink) — no point reading NPZs to no-op.
+    # (the CLI PrintSink) — no point reading NPZs to no-op. JsonlSink does
+    # persist them (a counts event the ClusterMonitor replays into the DB).
     if type(sink).record_counts is StatusSink.record_counts:
         return
     try:

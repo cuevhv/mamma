@@ -567,8 +567,18 @@ def validate(cfg: dict) -> None:
             continue
         enabled_count += 1
 
-        engine = (s.get("engine") or "conda").lower()
-        if engine not in VALID_ENGINES:
+        # engine / sif_path / docker_image fall back to the `global` block
+        # (mirrors StepBuilder + conda_env), so an all-apptainer preset can set
+        # them once globally instead of on every step.
+        engine = (s.get("engine") or g.get("engine") or "conda").lower()
+        if engine == "cluster":
+            errors.append(
+                f"{step}.engine: 'cluster' is a submission target, not an "
+                "executable engine. Submit with the GUI's cluster engine or "
+                "'python -m inference submit-remote --profile <name>'; on the "
+                "cluster the steps run via the profile's container (apptainer)."
+            )
+        elif engine not in VALID_ENGINES:
             errors.append(
                 f"{step}.engine: {engine!r} not in {VALID_ENGINES}"
             )
@@ -578,10 +588,12 @@ def validate(cfg: dict) -> None:
         if not s.get("repo_path"):
             errors.append(f"{step}.repo_path: required when enabled")
 
-        if engine == "apptainer" and not s.get("sif_path"):
-            errors.append(f"{step}.sif_path: required for engine=apptainer")
-        if engine == "docker" and not s.get("docker_image"):
-            errors.append(f"{step}.docker_image: required for engine=docker")
+        if engine == "apptainer" and not (s.get("sif_path") or g.get("sif_path")):
+            errors.append(f"{step}.sif_path: required for engine=apptainer "
+                          "(set on the step or in global)")
+        if engine == "docker" and not (s.get("docker_image") or g.get("docker_image")):
+            errors.append(f"{step}.docker_image: required for engine=docker "
+                          "(set on the step or in global)")
 
         deps = s.get("dependencies", []) or []
         if not isinstance(deps, list):

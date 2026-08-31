@@ -63,6 +63,13 @@ def _child_env() -> dict:
         if not any(k.startswith(p) for p in _STRIPPED_PREFIXES)
     }
     env.setdefault("MPLBACKEND", "Agg")
+    # Steps run with stdout/stderr captured to log files, where tqdm's \r
+    # refreshes become one line each (~5k lines per SAM propagation pass in
+    # the .err). TQDM_MININTERVAL (tqdm >= 4.66 env defaults) throttles every
+    # bar, including ones inside sam2/sam3, to one line per interval: progress
+    # and ETA stay visible, the spam does not. setdefault: callers can still
+    # override, and TQDM_DISABLE=1 silences bars entirely if someone wants.
+    env.setdefault("TQDM_MININTERVAL", "30")
     return env
 
 
@@ -146,6 +153,13 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
     endpoint, so a previewed command is byte-identical to what actually runs.
     """
     engine = builder.engine
+    if engine == "cluster":
+        raise ValueError(
+            f"Step {builder.step_name!r}: engine 'cluster' is a submission "
+            "target, not a local engine. Submit via the GUI's cluster engine "
+            "or 'python -m inference submit-remote --profile <name>'; on the "
+            "cluster the steps run via the profile's container."
+        )
     if engine not in ENGINES:
         raise ValueError(
             f"Unknown engine {engine!r} for step {builder.step_name!r}. "
@@ -174,7 +188,12 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
         binds: List[str] = []
         for b in builder.binds():
             binds += ["--bind", b]
-        submit_cfg = builder.step_cfg.get("submit_cfg") or {}
+        # Per-step defaults fill in when the config carries no submit_cfg, so
+        # a bare task file still gets --nv on GPU steps (an explicit gpus: 0
+        # override is respected). Imported lazily: the cluster package init
+        # pulls htcondor -> runner, which imports this module.
+        from .cluster.resources import resolve_submit_cfg
+        submit_cfg = resolve_submit_cfg(builder.step_name, builder.step_cfg)
         needs_gpu = int(submit_cfg.get("gpus", 0) or 0) > 0
         nv_flag: List[str] = []
         if needs_gpu:
@@ -190,10 +209,21 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
             if nvccli is None:
                 nvccli = shutil.which("nvidia-container-cli") is not None
             nv_flag = ["--nv", "--nvccli"] if nvccli else ["--nv"]
+        # HTCondor points TMPDIR at the job's request_disk-sized scratch dir,
+        # but that path is not auto-bound inside the container, so Python's
+        # tempfile silently falls back to the node's small shared /tmp (task
+        # 152: ENOSPC from the ma_masks mask spill at ~3 GB). Bind the scratch
+        # at the same path and pin TMPDIR explicitly so in-container temp
+        # files land on the disk the job actually requested. /tmp and
+        # /var/tmp are already apptainer default binds: nothing to do there.
+        tmp_flags: List[str] = []
+        tmpdir = os.environ.get("TMPDIR")
+        if tmpdir and tmpdir not in ("/tmp", "/var/tmp") and os.path.isdir(tmpdir):
+            tmp_flags = ["--bind", tmpdir, "--env", f"TMPDIR={tmpdir}"]
         # --pwd mirrors docker's -w: the step runs from its subdir under the
         # /repo (repo root) bind, same as the conda engine's cwd.
-        return ["apptainer", "run", *nv_flag, "--pwd", builder.container_cwd(),
-                *binds, sif, *argv], None
+        return ["apptainer", "run", *nv_flag, *tmp_flags,
+                "--pwd", builder.container_cwd(), *binds, sif, *argv], None
 
     # docker run --rm --gpus all --user <uid>:<gid> -w /repo -v <list> <image> python <argv>
     image = builder.docker_image
@@ -212,8 +242,13 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
     user_flags: List[str] = []
     if hasattr(os, "getuid"):
         user_flags = ["--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp"]
+    # Docker (unlike apptainer) does not inherit the client's environment, so
+    # the headless pins from _child_env() must be forwarded explicitly.
+    # ``-e VAR`` without a value copies it from the docker CLI's own env,
+    # which is exactly _child_env() here.
+    env_flags = ["-e", "MPLBACKEND", "-e", "TQDM_MININTERVAL"]
     cmd = [
-        "docker", "run", "--rm", "--gpus", "all", *user_flags,
+        "docker", "run", "--rm", "--gpus", "all", *user_flags, *env_flags,
         "-w", builder.container_cwd(), *volumes, image, "python", *argv,
     ]
     return cmd, None
@@ -262,6 +297,12 @@ def dispatch(
 ) -> int:
     """Look up the configured engine for ``builder`` and run it."""
     engine = builder.engine
+    if engine == "cluster":
+        raise ValueError(
+            f"Step {builder.step_name!r}: engine 'cluster' is a submission "
+            "target, not a local engine. Submit via the GUI's cluster engine "
+            "or 'python -m inference submit-remote --profile <name>'."
+        )
     if engine not in ENGINES:
         raise ValueError(
             f"Unknown engine {engine!r} for step {builder.step_name!r}. "

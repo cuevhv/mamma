@@ -219,33 +219,6 @@ export function CellSidePanel({ selection, onClose, onStop, onBrowseOutputs }: P
             <FileJson className="w-4 h-4 text-primary" />
             View run config
           </button>
-          <button
-            onClick={async () => {
-              try {
-                const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/config-path`);
-                if (!res.ok) {
-                  const err = await res.json().catch(() => ({}));
-                  toast.error(err.error || `Failed to locate preset (${res.status})`);
-                  return;
-                }
-                const data = await res.json();
-                if (!data.presetPath) {
-                  toast.info('No preset lineage recorded for this run (likely submitted before preset tracking, or imported from CLI).');
-                  return;
-                }
-                const presetName = (data.presetPath as string).split('/').pop() || 'preset';
-                setViewer({ name: presetName, path: data.presetPath });
-              } catch (e) {
-                console.error(e);
-                toast.error('Failed to load preset. See console.');
-              }
-            }}
-            className="flex items-center justify-center gap-2 px-4 py-2.5 bg-surface-3 hover:bg-surface-4 border border-border hover:border-border-strong rounded-md text-foreground text-sm transition-colors"
-            title="Open the source preset (capture-independent template) this run was built from"
-          >
-            <FileJson className="w-4 h-4 text-foreground-subtle" />
-            View source preset
-          </button>
           {canBrowseOutputs && (
             <button
               onClick={() => onBrowseOutputs!(captureName!, captureJsonPath!, taskId, seqName, stepName)}

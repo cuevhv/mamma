@@ -62,20 +62,31 @@ class StepBuilder:
 
     @property
     def sif_path(self) -> str:
-        # Anchored like repo_path: a relative sif_path in a preset must
+        # Per-step override → global fallback (set once for an all-apptainer
+        # run). Anchored like repo_path: a relative sif_path in a preset must
         # resolve against the repo root, not whatever cwd the runner (or the
         # GUI backend) happens to have.
-        val = self._expand(self.step_cfg.get("sif_path", "") or "")
+        val = self._expand(
+            self.step_cfg.get("sif_path") or self.global_cfg.get("sif_path") or ""
+        )
         return self._anchor(val) if val else ""
 
     @property
     def docker_image(self) -> str:
-        return self.step_cfg.get("docker_image", "") or ""
+        # Per-step override → global fallback.
+        return self.step_cfg.get("docker_image") or self.global_cfg.get("docker_image") or ""
 
     @property
     def engine(self) -> str:
-        # Per-step override; default conda.
-        return (self.step_cfg.get("engine") or "conda").lower()
+        # Per-step override → global fallback → built-in default (conda), the
+        # same precedence conda_env uses. Lets a preset set engine/sif_path
+        # once in `global` for an all-container run while still allowing a step
+        # to opt out (e.g. ma_cap on conda).
+        return (
+            self.step_cfg.get("engine")
+            or self.global_cfg.get("engine")
+            or "conda"
+        ).lower()
 
     @property
     def conda_env(self) -> str:
