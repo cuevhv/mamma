@@ -677,3 +677,27 @@ def test_drop_single_frame_islands():
     assert not seg.frame(4)[2].any()
     assert seg.frame(0)[2].any()                # clip end untouched
     assert all(seg.frame(f)[1].any() for f in range(10))
+
+
+def test_unify_and_flags_accept_tracker_shaped_masks():
+    # Frames outside a re-propagated run keep SAM2's (1, H, W) writeback
+    # shape; the collapse helpers must read them without unpack errors.
+    from core.pipeline import _collapse_flags, _unify_failed_run_labels
+
+    def _blob3d(x, y, r=6):
+        return _blob(x, y, r)[None, ...]
+
+    seg = _MemSegments()
+    frames = list(range(21))
+    for f in list(range(0, 5)) + list(range(16, 21)):
+        seg.set_frame(f, {1: _blob3d(30, 40), 2: _blob3d(90, 40)})
+    for f in range(5, 16):
+        seg.set_frame(f, {(1 if f % 2 == 0 else 2): _blob(30, 40, 6)})
+    flags, scanned = _collapse_flags(seg, frames, [(0, (0, 0, 40, 40))],
+                                     5, 15, margin=2)
+    relabeled, blanked = _unify_failed_run_labels(
+        seg, frames, run_s=5, run_e=15, margin=0, jump_px=25.0)
+    assert relabeled > 0 and blanked == 0
+    for f in range(5, 16):
+        masks = seg.frame(f)
+        assert masks.get(1) is not None and masks[1].any()

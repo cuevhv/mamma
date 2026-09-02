@@ -288,6 +288,13 @@ def _argmax_disjoint_masks(obj_ids, mask_logits):
             for i, o in enumerate(obj_ids)}
 
 
+def _mask2d(m):
+    """Mask as 2D bool: writebacks store (H, W) but the tracker's original
+    frames carry a leading singleton axis (1, H, W)."""
+    m = np.asarray(m)
+    return m.reshape(m.shape[-2], m.shape[-1])
+
+
 def _collapse_flags(video_segments, sorted_frames, anchors, run_s, run_e,
                     margin=15):
     """Frames inside a re-propagated run still carrying a collapse signature.
@@ -312,7 +319,8 @@ def _collapse_flags(video_segments, sorted_frames, anchors, run_s, run_e,
     hi = min(len(sorted_frames) - 1, run_e + margin)
     flags = []
     for idx in range(lo, hi + 1):
-        masks = {o: m for o, m in video_segments.frame(sorted_frames[idx]).items()
+        masks = {o: _mask2d(m)
+                 for o, m in video_segments.frame(sorted_frames[idx]).items()
                  if m is not None and m.any()}
         stats = {}
         for oid, m in masks.items():
@@ -374,7 +382,7 @@ def _unify_failed_run_labels(video_segments, sorted_frames, run_s, run_e,
         out = {}
         for oid, m in video_segments.frame(sorted_frames[idx]).items():
             if m is not None and m.any():
-                ys, xs = np.nonzero(m)
+                ys, xs = np.nonzero(_mask2d(m))
                 out[oid] = (float(xs.mean()), float(ys.mean()))
         return out
 
@@ -778,8 +786,10 @@ class SegmentMultipleFrames:
                     inference_state, video_segments,
                     cam_name=cam_name or "SAM", image_size=image_size)
             except Exception as e:  # noqa: BLE001 — recovery must never kill the run
+                import traceback
                 self._log_warn(
-                    f"[{cam_name or 'SAM'}] collapse recovery skipped (non-fatal): {e}")
+                    f"[{cam_name or 'SAM'}] collapse recovery skipped "
+                    f"(non-fatal): {e}\n{traceback.format_exc()}")
 
         detected_ids = video_segments.all_obj_ids()
         video_segments, detected_ids = self._postprocess_tracklets(
