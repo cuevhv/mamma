@@ -297,6 +297,15 @@ def _mask2d(m):
 
 def _collapse_flags(video_segments, sorted_frames, anchors, run_s, run_e,
                     margin=15):
+    box_area = float(np.median(
+        [max(1.0, (b[2] - b[0]) * (b[3] - b[1])) for _, b in anchors]))
+    return _collapse_flags_scaled(video_segments, sorted_frames,
+                                  0.6 * box_area, float(np.sqrt(box_area)),
+                                  run_s, run_e, margin)
+
+
+def _collapse_flags_scaled(video_segments, sorted_frames, person_mask_est,
+                           body_len, run_s, run_e, margin=15):
     """Frames inside a re-propagated run still carrying a collapse signature.
 
     A flagged frame has a mask pair that describes ONE person wearing two
@@ -310,10 +319,6 @@ def _collapse_flags(video_segments, sorted_frames, anchors, run_s, run_e,
     (flags, n_scanned) with flags as [(frame_index_position, smaller_oid)].
     """
     import cv2
-    box_area = float(np.median(
-        [max(1.0, (b[2] - b[0]) * (b[3] - b[1])) for _, b in anchors]))
-    person_mask_est = 0.6 * box_area
-    body_len = float(np.sqrt(box_area))
     kernel = np.ones((31, 31), np.uint8)
     lo = max(0, run_s - margin)
     hi = min(len(sorted_frames) - 1, run_e + margin)
@@ -451,6 +456,57 @@ def _unify_failed_run_labels(video_segments, sorted_frames, run_s, run_e,
                 continue
             video_segments.set_frame(fidx, masks)
     return relabeled, blanked
+
+
+def _sweep_split_body_collapses(video_segments, min_span=20, gap=10):
+    """Whole-timeline pass of the collapse-signature classifier.
+
+    Recovery only audits runs its near-identical scan declares, and that
+    scan needs high pair IoU; a split-body collapse is pixel-disjoint after
+    the argmax writeback, so it never declares a run and the two-ids-on-one-
+    person frames survive untouched. This sweep applies the same classifier
+    everywhere: sustained flagged spans get the smaller masks blanked and
+    the surviving labels unified against the healthy span boundaries.
+    Person scale comes from the timeline's own large masks. Returns
+    (n_spans, n_zeroed, n_unified).
+    """
+    frames = video_segments.frames()
+    if not frames:
+        return 0, 0, 0
+    areas = []
+    for f in frames[::25]:
+        for m in video_segments.frame(f).values():
+            if m is not None and m.any():
+                areas.append(int(_mask2d(m).sum()))
+    big = [a for a in areas if a >= 0.25 * max(areas)] if areas else []
+    if not big:
+        return 0, 0, 0
+    person_mask_est = float(np.median(big))
+    body_len = float(np.sqrt(person_mask_est / 0.6))
+    flags, _scanned = _collapse_flags_scaled(
+        video_segments, frames, person_mask_est, body_len,
+        0, len(frames) - 1, margin=0)
+    flagged = sorted({i for i, _o in flags})
+    by_idx = {}
+    for i, o in flags:
+        by_idx.setdefault(i, []).append(o)
+    spans = []
+    for i in flagged:
+        if spans and frames[i] - frames[spans[-1][1]] <= gap:
+            spans[-1][1] = i
+        else:
+            spans.append([i, i])
+    n_spans = zeroed = unified = 0
+    for s, e in spans:
+        if frames[e] - frames[s] + 1 < min_span:
+            continue
+        n_spans += 1
+        span_flags = [(i, o) for i in range(s, e + 1)
+                      for o in by_idx.get(i, [])]
+        zeroed += _zero_flagged_masks(video_segments, frames, span_flags)
+        r, b = _unify_failed_run_labels(video_segments, frames, s, e, margin=0)
+        unified += r + b
+    return n_spans, zeroed, unified
 
 
 def _drop_single_frame_islands(video_segments):
@@ -795,6 +851,12 @@ class SegmentMultipleFrames:
         video_segments, detected_ids = self._postprocess_tracklets(
             cam_name or "SAM", video_segments, detected_ids, image_size=image_size,
         )
+        n_spans, zeroed, unified = _sweep_split_body_collapses(video_segments)
+        if n_spans:
+            self._log_info(
+                f"[{cam_name or 'SAM'}] Split-body sweep: {n_spans} span(s), "
+                f"zeroed {zeroed} misplaced mask(s), unified {unified} "
+                f"label(s).")
         dropped = _drop_single_frame_islands(video_segments)
         if dropped:
             self._log_info(f"[{cam_name or 'SAM'}] Dropped {dropped} "

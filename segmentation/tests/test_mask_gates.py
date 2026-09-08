@@ -701,3 +701,38 @@ def test_unify_and_flags_accept_tracker_shaped_masks():
     for f in range(5, 16):
         masks = seg.frame(f)
         assert masks.get(1) is not None and masks[1].any()
+
+
+def test_sweep_split_body_collapses_outside_runs():
+    from core.pipeline import _sweep_split_body_collapses
+
+    class _Seg(_MemSegments):
+        def frames(self):
+            return sorted(self.d)
+
+    seg = _Seg()
+    for f in range(120):
+        seg.set_frame(f, {1: _blob(30, 40, 10), 2: _blob(90, 40, 10)})
+    for f in range(40, 80):                    # split-body span: two half masks
+        seg.set_frame(f, {1: _blob(28, 40, 7), 2: _blob(38, 40, 7)})
+    n_spans, zeroed, unified = _sweep_split_body_collapses(seg, min_span=20)
+    assert n_spans == 1 and zeroed >= 35
+    for f in range(45, 75):
+        masks = seg.frame(f)
+        alive = [o for o, m in masks.items() if m.any()]
+        assert len(alive) == 1                 # one person, one id
+    assert all(seg.frame(f)[2].any() for f in range(0, 40))   # healthy untouched
+
+
+def test_sweep_ignores_genuine_contact():
+    from core.pipeline import _sweep_split_body_collapses
+
+    class _Seg(_MemSegments):
+        def frames(self):
+            return sorted(self.d)
+
+    seg = _Seg()
+    for f in range(120):                       # two full-size people touching
+        seg.set_frame(f, {1: _blob(40, 40, 10), 2: _blob(62, 40, 10)})
+    n_spans, zeroed, unified = _sweep_split_body_collapses(seg, min_span=20)
+    assert n_spans == 0 and zeroed == 0
