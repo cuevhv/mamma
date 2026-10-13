@@ -686,15 +686,39 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                       <label className="flex items-start gap-2 text-[12px] text-foreground-muted cursor-pointer select-none">
                         <input type="checkbox" disabled={!editable}
                           className="mt-0.5 accent-primary"
-                          checked={!!ov.ma_masks?.fanout_cameras}
+                          checked={ov.ma_masks?.fanout_cameras !== undefined
+                            ? !!ov.ma_masks.fanout_cameras
+                            : !!digest.steps.find(s => s.name === 'ma_masks')?.extras?.fanout_cameras}
                           onChange={e => setStepField('ma_masks', 'fanout_cameras',
-                            e.target.checked ? true : undefined)} />
+                            e.target.checked ? true
+                              : (digest.steps.find(s => s.name === 'ma_masks')?.extras?.fanout_cameras
+                                  ? false : undefined))} />
                         <span>
                           <span className="text-foreground">Parallelize ma_masks across cameras</span>
                           {' '}— one cluster job per camera after the init view
                           (capped by the profile's max concurrent jobs).
                           Cross-camera identity references reduce to the init
                           camera; wall time drops by roughly the concurrency factor.
+                        </span>
+                      </label>
+                    )}
+                    {digest.steps.some(s => s.name === 'ma_2d') && (
+                      <label className="flex items-start gap-2 text-[12px] text-foreground-muted cursor-pointer select-none">
+                        <input type="checkbox" disabled={!editable}
+                          className="mt-0.5 accent-primary"
+                          checked={ov.ma_2d?.fanout_cameras !== undefined
+                            ? !!ov.ma_2d.fanout_cameras
+                            : !!digest.steps.find(s => s.name === 'ma_2d')?.extras?.fanout_cameras}
+                          onChange={e => setStepField('ma_2d', 'fanout_cameras',
+                            e.target.checked ? true
+                              : (digest.steps.find(s => s.name === 'ma_2d')?.extras?.fanout_cameras
+                                  ? false : undefined))} />
+                        <span>
+                          <span className="text-foreground">Parallelize ma_2d across cameras</span>
+                          {' '}— one cluster job per camera (capped by the
+                          profile's max concurrent jobs). Cameras are fully
+                          independent in this step, so results are identical
+                          to a single-job run.
                         </span>
                       </label>
                     )}

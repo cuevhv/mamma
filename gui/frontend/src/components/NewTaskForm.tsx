@@ -245,6 +245,10 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
   const [stepSettings, setStepSettings] = useState<StepSettingsSchema>({});
   const [presetName, setPresetName] = useState<string>('');
   const [digest, setDigest] = useState<PresetDigest | null>(null);
+  // Bumped after an in-place preset save: the name doesn't change, so the
+  // digest effect wouldn't refire and the UI would keep rendering the stale
+  // pre-save digest (looked like the save was ignored).
+  const [digestRefresh, setDigestRefresh] = useState(0);
   const [stepEnabled, setStepEnabled] = useState<Record<string, boolean>>({});
   // Inline edits to the preset for this submission only. Cleared when the
   // preset selection changes so users start from a clean slate.
@@ -327,7 +331,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
       })
       .catch(() => { if (!cancelled) { setDigest(null); setCompleted2(false); } });
     return () => { cancelled = true; };
-  }, [presetName]);
+  }, [presetName, digestRefresh]);
 
   useEffect(() => {
     setSelectedCameras(prev => prev.filter(c => availableCameras.includes(c)));
@@ -908,6 +912,9 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
                 .then((list: PresetSummary[]) => {
                   setPresets(list);
                   setPresetName(newName);
+                  // In-place saves keep the same name; force the digest
+                  // effect to refetch the saved content.
+                  setDigestRefresh(n => n + 1);
                   setOverrides({});
                 })
                 .catch(() => {});
