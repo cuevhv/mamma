@@ -230,7 +230,8 @@ def emit_dag(
     # step -> idx -> node names downstream steps must wait on
     tails: Dict[str, Dict[int, List[str]]] = {}
 
-    fanout_cams, fanout_init = _resolve_fanout(task_cfg)
+    fanout_cams, fanout_init = _resolve_fanout(task_cfg, "ma_masks")
+    fan2d_cams, _ = _resolve_fanout(task_cfg, "ma_2d")
 
     for step in steps:
         scfg = task_cfg.get(step, {})
@@ -259,9 +260,10 @@ def emit_dag(
         tails[step] = {}
 
         fan_this = step == "ma_masks" and fanout_cams is not None
+        fan_2d = step == "ma_2d" and fan2d_cams is not None
         for idx, seq in enumerate(seqs):
             parents = [n for d in deps for n in tails[d].get(idx, [])]
-            if not fan_this:
+            if not (fan_this or fan_2d):
                 name = f"{step}_{idx}"
                 jobs.append({"name": name, "sub": sub_path, "category": step,
                              "vars": {"seq_arg": seq, "cell_id": "",
@@ -270,14 +272,35 @@ def emit_dag(
                 edges.append((parents, name))
                 tails[step][idx] = [name]
                 continue
+            if fan_2d:
+                # ma_2d camera fan-out: cells are fully independent (one NPZ
+                # per camera, no shared state), so there is no init anchor
+                # and no finalize barrier; downstream steps wait on every
+                # cell.
+                cam_nodes = []
+                for cam in fan2d_cams:
+                    name = f"{step}_{cam}_{idx}"
+                    jobs.append({"name": name, "sub": sub_path,
+                                 "category": step,
+                                 "vars": {"seq_arg": seq, "cell_id": cam,
+                                          "cell_flags": f"--cam_names {cam}"}})
+                    node_to_seq[name] = seq
+                    edges.append((parents, name))
+                    cam_nodes.append(name)
+                tails[step][idx] = cam_nodes
+                continue
             # Camera fan-out: one init node defining identities, then one
             # node per remaining camera (each resumes the init cache and
-            # processes a single view). Downstream steps wait on ALL of them.
+            # processes a single view), then one finalize node that skips
+            # the per-camera caches and runs the cross-camera consensus
+            # exactly once over the full rig. Cells must not run consensus
+            # themselves: concurrent pairwise passes would race on renames.
             init_name = f"{step}_init_{idx}"
             jobs.append({"name": init_name, "sub": sub_path, "category": step,
                          "vars": {"seq_arg": seq, "cell_id": "init",
                                   "cell_flags": f"--cam_names {fanout_init} "
-                                                f"--cam_init {fanout_init}"}})
+                                                f"--cam_init {fanout_init} "
+                                                f"--cross_camera_consensus false"}})
             node_to_seq[init_name] = seq
             edges.append((parents, init_name))
             cam_names = []
@@ -288,22 +311,44 @@ def emit_dag(
                 jobs.append({"name": name, "sub": sub_path, "category": step,
                              "vars": {"seq_arg": seq, "cell_id": cam,
                                       "cell_flags": f"--cam_names {fanout_init} "
-                                                    f"{cam} --cam_init {fanout_init}"}})
+                                                    f"{cam} --cam_init {fanout_init} "
+                                                    f"--cross_camera_consensus false"}})
                 node_to_seq[name] = seq
                 edges.append(([init_name], name))
                 cam_names.append(name)
-            tails[step][idx] = cam_names or [init_name]
+            final_name = f"{step}_finalize_{idx}"
+            jobs.append({"name": final_name, "sub": sub_path, "category": step,
+                         "vars": {"seq_arg": seq, "cell_id": "finalize",
+                                  "cell_flags": f"--cam_init {fanout_init}"}})
+            node_to_seq[final_name] = seq
+            edges.append((cam_names or [init_name], final_name))
+            tails[step][idx] = [final_name]
 
     dag_path = os.path.join(work_dir, f"{log_tag}.dag")
     Path(dag_path).write_text(render_dag(jobs, edges, maxjobs, opts.retries))
     return DagBundle(dag_path=dag_path, node_to_seq=node_to_seq)
 
 
-def _resolve_fanout(task_cfg: dict):
-    """(cam_names, init_cam) when ma_masks camera fan-out is enabled, else
-    (None, None). Requires an explicit global camera list; the init camera is
-    ``global.cam_init`` or the list head (the pipeline's own default)."""
-    scfg = task_cfg.get("ma_masks", {}) or {}
+def _flags_cam_init(flags) -> Optional[str]:
+    """Last --cam_init in a step's flags list (argparse semantics), or None.
+    Flags entries may hold several shell-style tokens each."""
+    found = None
+    tokens = [t for f in (flags or []) for t in str(f).split()]
+    for i, t in enumerate(tokens):
+        if t == "--cam_init" and i + 1 < len(tokens):
+            found = tokens[i + 1]
+        elif t.startswith("--cam_init="):
+            found = t.split("=", 1)[1]
+    return found
+
+
+def _resolve_fanout(task_cfg: dict, step: str = "ma_masks"):
+    """(cam_names, init_cam) when ``step`` camera fan-out is enabled, else
+    (None, None). Requires an explicit global camera list; the init camera
+    is the step flags' --cam_init (where presets and the GUI put it), else
+    ``global.cam_init``, else the list head (the pipeline's own default).
+    ma_2d callers ignore the init camera (its cells share no state)."""
+    scfg = task_cfg.get(step, {}) or {}
     if not scfg.get("fanout_cameras"):
         return None, None
     g = task_cfg.get("global", {}) or {}
@@ -312,7 +357,7 @@ def _resolve_fanout(task_cfg: dict):
         log.warning("fanout_cameras ignored: global.cam_names must list "
                     ">=2 cameras explicitly")
         return None, None
-    init = g.get("cam_init") or cams[0]
+    init = _flags_cam_init(scfg.get("flags")) or g.get("cam_init") or cams[0]
     if init not in cams:
         cams = [init] + list(cams)
     return list(cams), init

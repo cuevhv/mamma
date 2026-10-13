@@ -56,6 +56,11 @@ class MaMasksBuilder(StepBuilder):
         argv += ["--out", out]
         if self.dataset_name:
             argv += ["--dataset_name", self.dataset_name]
+        # Global camera list goes BEFORE the step flags so that flags win
+        # under argparse last-occurrence semantics: presets and camera
+        # fan-out cells narrow the camera set via their own --cam_names.
+        if self.cam_names:
+            argv += ["--cam_names", *self.cam_names]
         argv += self.flags
 
         # Translate per-installation paths from env -> argv.
@@ -96,8 +101,6 @@ class MaMasksBuilder(StepBuilder):
                 if sam2_value:
                     argv += ["--sam_checkpoint", sam2_value]
 
-        if self.cam_names:
-            argv += ["--cam_names", *self.cam_names]
         return argv
 
 

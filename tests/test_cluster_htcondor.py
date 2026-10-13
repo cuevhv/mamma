@@ -472,19 +472,63 @@ def test_emit_dag_camera_fanout(tmp_path, monkeypatch):
                                status_jsonl="/logs/status", retries=1)
     bundle = htcondor.emit_dag(_fanout_cfg(), "o", "7", opts, str(tmp_path))
     dag = open(bundle.dag_path).read()
-    # init node + one node per non-init camera, all category ma_masks
+    # init node + one node per non-init camera + finalize, all category ma_masks
     assert "JOB ma_masks_init_0" in dag
     assert "JOB ma_masks_IOI_09_0" in dag and "JOB ma_masks_IOI_17_0" in dag
+    assert "JOB ma_masks_finalize_0" in dag
     assert "MAXJOBS ma_masks 10" in dag
-    # per-cell flags: init runs its camera only; cam cells run init + cam
-    assert 'cell_flags="--cam_names IOI_01 --cam_init IOI_01"' in dag
-    assert 'cell_flags="--cam_names IOI_01 IOI_09 --cam_init IOI_01"' in dag
-    # wiring: ma_cap -> init -> cams -> ma_2d waits on ALL cams
+    # per-cell flags: init runs its camera only; cam cells run init + cam;
+    # neither runs the consensus (the finalize cell does, once, full-rig)
+    assert ('cell_flags="--cam_names IOI_01 --cam_init IOI_01 '
+            '--cross_camera_consensus false"') in dag
+    assert ('cell_flags="--cam_names IOI_01 IOI_09 --cam_init IOI_01 '
+            '--cross_camera_consensus false"') in dag
+    assert 'cell_id="finalize" cell_flags="--cam_init IOI_01"' in dag
+    # wiring: ma_cap -> init -> cams -> finalize -> ma_2d
     assert "PARENT ma_cap_0 CHILD ma_masks_init_0" in dag
     assert "PARENT ma_masks_init_0 CHILD ma_masks_IOI_09_0" in dag
-    assert "PARENT ma_masks_IOI_09_0 ma_masks_IOI_17_0 CHILD ma_2d_0" in dag
+    assert "PARENT ma_masks_IOI_09_0 ma_masks_IOI_17_0 CHILD ma_masks_finalize_0" in dag
+    assert "PARENT ma_masks_finalize_0 CHILD ma_2d_0" in dag
     # node map covers every fan-out node
     assert bundle.node_to_seq["ma_masks_IOI_17_0"] == "seqA"
+    assert bundle.node_to_seq["ma_masks_finalize_0"] == "seqA"
+
+
+def test_fanout_init_honors_step_flags_cam_init():
+    cfg = _fanout_cfg()
+    cfg["global"].pop("cam_init")
+    cfg["ma_masks"]["flags"] = ["--sam_version sam3", "--cam_init IOI_09"]
+    cams, init = htcondor._resolve_fanout(cfg)
+    assert init == "IOI_09"
+    assert cams[0] == "IOI_01"          # order preserved; init need not be first
+    # global.cam_init still wins over the list head when flags carry none
+    cfg["ma_masks"]["flags"] = ["--sam_version sam3"]
+    cfg["global"]["cam_init"] = "IOI_17"
+    _cams, init = htcondor._resolve_fanout(cfg)
+    assert init == "IOI_17"
+
+
+def test_emit_dag_ma_2d_camera_fanout(tmp_path, monkeypatch):
+    """ma_2d cells are per-camera independent: no init anchor, no finalize
+    barrier, and the downstream step waits on every cell."""
+    cfg = _fanout_cfg()
+    cfg["ma_2d"]["fanout_cameras"] = True
+    cfg["ma_3d"] = {"enabled": True, "dependencies": ["ma_2d"],
+                    "script": "w.py", "repo_path": "optimization", "flags": []}
+    monkeypatch.setattr(htcondor, "resolve_seq_names", lambda cfg: ["seqA"])
+    opts = htcondor.CondorOpts(repo_dir="/r", remote_task_path="/t.json",
+                               status_jsonl="/logs/status", retries=1)
+    bundle = htcondor.emit_dag(cfg, "o", "7", opts, str(tmp_path))
+    dag = open(bundle.dag_path).read()
+    for cam in ("IOI_01", "IOI_09", "IOI_17"):
+        assert f"JOB ma_2d_{cam}_0" in dag
+        assert f'cell_id="{cam}" cell_flags="--cam_names {cam}"' in dag
+    assert "ma_2d_init_0" not in dag and "ma_2d_finalize_0" not in dag
+    # each cell hangs off the ma_masks tail; ma_3d waits on every cell
+    assert "PARENT ma_masks_finalize_0 CHILD ma_2d_IOI_01_0" in dag
+    assert ("PARENT ma_2d_IOI_01_0 ma_2d_IOI_09_0 ma_2d_IOI_17_0 "
+            "CHILD ma_3d_0") in dag
+    assert bundle.node_to_seq["ma_2d_IOI_09_0"] == "seqA"
 
 
 def test_emit_dag_fanout_off_is_unchanged(tmp_path, monkeypatch):

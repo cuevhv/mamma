@@ -170,6 +170,11 @@ SAM backends:
                         dest='cfg',
                         help='YAML config file. Default: auto-selected based on --sam_version '
                              '(sam2 -> configs/sam2.yaml, sam3/sam3_prompt -> configs/sam3.yaml)')
+    parser.add_argument('--cross_camera_consensus', default=None,
+                        choices=['auto', 'true', 'false'],
+                        help='Override masks.cross_camera_consensus from the YAML config. '
+                             'Camera fan-out cells pass "false" so the consensus runs '
+                             'exactly once, in the finalize cell, over the full rig.')
     parser.add_argument('--skip_collage', action='store_true',
                         help='Skip collage video generation at the end')
     parser.add_argument('--skip_masked_outputs', action='store_true',
@@ -279,6 +284,13 @@ SAM backends:
         logger.info(f"Loaded assignment config: {args.cfg}")
 
     # Inject CLI flag into assignment config so the pipeline can read it
+    if args.cross_camera_consensus is not None:
+        if assignment_config is None:
+            assignment_config = {}
+        assignment_config.setdefault("masks", {})["cross_camera_consensus"] = \
+            args.cross_camera_consensus
+        logger.info(f"Cross-camera consensus override: {args.cross_camera_consensus}")
+
     if args.skip_masked_outputs:
         if assignment_config is None:
             assignment_config = {}
@@ -327,6 +339,7 @@ SAM backends:
         undistort=args.undistort,
         calibration_path=args.calibration,
     )
+    logger.info("run_ma_masks completed; exiting 0")
 
 
 if __name__ == '__main__':

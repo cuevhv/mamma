@@ -59,6 +59,11 @@ class Ma3dBuilder(StepBuilder):
                 os.path.join(self.out_root, "ma_cap", self.tag, self.dataset_name),
             ]
             argv += calibration_flag
+        # Global camera list goes BEFORE the step flags so that flags win
+        # under argparse last-occurrence semantics (a flags --cam_names
+        # subset must override the injected default rig).
+        if self.cam_names:
+            argv += ["--cam_names", *self.cam_names]
         argv += self.flags
 
         # Translate per-installation paths from env -> argv.
@@ -82,8 +87,6 @@ class Ma3dBuilder(StepBuilder):
             if value:
                 argv += [flag, value]
 
-        if self.cam_names:
-            argv += ["--cam_names", *self.cam_names]
         up_axis = self.global_cfg.get("up_axis")
         if up_axis and str(up_axis) != "auto":
             # '=' form: a signed value like '-y' would otherwise be parsed as a flag.

@@ -167,10 +167,16 @@ def process_body_camera(
 
 
 def process_sequence(
-    seq_dir: Path, fps: float, overwrite: bool, cleanup_frames: bool = False
+    seq_dir: Path, fps: float, overwrite: bool, cleanup_frames: bool = False,
+    cam_names: list[str] | None = None,
 ) -> None:
     seq_name = seq_dir.name
     cameras = find_cameras(seq_dir)
+    if cam_names is not None:
+        # Camera fan-out runs one process per camera; each must stitch (and
+        # clean up) only its own views, or concurrent cells delete each
+        # other's half-written frame dirs.
+        cameras = [c for c in cameras if c.name in cam_names]
     if not cameras:
         logging.warning("No camera folders found in %s", seq_name)
         return

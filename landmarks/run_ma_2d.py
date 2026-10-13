@@ -769,9 +769,12 @@ def make_videos_from_args(args):
         logger.warning(f"Video dataset directory does not exist: {dataset_dir}")
         return
 
-    # Only process the single sequence specified by seq_name
+    # Only process the single sequence specified by seq_name. Restrict the
+    # stitch to the cameras this run processed: fan-out cells must not touch
+    # sibling cells' in-progress frame dirs.
     seq_dir = dataset_dir
-    process_sequence(seq_dir, args.video_fps, True, cleanup_frames=True)
+    process_sequence(seq_dir, args.video_fps, True, cleanup_frames=True,
+                     cam_names=args.cam_names)
 
 
 if __name__ == '__main__':

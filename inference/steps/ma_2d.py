@@ -91,6 +91,11 @@ class Ma2dBuilder(StepBuilder):
         argv += ["--mask_path", mask_path]
         argv += self._calibration_flag()
         argv += self._undistort_flag()
+        # Global camera list goes BEFORE the step flags so that flags win
+        # under argparse last-occurrence semantics: camera fan-out cells
+        # narrow the camera set via their own --cam_names.
+        if self.cam_names:
+            argv += ["--cam_names", *self.cam_names]
         argv += self.flags
 
         # Translate per-installation paths from env -> argv.
@@ -109,6 +114,4 @@ class Ma2dBuilder(StepBuilder):
                 f"Missing: {', '.join(missing)}"
             )
 
-        if self.cam_names:
-            argv += ["--cam_names", *self.cam_names]
         return argv
