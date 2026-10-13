@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import sys
 import signal
 import threading
 import time
@@ -212,27 +213,41 @@ def run_cell(
         _record_ma_cap_counts(builder, step_name, seq, sink)
         return 0
 
-    out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq)
+    out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq,
+                                    cell=cell_id)
     sink.update(step_name, seq, "Running", pid=os.getpid())
     try:
         rc = engines.dispatch(builder, seq, out_path, err_path)
-    except Exception as e:  # noqa: BLE001 — mirror _run_step_inner's guard
+    except BaseException as e:  # noqa: BLE001 — a SystemExit or KeyboardInterrupt
+        # raised below dispatch must still reach the status stream, or the
+        # board shows the cell Running forever and the DAG node dies mute.
+        print(f"run-cell: dispatch raised {type(e).__name__}: {e}",
+              file=sys.stderr, flush=True)
         log.exception("%s[%s] engine error: %s", step_name, seq, e)
         sink.update(step_name, seq, "Failed")
         return 1
-
-    if rc == 0:
-        try:
-            Path(done).parent.mkdir(parents=True, exist_ok=True)
-            Path(done).touch()
-        except OSError as e:
-            log.warning("%s[%s] could not write DONE sentinel at %s: %s",
-                        step_name, seq, done, e)
-        sink.update(step_name, seq, "Done")
-        _record_ma_cap_counts(builder, step_name, seq, sink)
-    else:
-        sink.update(step_name, seq, "Failed")
-        log.error("%s[%s] exit=%s -- check %s", step_name, seq, rc, err_path)
+    # Durable trace even when logging is at WARNING: the exit path of a DAG
+    # node must never be silent (a cell once died between here and the sink
+    # write with exit 1 and zero output anywhere).
+    print(f"run-cell: {step_name}[{seq}] child rc={rc}", file=sys.stderr, flush=True)
+    try:
+        if rc == 0:
+            try:
+                Path(done).parent.mkdir(parents=True, exist_ok=True)
+                Path(done).touch()
+            except OSError as e:
+                log.warning("%s[%s] could not write DONE sentinel at %s: %s",
+                            step_name, seq, done, e)
+            sink.update(step_name, seq, "Done")
+            _record_ma_cap_counts(builder, step_name, seq, sink)
+        else:
+            sink.update(step_name, seq, "Failed")
+            log.error("%s[%s] exit=%s -- check %s", step_name, seq, rc, err_path)
+    except BaseException as e:  # noqa: BLE001
+        print(f"run-cell: post-dispatch bookkeeping failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc()
     return rc
 
 
@@ -557,8 +572,14 @@ def _log_paths(
     tag: str,
     step_name: str,
     seq_name: str,
+    cell: Optional[str] = None,
 ) -> Tuple[str, str]:
-    """Per-(step, seq) stdout/stderr path pair."""
+    """Per-(step, seq) stdout/stderr path pair.
+
+    Fan-out cells get their own pair (``<seq>.<cell>.err``): concurrent
+    cells sharing one file clobber each other's output and erase the
+    failure evidence.
+    """
     jobs_log_dir = os.path.expanduser(os.path.expandvars(
         global_cfg.get("jobs_log_dir", "")
     ))
@@ -570,7 +591,8 @@ def _log_paths(
         )
     user = global_cfg.get("username") or os.environ.get("USER") or "local"
     base = os.path.join(jobs_log_dir, user, tag, step_name)
+    stem = f"{seq_name}.{cell}" if cell else seq_name
     return (
-        os.path.join(base, f"{seq_name}.out"),
-        os.path.join(base, f"{seq_name}.err"),
+        os.path.join(base, f"{stem}.out"),
+        os.path.join(base, f"{stem}.err"),
     )
