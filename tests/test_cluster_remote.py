@@ -15,7 +15,7 @@ if _REPO not in sys.path:
 
 from inference.cluster import profile as profile_mod
 from inference.cluster import remote as remote_mod
-from inference.cluster.monitor import ClusterMonitor
+from inference.cluster.monitor import ClusterMonitor, reconcile
 from inference.cluster.transport import CommandResult, LocalTransport, Transport
 from inference.status import StatusSink
 
@@ -575,3 +575,93 @@ def test_sync_code_reports_and_dry_run_compares(tmp_path):
     assert diff == ["a.py"]                                          # compare only
     assert (tmp_path / "remote_repo" / "a.py").read_text() == "one"  # untouched
     assert sync_code(tr, prof, local_repo=str(src_repo)) == ["a.py"]
+
+
+def test_monitor_finalize_missing_downgrades_stuck_cells():
+    """A cell killed out-of-band (condor_rm) never streams a terminal state;
+    finalize_missing must downgrade it so the board cannot show a dead run
+    as Running forever, while leaving properly terminal cells untouched."""
+    tr = _MonTransport()
+    sink = _RecSink()
+    mon = ClusterMonitor(tr, "42", "/ws/status.jsonl",
+                         {"ma_cap_0": "S", "ma_masks_init_0": "S"}, sink)
+    tr.status_text = _jsonl(
+        {"step": "ma_cap", "seq": "S", "status": "Done"},
+        {"step": "ma_masks", "seq": "S", "status": "Running"},
+    )
+    tr.condorq = ""
+    mon.tick()
+    assert mon.finalize_missing() == 1
+    assert ("ma_masks", "S", "Cancelled") in sink.calls
+    assert ("ma_cap", "S", "Cancelled") not in sink.calls
+    # idempotent: a second pass finds nothing left to downgrade
+    assert mon.finalize_missing() == 0
+
+
+def test_monitor_fanout_node_names_map_to_the_step():
+    """Camera fan-out nodes (<step>_init_<idx>, <step>_<CAM>_<idx>,
+    <step>_finalize_<idx>) must update the real step row, not a phantom
+    "ma_masks_IOI_02" step."""
+    tr = _MonTransport()
+    sink = _RecSink()
+    nodes = {"ma_masks_init_0": "S", "ma_masks_IOI_02_0": "S",
+             "ma_masks_finalize_0": "S", "ma_2d_0": "S",
+             "ma_2d_IOI_05_0": "S"}
+    mon = ClusterMonitor(tr, "42", "/ws/status.jsonl", nodes, sink)
+    tr.status_text = ""
+    tr.condorq = json.dumps([
+        {"DAGNodeName": "ma_masks_IOI_02_0", "JobStatus": 2},
+        {"DAGNodeName": "ma_masks_finalize_0", "JobStatus": 1},
+        {"DAGNodeName": "ma_2d_0", "JobStatus": 1},
+        {"DAGNodeName": "ma_2d_IOI_05_0", "JobStatus": 1},
+    ])
+    mon.tick()
+    steps = {c[0] for c in sink.calls}
+    assert steps == {"ma_masks", "ma_2d"}
+
+
+# --------------------------------------------------------------------------- #
+# one-shot reconcile (board re-sync after tracker death / resubmission)
+# --------------------------------------------------------------------------- #
+
+def _reconcile_transport(status_text, *, status_dir_exists=True, lock_exists=False):
+    tr = _MonTransport()
+    tr.status_text = status_text
+    paths = {"/ws/dag/7/status": status_dir_exists,
+             "/ws/dag/7/7.dag.lock": lock_exists}
+    tr.exists = lambda p: paths[p]
+    return tr
+
+
+def test_reconcile_replays_and_finalizes_dead_run():
+    """Replay restores completed steps; cells still non-terminal after a
+    verified-dead DAG are downgraded (the task-163 freeze)."""
+    tr = _reconcile_transport(_jsonl(
+        {"ts": 1, "step": "ma_masks", "seq": "S", "status": "Running"},
+        {"ts": 2, "step": "ma_masks", "seq": "S", "status": "Done"},
+        {"ts": 3, "step": "ma_2d", "seq": "S", "status": "Running"},
+    ))
+    sink = _RecSink()
+    res = reconcile(tr, "/ws/dag/7/status", "/ws/dag/7/7.dag.lock", sink)
+    assert res["alive"] is False and res["downgraded"] == 1
+    assert ("ma_masks", "S", "Done") in sink.calls
+    assert ("ma_2d", "S", "Cancelled") in sink.calls
+
+
+def test_reconcile_leaves_a_live_run_alone():
+    tr = _reconcile_transport(_jsonl(
+        {"ts": 1, "step": "ma_masks", "seq": "S", "status": "Running"},
+    ), lock_exists=True)
+    sink = _RecSink()
+    res = reconcile(tr, "/ws/dag/7/status", "/ws/dag/7/7.dag.lock", sink)
+    assert res["alive"] is True and res["downgraded"] == 0
+    assert ("ma_masks", "S", "Cancelled") not in sink.calls
+
+
+def test_reconcile_without_status_dir_touches_nothing():
+    """A just-submitted task (no dag dir yet) must never get finalized."""
+    tr = _reconcile_transport("", status_dir_exists=False)
+    sink = _RecSink()
+    res = reconcile(tr, "/ws/dag/7/status", "/ws/dag/7/7.dag.lock", sink)
+    assert res["downgraded"] == 0 and res["seen"] == 0
+    assert sink.calls == []

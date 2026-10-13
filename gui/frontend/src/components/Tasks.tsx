@@ -294,6 +294,31 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
     }
   };
 
+  /** Re-sync a cluster task's board rows from the cluster's durable status
+   *  files. Heals rows frozen non-terminal after a backend restart or an
+   *  out-of-band DAG resubmission (nothing local was streaming progress). */
+  const handleReconcileTask = async (taskId: string) => {
+    try {
+      const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/reconcile`, { method: 'POST' });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(d.error || `Failed to re-sync task ${formatTaskId(taskId)} (${res.status})`);
+        return;
+      }
+      if (d.alive) {
+        toast.info(`Task ${formatTaskId(taskId)}: run is still active on the cluster — replayed ${d.seen ?? 0} cell state(s).`);
+      } else if ((d.downgraded ?? 0) > 0) {
+        toast.success(`Task ${formatTaskId(taskId)}: re-synced; ${d.downgraded} stale row(s) resolved.`);
+      } else {
+        toast.success(`Task ${formatTaskId(taskId)}: re-synced from the cluster.`);
+      }
+      refreshHistory();
+    } catch (e) {
+      console.error(e);
+      toast.error(`Failed to reach the backend.`);
+    }
+  };
+
   /** Remove a single sequence from a task. Each Tasks-table row is one
    *  (task, sequence), so delete is scoped to that sequence — the other
    *  sequences in the same task are untouched. If it was the task's last
@@ -429,6 +454,7 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
           onBrowseOutputs={onBrowseOutputs}
           onStopTask={handleStopTask}
           onRestartTask={handleRestartTask}
+          onReconcileTask={handleReconcileTask}
           onDeleteSequence={handleDeleteSequence}
         />
       </div>

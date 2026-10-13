@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, AlertTriangle, Clock, ListChecks } from 'lucide-react';
+import { Search, X, Filter, Layers, Square, Trash2, RotateCcw, RefreshCw, AlertTriangle, Clock, ListChecks } from 'lucide-react';
 import { StatusBadge, statusKind, StatusKind, statusStyle, Dot } from './shared/StatusBadge';
 import { stepLabel } from './shared/stepLabels';
 import { formatTaskId } from './shared/formatTaskId';
@@ -179,6 +179,10 @@ interface Props {
    *  runner's DONE-sentinel skip handles already-completed (step, seq)
    *  pairs. Pass to enable the Restart button. */
   onRestartTask?: (taskId: string) => void | Promise<void>;
+  /** Re-sync a cluster task's rows from the cluster's durable status files.
+   *  Heals rows frozen non-terminal after a backend restart or an
+   *  out-of-band DAG resubmission. No-op (400 toast) for local tasks. */
+  onReconcileTask?: (taskId: string) => void | Promise<void>;
   /** Remove a single (task, sequence) row from the DB. **Does not delete
    *  output files on disk.** Each table row is one sequence, so delete is
    *  scoped to that sequence; the task row is dropped only when its last
@@ -195,8 +199,8 @@ interface Props {
  * across task # and sequence, and a "Latest run only" toggle that
  * collapses to one row per sequence (the most recent task for it).
  */
-export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutputs, onStopTask, onRestartTask, onDeleteSequence }: Props) {
-  const showActions = !!(onStopTask || onRestartTask || onDeleteSequence);
+export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutputs, onStopTask, onRestartTask, onReconcileTask, onDeleteSequence }: Props) {
+  const showActions = !!(onStopTask || onRestartTask || onReconcileTask || onDeleteSequence);
   const [statusFilter, setStatusFilter] = useState<Set<RowStatus>>(new Set());
   /** Selected capture filter, keyed by capture JSON path (more specific than
    *  the display name in case two captures share a name). Empty = no filter. */
@@ -699,6 +703,19 @@ export function ProcessTable({ rows, steps, onCellClick, selected, onBrowseOutpu
                                 : `Restart is only available for failed or partially-failed tasks.`}
                             >
                               <RotateCcw className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          {onReconcileTask && isGroupStart && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); onReconcileTask(row.taskId); }}
+                              disabled={taskStatus !== 'Running' && taskStatus !== 'Pending' && taskStatus !== 'Mixed'}
+                              aria-label={`Re-sync task ${formatTaskId(row.taskId)} from the cluster`}
+                              className="inline-flex items-center justify-center p-1.5 text-foreground-muted bg-surface-2 border border-border hover:border-primary/55 hover:text-primary rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:text-foreground-muted"
+                              title={taskStatus === 'Running' || taskStatus === 'Pending' || taskStatus === 'Mixed'
+                                ? `Re-sync task ${formatTaskId(row.taskId)} from the cluster's status files — heals rows frozen by a backend restart or an out-of-band DAG resubmission. Cluster tasks only.`
+                                : `Re-sync applies to tasks that still look in-flight.`}
+                            >
+                              <RefreshCw className="w-3.5 h-3.5" />
                             </button>
                           )}
                           {onDeleteSequence && (

@@ -2656,6 +2656,22 @@ def stop_task(task_id):
     })
 
 
+@app.route("/api/tasks/<int:task_id>/reconcile", methods=["POST"])
+def reconcile_task_route(task_id):
+    """Re-sync a cluster task's board rows from the cluster's durable
+    per-cell status files (see gui/backend/reconcile.py). Heals rows frozen
+    in a non-terminal state after a backend restart or an out-of-band DAG
+    resubmission."""
+    import reconcile as _reconcile
+    try:
+        res = _reconcile.reconcile_task(task_id)
+    except Exception as e:  # noqa: BLE001 — surfaces ssh/profile errors as JSON
+        return jsonify({"error": str(e)}), 500
+    if res.get("error"):
+        return jsonify(res), 400
+    return jsonify(res)
+
+
 @app.route("/api/tasks/<int:task_id>/restart", methods=["POST"])
 def restart_task(task_id):
     """Re-enqueue a stopped task. The runner's existing DONE-sentinel
@@ -4035,5 +4051,20 @@ if __name__ == "__main__":
     bind_host = os.environ.get("MAMMA_BIND_HOST", "127.0.0.1")
     bind_port = int(os.environ.get("MAMMA_BIND_PORT", "8000"))
     debug = os.environ.get("MAMMA_DEBUG", "1") not in ("0", "false", "False", "")
+
+    # Startup reconciliation: heal cluster-task rows frozen non-terminal by a
+    # backend restart / reboot / out-of-band resubmission. Background thread
+    # (SSH per stale task); in debug, only in the reloader's serving child.
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        def _startup_reconcile():
+            try:
+                import reconcile as _reconcile
+                results = _reconcile.reconcile_stale_tasks()
+                if results:
+                    print(f"[reconcile] startup pass: {results}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"[reconcile] startup pass failed: {e}", flush=True)
+        threading.Thread(target=_startup_reconcile, daemon=True).start()
+
     print(f"---> Listening on http://{bind_host}:{bind_port} (debug={debug})")
     app.run(host=bind_host, port=bind_port, debug=debug)

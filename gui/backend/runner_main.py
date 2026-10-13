@@ -155,6 +155,12 @@ def _run_cluster(args, sink) -> int:
             monitor.tick()  # final drain of status.jsonl
             break
         time.sleep(10.0)
+    # Cells killed out-of-band (condor_rm, preemption) never stream a
+    # terminal state; downgrade them so the board cannot show a dead run
+    # as Running forever.
+    stuck = monitor.finalize_missing()
+    if stuck:
+        print(f"[cluster] marked {stuck} unfinished cell(s) Cancelled", flush=True)
     print(f"[cluster] task {args.task_id} finished (stopped={stop['flag']})", flush=True)
     return 0
 
