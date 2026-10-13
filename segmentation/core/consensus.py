@@ -96,25 +96,28 @@ REGIME_MIN_VOTES = 3
 # --------------------------------------------------------------------------
 
 def densify_from_pngs(cam_out_dir: str, stride: int = 15, frames=None):
-    """Centroid + bbox tracks read directly from the mask PNGs.
+    """Centroid + bbox tracks read directly from the per-frame masks.
 
     Masks are the ground truth here: caches elsewhere in the pipeline go
-    stale the moment files are renamed, so the vote only ever reads PNGs.
+    stale the moment identities are relabeled, so the vote only ever reads
+    the mask files (packed masks.zip or legacy loose PNGs, auto-detected).
     ``frames`` restricts the scan to an explicit frame list (dense event
     refinement); otherwise every ``stride``-th frame is read.
     """
-    import cv2
+    from core.mask_archive import MaskArchiveReader
     mask_dir = os.path.join(cam_out_dir, "masks")
+    reader = MaskArchiveReader(mask_dir)
+    by_frame: Dict[int, list] = {}
+    for n in reader.names():
+        by_frame.setdefault(int(n.split("_")[1]), []).append(n)
     cents: Dict[int, Dict[int, Tuple[float, float]]] = {}
     boxes: Dict[int, Dict[int, Tuple[float, float, float, float]]] = {}
     if frames is None:
-        frames = sorted({int(os.path.basename(p).split("_")[1])
-                         for p in glob.glob(os.path.join(mask_dir, "mask_*.png"))})
-        frames = frames[::max(1, stride)]
+        frames = sorted(by_frame)[::max(1, stride)]
     for f in frames:
-        for p in glob.glob(os.path.join(mask_dir, f"mask_{f:04d}_*.png")):
-            oid = int(os.path.basename(p).split("_")[2].split(".")[0]) - 1
-            m = cv2.imread(p, 0)
+        for name in by_frame.get(f, []):
+            oid = int(name.split("_")[2].split(".")[0]) - 1
+            m = reader.read(name)
             if m is None or m.max() == 0:
                 continue
             ys, xs = np.nonzero(m > 127)
@@ -123,6 +126,7 @@ def densify_from_pngs(cam_out_dir: str, stride: int = 15, frames=None):
             cents.setdefault(oid, {})[f] = (float(xs.mean()), float(ys.mean()))
             boxes.setdefault(oid, {})[f] = (float(xs.min()), float(ys.min()),
                                             float(xs.max()), float(ys.max()))
+    reader.close()
     return cents, boxes
 
 
@@ -473,12 +477,18 @@ def score_event_hypotheses(solutions, comp, dense, ids, ev, reliability,
 # --------------------------------------------------------------------------
 
 def relabel_masks(mask_dir: str, ids: List[int], segment: Segment) -> int:
-    """Apply a permutation to the mask PNG filenames inside a segment.
+    """Apply a permutation to the mask filenames inside a segment.
 
-    Two-phase rename (to temp names first) so a swap can never collide.
-    Returns the number of files renamed.
+    Packed layout: the archive is streamed into a temp copy with the
+    affected entries renamed, then atomically swapped in (a permutation
+    maps names onto each other, so no collision is possible). Loose
+    layout: two-phase rename (to temp names first) so a swap can never
+    collide. Returns the number of files renamed.
     """
     pi = {i: g for i, g in zip(ids, segment.permutation)}
+    archive = os.path.join(mask_dir, "masks.zip")
+    if os.path.isfile(archive):
+        return _relabel_packed(archive, pi, segment)
     moves = []
     for f in range(segment.start_frame, segment.end_frame + 1):
         for i, g in pi.items():
@@ -492,6 +502,28 @@ def relabel_masks(mask_dir: str, ids: List[int], segment: Segment) -> int:
     for src, dst in moves:
         os.replace(src + ".consensus_tmp", dst)
     return len(moves)
+
+
+def _relabel_packed(archive: str, pi: Dict[int, int], segment: Segment) -> int:
+    """Rename mask entries of a packed archive inside a segment's frame range."""
+    import zipfile
+    renamed = 0
+    tmp = f"{archive}.tmp.{os.getpid()}"
+    with zipfile.ZipFile(archive, "r") as zin, \
+            zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as zout:
+        for info in zin.infolist():
+            name = info.filename
+            parts = name.split("_")
+            if name.startswith("mask_") and name.endswith(".png") and len(parts) == 3:
+                f = int(parts[1])
+                i = int(parts[2].split(".")[0]) - 1
+                if (segment.start_frame <= f <= segment.end_frame
+                        and pi.get(i, i) != i):
+                    name = f"mask_{f:04d}_{pi[i] + 1:02d}.png"
+                    renamed += 1
+            zout.writestr(name, zin.read(info.filename))
+    os.replace(tmp, archive)
+    return renamed
 
 
 # --------------------------------------------------------------------------

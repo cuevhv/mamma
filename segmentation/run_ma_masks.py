@@ -175,6 +175,10 @@ SAM backends:
                         help='Override masks.cross_camera_consensus from the YAML config. '
                              'Camera fan-out cells pass "false" so the consensus runs '
                              'exactly once, in the finalize cell, over the full rig.')
+    parser.add_argument('--png', action='store_true',
+                        help='Write per-frame masks as legacy loose PNG files instead of '
+                             'the packed one-file-per-camera masks.zip (the default). '
+                             'Downstream readers auto-detect either layout.')
     parser.add_argument('--skip_collage', action='store_true',
                         help='Skip collage video generation at the end')
     parser.add_argument('--skip_masked_outputs', action='store_true',
@@ -290,6 +294,12 @@ SAM backends:
         assignment_config.setdefault("masks", {})["cross_camera_consensus"] = \
             args.cross_camera_consensus
         logger.info(f"Cross-camera consensus override: {args.cross_camera_consensus}")
+
+    if args.png:
+        if assignment_config is None:
+            assignment_config = {}
+        assignment_config.setdefault("masks", {})["export_png"] = True
+        logger.info("Mask export: legacy loose PNG files (--png)")
 
     if args.skip_masked_outputs:
         if assignment_config is None:

@@ -123,13 +123,17 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
     all_contact = []
     all_floor_contact = []
 
+    mask_reader = None
     if masks_path is not None:
+        from utils.mask_archive import MaskArchiveReader
         pred_mask_dir = os.path.join(masks_path, camera_id, "masks")
-        pred_masks = sorted(glob.glob(os.path.join(pred_mask_dir, "*.png")))
+        # Packed masks.zip or legacy loose PNGs, auto-detected.
+        mask_reader = MaskArchiveReader(pred_mask_dir)
+        pred_masks = mask_reader.names()
         # Keep contiguous IDs up to the max observed ID so missing bodies can be zero-filled.
         observed_people_ids = []
         for pred_mask in pred_masks:
-            mask_id = int(os.path.basename(pred_mask).split("_")[2].replace(".png", ""))
+            mask_id = int(pred_mask.split("_")[2].replace(".png", ""))
             if mask_id not in observed_people_ids:
                 observed_people_ids.append(mask_id)
 
@@ -175,8 +179,7 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
         if masks_path is not None:
             frame_masks = {}
             for pid in people_ids:
-                p = os.path.join(masks_path, camera_id, "masks", f"mask_{frame_n:04d}_{pid:02d}.png")
-                frame_masks[pid] = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) if os.path.exists(p) else None
+                frame_masks[pid] = mask_reader.read(f"mask_{frame_n:04d}_{pid:02d}.png")
         return frame_rgb, frame_masks
 
     _prefetcher = ThreadPoolExecutor(max_workers=1)
@@ -367,6 +370,8 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
                             "floor_contacts_gt": floor_contacts_gt}.items() if v is not None}
     np.savez(f"{out_folder}/{camera_id}.npz", landmarks=landmarks,
              visibilities=visibilities, contacts=contacts, floor_contacts=floor_contacts, **gt)
+    if mask_reader is not None:
+        mask_reader.close()
 
 
 def parser():

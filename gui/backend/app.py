@@ -15,6 +15,7 @@ Differences from upstream master:
 """
 import collections
 import getpass
+import io
 import json
 import mimetypes
 import os
@@ -24,6 +25,7 @@ import signal
 import subprocess
 import sys
 import threading
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -3669,6 +3671,26 @@ def _safe_full_path(rel_path: str) -> str | None:
     return full_path
 
 
+def _archive_split(full_path: str):
+    """Split a path pointing at or into a packed ``masks.zip`` archive.
+
+    ma_masks packs per-frame mask PNGs into one ``masks.zip`` per camera
+    (see segmentation/core/mask_archive.py). The file browser presents the
+    archive as a folder, so paths like ``.../masks/masks.zip/mask_0001_01.png``
+    arrive here. Returns ``(zip_path, inner_name)`` when a leading portion
+    of ``full_path`` is an existing masks.zip (``inner_name`` is "" for the
+    archive root), else None.
+    """
+    parts = full_path.replace("\\", "/").split("/")
+    for i, part in enumerate(parts):
+        if part == "masks.zip":
+            zip_path = "/".join(parts[:i + 1])
+            if os.path.isfile(zip_path):
+                return zip_path, "/".join(parts[i + 1:])
+            return None
+    return None
+
+
 @app.route("/api/files/list", methods=["GET"])
 def list_files():
     rel_path = request.args.get("path", "")
@@ -3678,12 +3700,26 @@ def list_files():
     if full_path is None:
         return jsonify({"error": "Invalid path"}), 400
     if not os.path.isdir(full_path):
+        # A packed masks.zip browses like a folder of its entries.
+        arc = _archive_split(full_path)
+        if arc is not None and not arc[1]:
+            try:
+                with zipfile.ZipFile(arc[0]) as z:
+                    files = [{"name": i.filename, "size": i.file_size}
+                             for i in z.infolist()]
+                files.sort(key=lambda f: f["name"].lower())
+                return jsonify({"dirs": [], "files": files, "absPath": arc[0]})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
         return jsonify({"error": "Path does not exist"}), 404
     try:
         dirs, files = [], []
         with os.scandir(full_path) as it:
             for entry in sorted(it, key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower())):
                 if entry.is_dir(follow_symlinks=False):
+                    dirs.append({"name": entry.name})
+                elif entry.name == "masks.zip":
+                    # Navigable, like a directory (its entries list above).
                     dirs.append({"name": entry.name})
                 else:
                     try:
@@ -3890,6 +3926,19 @@ def serve_image_file():
     if full_path is None:
         return jsonify({"error": "Invalid path"}), 400
     if not os.path.isfile(full_path):
+        # An entry inside a packed masks.zip serves like a plain file.
+        arc = _archive_split(full_path)
+        if arc is not None and arc[1]:
+            mime_type, _ = mimetypes.guess_type(arc[1])
+            if not mime_type or not mime_type.startswith("image/"):
+                return jsonify({"error": "Only image files are supported"}), 400
+            try:
+                with zipfile.ZipFile(arc[0]) as z:
+                    data = z.read(arc[1])
+            except (KeyError, OSError, zipfile.BadZipFile):
+                return jsonify({"error": "File not found"}), 404
+            return send_file(io.BytesIO(data), mimetype=mime_type,
+                             download_name=arc[1])
         return jsonify({"error": "File not found"}), 404
     mime_type, _ = mimetypes.guess_type(full_path)
     if not mime_type or not mime_type.startswith("image/"):

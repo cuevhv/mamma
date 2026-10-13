@@ -17,6 +17,7 @@ import open_clip
 from core.logging import logger
 from core.exceptions import CameraProcessingError
 from core import geometry
+from core.mask_archive import MaskArchiveWriter
 from core.mask_store import MaskStore
 from core.predictor_factory import build_video_predictor
 from core.frame_source import ImageFileSource, VideoSource, frame_source_from_cam_data
@@ -2034,13 +2035,15 @@ class SegmentMultipleFrames:
 
         mask_folder = os.path.join(output_path, "masks")
         os.makedirs(mask_folder, exist_ok=True)
+        mask_archive = MaskArchiveWriter(mask_folder, packed=not self._export_png_masks())
         masked_outputs = None
         if not skip_overlays:
             masked_outputs = os.path.join(output_path, "masked_outputs")
             os.makedirs(masked_outputs, exist_ok=True)
         self._log_info(
             f"Saving propagated masks{'' if skip_overlays else ' and overlays'} to '{output_path}' "
-            f"(frames={n_frames}, obj_ids={list(obj_ids)}, vis_stride={vis_frame_stride})."
+            f"({'packed masks.zip' if mask_archive.packed else 'loose PNGs'}; "
+            f"frames={n_frames}, obj_ids={list(obj_ids)}, vis_stride={vis_frame_stride})."
         )
         from concurrent.futures import ThreadPoolExecutor
         import threading
@@ -2081,12 +2084,8 @@ class SegmentMultipleFrames:
                     else:  # non-boolean masks: keep the original exact path
                         colored_mask = show_mask_cv2(out_mask, obj_id=out_obj_id)[:, :, :3]
                         masked_img = masked_img + colored_mask * 0.5
-                _png = os.path.join(mask_folder, f"mask_{frame_idx:04d}_{(int(out_obj_id)+1):02d}.png")
-                if not cv2.imwrite(_png, mask_bw):
-                    # The mask PNGs are the step's primary output; a silent
-                    # drop (disk full, NFS error) must fail the run, not
-                    # produce a partially-written masks/ dir marked complete.
-                    raise IOError(f"failed to write mask PNG: {_png}")
+                mask_archive.write(
+                    f"mask_{frame_idx:04d}_{(int(out_obj_id)+1):02d}.png", mask_bw)
 
             if not skip_overlays:
                 cv2.imwrite(os.path.join(masked_outputs, f"frame_{frame_idx:04d}.jpg"),
@@ -2105,6 +2104,12 @@ class SegmentMultipleFrames:
                     executor.map(_process_frame, range(n_frames)),
                     total=n_frames,
                 ))
+            mask_archive.close()
+        except BaseException:
+            # Never publish a partial masks.zip: resume and downstream
+            # readers treat its presence as "this camera's masks exist".
+            mask_archive.abort()
+            raise
         finally:
             # Drop the spilled store and release cached CUDA blocks before the next
             # camera — in a finally so the temp dir is removed even if frame
@@ -3946,6 +3951,7 @@ class SegmentMultipleFrames:
         vis_frame_stride = max(1, n_frames // 5)
         mask_folder = os.path.join(output_path, "masks")
         os.makedirs(mask_folder, exist_ok=True)
+        mask_archive = MaskArchiveWriter(mask_folder, packed=not self._export_png_masks())
         masked_outputs = None
         if not skip_overlays:
             masked_outputs = os.path.join(output_path, "masked_outputs")
@@ -4000,10 +4006,8 @@ class SegmentMultipleFrames:
                     colored = show_mask_cv2(mask_bool[np.newaxis], obj_id=out_id)[:, :, :3]
                     masked_img = masked_img + colored * 0.5
 
-                # Per-frame mask PNG (primary output; fail loudly on a bad write)
-                _png = os.path.join(mask_folder, f"mask_{frame_idx:04d}_{(out_id + 1):02d}.png")
-                if not cv2.imwrite(_png, mask_uint8):
-                    raise IOError(f"failed to write mask PNG: {_png}")
+                # Per-frame mask (primary output; the archive raises on a bad write)
+                mask_archive.write(f"mask_{frame_idx:04d}_{(out_id + 1):02d}.png", mask_uint8)
 
                 # Visualization samples at regular intervals
                 if frame_idx % vis_frame_stride == 0:
@@ -4032,11 +4036,17 @@ class SegmentMultipleFrames:
                         save_masks[out_id]["bbox"].append(bb)
 
         sorted_frames = sorted(video_segments.keys())
-        with ThreadPoolExecutor(max_workers=6) as executor:
-            list(tqdm.tqdm(
-                executor.map(_process_one_frame, sorted_frames),
-                total=len(sorted_frames), desc="building masks",
-            ))
+        try:
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                list(tqdm.tqdm(
+                    executor.map(_process_one_frame, sorted_frames),
+                    total=len(sorted_frames), desc="building masks",
+                ))
+            mask_archive.close()
+        except BaseException:
+            # Never publish a partial masks.zip (see save_images_from_video).
+            mask_archive.abort()
+            raise
 
         _atomic_np_save(os.path.join(output_path, "masks.npy"), save_masks)
         self._log_info(f"Saved mask cache: {os.path.join(output_path, 'masks.npy')}")
@@ -5935,6 +5945,15 @@ class SegmentMultipleFrames:
         ``exports.debug_full_masks_npy`` / ``--debug_full_masks_npy``.
         """
         return bool(self.assignment_config.get("exports", {}).get("debug_full_masks_npy", False))
+
+    def _export_png_masks(self):
+        """Whether per-frame masks go out as legacy loose PNGs (``--png``).
+
+        Off by default: masks are packed into one ``masks.zip`` per camera
+        (same PNG bytes and names; ~8k fewer files per view). Readers
+        auto-detect either layout via ``core.mask_archive``.
+        """
+        return bool(self.assignment_config.get("masks", {}).get("export_png", False))
 
     def _compute_centroids(self, mask_data):
         """Precompute each person's per-sampled-frame mask centroid (xy).
