@@ -17,7 +17,13 @@ pairwise vote series localize swap events and attribute them to cameras, up
 to one residual global flip per event. That last ambiguity is broken by
 temporal continuity: a camera can only swap at a moment when its own tracks
 are in contact or occluded, so the hypothesis whose cameras have the smallest
-label-exchange displacement at the event wins.
+label-exchange displacement at the event wins. Continuity evidence is
+per-camera and can be missing (absent masks); missing evidence charges a
+fixed cost rather than reading as a free swap, and every flipped camera
+additionally pays a penalty scaled by its whole-video pairwise reliability,
+so flipping one flickering camera stays cheaper than flipping the healthy
+majority when local evidence is starved. Accepted attributions are logged
+with their costs; priors alone never decide without a clear reliability gap.
 
 Design constraints, deliberately:
   * Standalone: reads mask PNGs (the artifact it repairs) and the calibration
@@ -50,6 +56,39 @@ from core import geometry
 # A gauge hypothesis must beat the alternative by this cost ratio to be
 # applied; ties mean geometry+continuity cannot say which side swapped.
 DECISIVE_RATIO = 0.6
+
+# Absolute cost gap (px) the winning hypothesis must additionally hold; the
+# ratio alone becomes meaningless when flip penalties inflate both sides.
+DECISIVE_MARGIN_FACTOR = 1.0        # x consensus_min_margin_px
+
+# Cost charged when a flipped camera has NO continuity observation inside the
+# event bracket. Absence must never read as a free swap: an unobserved
+# exchange is merely unopposed, not confirmed.
+NO_EVIDENCE_FACTOR = 3.0            # x consensus_min_margin_px
+
+# Per-flipped-camera penalty, scaled by that camera's whole-video pairwise
+# reliability. Flipping a camera whose relations were stable all video is
+# expensive; flipping one that flickered against every partner is cheap.
+# Cancels between equal-cardinality, equal-reliability hypotheses, so pure
+# continuity still decides genuine multi-camera swaps.
+FLIP_PENALTY_FACTOR = 8.0           # x consensus_min_margin_px x max(0, rel - 0.5)
+
+# When no flipped camera has continuity evidence at all, the decision rests
+# on priors alone; require the flipped set to be clearly less reliable than
+# the complement, else abstain.
+NO_EVIDENCE_MIN_RELIABILITY_GAP = 0.2
+
+# Events wider than this carry vote structure too smeared (usually by mask
+# absence) for a frame-level attribution; abstain instead of guessing.
+MAX_EVENT_FRAMES = 300
+
+# A sustained regime must also be DENSE: at least this fraction of the
+# sampled frames inside its span must have voted decisively for it, and at
+# least REGIME_MIN_VOTES samples in total. Span alone lets a handful of
+# near-threshold votes in a semi-contact zone stretch into a false regime
+# while the contradicting votes between them are discarded as transients.
+REGIME_MIN_DENSITY = 0.5
+REGIME_MIN_VOTES = 3
 
 
 # --------------------------------------------------------------------------
@@ -162,23 +201,38 @@ def pair_vote(tracks_a, tracks_b, f_ab, f_ba, frame, ids,
     return ranked[0][0]
 
 
-def pair_regimes(votes: List[Tuple[int, tuple]], min_seg: int):
+def pair_regimes(votes: List[Tuple[int, tuple]], min_seg: int, grid=None):
     """Maximal sustained constant runs of a pairwise vote series.
 
     ``votes`` are (frame, permutation) for decisive samples only. Runs
     shorter than ``min_seg`` frames are dropped (transient flips at
-    crossings); consecutive runs with equal permutations merge across the
+    crossings); when the sampling ``grid`` is given, runs must also be
+    dense (REGIME_MIN_DENSITY of the sampled frames in their span voted for
+    them, and at least REGIME_MIN_VOTES votes), so sparse near-threshold
+    votes in a semi-contact zone cannot stretch into a false regime.
+    Consecutive surviving runs with equal permutations merge across the
     dropped noise. Returns [(start_frame, end_frame, permutation)].
     """
     runs = []
+    counts = []
     for f, pi in votes:
         if runs and runs[-1][2] == pi:
             runs[-1][1] = f
+            counts[-1] += 1
         else:
             runs.append([f, f, pi])
-    runs = [r for r in runs if r[1] - r[0] >= min_seg]
+            counts.append(1)
+    kept = []
+    for r, n in zip(runs, counts):
+        if r[1] - r[0] < min_seg:
+            continue
+        if grid is not None:
+            in_span = sum(1 for f in grid if r[0] <= f <= r[1])
+            if n < REGIME_MIN_VOTES or n < REGIME_MIN_DENSITY * in_span:
+                continue
+        kept.append(r)
     merged = []
-    for r in runs:
+    for r in kept:
         if merged and merged[-1][2] == r[2]:
             merged[-1][1] = r[1]
         else:
@@ -311,29 +365,107 @@ def solve_event(event: _Event, cam_names: List[str], n_ids: int):
 def continuity_cost(dense_tracks, perm: tuple, ids, lo: int, hi: int):
     """Cheapest frame in [lo, hi] to apply ``perm`` to a camera's labels,
     as (cost_px, frame). The cost at a frame is the mean displacement of
-    the exchanged centroids; a frame where an exchanged id is unobserved
-    costs zero (swap hidden by occlusion). Identity is free.
+    the exchanged centroids. Frames where an exchanged id is unobserved
+    contribute no candidate: absence is missing evidence, not a free swap
+    (returns (None, mid) when no frame observes the full exchange).
+    Identity is free.
     """
     moved = [k for k in range(len(ids)) if perm[k] != k]
     if not moved:
         return 0.0, lo
-    best = (float("inf"), (lo + hi) // 2)
+    best = (None, (lo + hi) // 2)
     for f in range(lo, hi + 1):
         ds = []
-        occluded = False
         for k in moved:
             a = dense_tracks.get(ids[k], {}).get(f)
             b = dense_tracks.get(ids[perm[k]], {}).get(f)
             if a is None or b is None:
-                occluded = True
+                ds = None
                 break
             ds.append(float(np.hypot(a[0] - b[0], a[1] - b[1])))
-        cost = 0.0 if occluded else float(np.mean(ds))
-        if cost < best[0]:
+        if ds is None:
+            continue
+        cost = float(np.mean(ds))
+        if best[0] is None or cost < best[0]:
             best = (cost, f)
         if cost == 0.0:
             break
     return best
+
+
+def camera_reliability(series, names) -> Dict[str, float]:
+    """Whole-video pairwise stability per camera, in [0, 1].
+
+    Per pair, the dominant relation's share of the total sustained-regime
+    span; per camera, the MAX over its pairs. A camera is reliable if at
+    least one partner agrees with it stably for the whole video; a camera
+    that swapped mid-video flickers against every partner and scores low.
+    The max keeps a healthy camera from being dragged down by one broken
+    partner. Cameras with no regime evidence default to 1.0 (no grounds to
+    call them suspect).
+    """
+    per_pair = {}
+    for pair, regs in series.items():
+        spans: Dict[tuple, int] = {}
+        for r0, r1, perm in regs:
+            spans[perm] = spans.get(perm, 0) + (r1 - r0 + 1)
+        if spans:
+            per_pair[pair] = max(spans.values()) / float(sum(spans.values()))
+    rel = {}
+    for c in names:
+        shares = [v for pair, v in per_pair.items() if c in pair]
+        rel[c] = max(shares) if shares else 1.0
+    return rel
+
+
+def score_event_hypotheses(solutions, comp, dense, ids, ev, reliability,
+                           min_margin: float):
+    """Score each camera-flip hypothesis and decide, or abstain.
+
+    Per flipped camera: its continuity evidence inside the event bracket
+    (NO_EVIDENCE_FACTOR x margin when unobserved) plus a flip penalty scaled
+    by its whole-video reliability. Returns (winner, scored, reason):
+    ``winner`` is None on abstention and ``reason`` names why. ``scored``
+    rows are (total, sol, per_cam, evidence_count) sorted by total, where
+    per_cam maps camera -> (cost_px_or_None, frame).
+    """
+    ident = tuple(range(len(ids)))
+    no_evidence = NO_EVIDENCE_FACTOR * min_margin
+    scored = []
+    for sol in solutions:
+        total, per_cam, observed = 0.0, {}, 0
+        for c in comp:
+            if sol[c] == ident:
+                per_cam[c] = (None, None)
+                continue
+            cost, frame = continuity_cost(dense[c], sol[c], ids, ev.lo, ev.hi)
+            per_cam[c] = (cost, frame)
+            if cost is None:
+                total += no_evidence
+            else:
+                total += cost
+                observed += 1
+            rel = reliability.get(c, 1.0)
+            total += FLIP_PENALTY_FACTOR * min_margin * max(0.0, rel - 0.5)
+        scored.append((total, sol, per_cam, observed))
+    scored.sort(key=lambda t: t[0])
+    if not scored:
+        return None, scored, "constraints unsolvable"
+    if len(scored) > 1:
+        best, second = scored[0][0], scored[1][0]
+        if best > DECISIVE_RATIO * second:
+            return None, scored, f"costs {best:.0f} vs {second:.0f}px"
+        if second - best < DECISIVE_MARGIN_FACTOR * min_margin:
+            return None, scored, f"margin {second - best:.0f}px too small"
+    winner = scored[0]
+    flipped = [c for c in comp if winner[1][c] != ident]
+    if flipped and winner[3] == 0:
+        rel_flip = float(np.mean([reliability.get(c, 1.0) for c in flipped]))
+        kept = [c for c in comp if c not in flipped]
+        rel_keep = float(np.mean([reliability.get(c, 1.0) for c in kept])) if kept else 1.0
+        if rel_keep - rel_flip < NO_EVIDENCE_MIN_RELIABILITY_GAP:
+            return None, scored, "no continuity evidence for any flipped camera"
+    return winner, scored, ""
 
 
 # --------------------------------------------------------------------------
@@ -415,11 +547,23 @@ def run_cross_camera_consensus(seq_out_dir: str, cam_data_by_name: Dict[str, dic
                            f, ids, min_margin_px=min_margin)
             if pi is not None:
                 votes.append((f, pi))
-        series[frozenset((a, b))] = pair_regimes(votes, min_seg)
+        series[frozenset((a, b))] = pair_regimes(votes, min_seg, grid=grid)
 
     net = {c: ident for c in names}
     state: Dict[str, List[Tuple[int, tuple]]] = {c: [] for c in names}
+    reliability = camera_reliability(series, names)
+    suspects = {c: r for c, r in reliability.items() if r < 0.9}
+    if suspects:
+        log(f"[consensus] whole-video pairwise reliability below 0.9: "
+            + ", ".join(f"{c}={r:.2f}" for c, r in sorted(suspects.items())))
     for ev in detect_events(series):
+        if ev.hi - ev.lo > MAX_EVENT_FRAMES:
+            log(f"[consensus] event at frames {ev.lo}-{ev.hi}: bracket wider "
+                f"than {MAX_EVENT_FRAMES} frames (vote structure smeared, "
+                f"usually by mask absence), abstaining.")
+            for c in {c for pair in ev.relations for c in pair}:
+                reports[c].abstained += 1
+            continue
         dense = {c: densify_from_pngs(os.path.join(seq_out_dir, c), 1,
                                       frames=list(range(ev.lo, ev.hi + 1)))[0]
                  for c in names}
@@ -427,32 +571,28 @@ def run_cross_camera_consensus(seq_out_dir: str, cam_data_by_name: Dict[str, dic
         # constraints; solve each connected evidence component on its own
         # and leave unconstrained cameras untouched
         for comp in _components(ev.relations):
-            scored = []
-            for sol in solve_event(ev, comp, len(ids)):
-                per_cam = {c: continuity_cost(dense[c], sol[c], ids, ev.lo, ev.hi)
-                           for c in comp}
-                scored.append((sum(v[0] for v in per_cam.values()), sol, per_cam))
-            scored.sort(key=lambda t: t[0])
-            ambiguous = (not scored
-                         or (len(scored) > 1
-                             and (scored[0][0] > DECISIVE_RATIO * scored[1][0]
-                                  or scored[1][0] < 1e-6)))
-            if ambiguous:
-                detail = (f"costs {scored[0][0]:.0f} vs {scored[1][0]:.0f}px"
-                          if len(scored) > 1 else "constraints unsolvable")
+            winner, scored, reason = score_event_hypotheses(
+                solve_event(ev, comp, len(ids)), comp, dense, ids, ev,
+                reliability, min_margin)
+            if winner is None:
                 log(f"[consensus] event at frames {ev.lo}-{ev.hi}: gauge ambiguous "
-                    f"({detail}), abstaining.")
+                    f"({reason}), abstaining.")
                 for c in comp:
                     reports[c].abstained += 1
                 continue
-            _, sol, per_cam = scored[0]
+            total, sol, per_cam, observed = winner
             ref = next((c for c in comp if sol[c] == ident), None)
-            for c in comp:
-                if sol[c] == ident:
-                    continue
+            flipped = [c for c in comp if sol[c] != ident]
+            runner_up = f", runner-up {scored[1][0]:.0f}px" if len(scored) > 1 else ""
+            log(f"[consensus] event at frames {ev.lo}-{ev.hi}: attributing swap "
+                f"to {flipped} (cost {total:.0f}px, continuity observed on "
+                f"{observed}/{len(flipped)} flipped camera(s){runner_up}; "
+                + ", ".join(f"{c} rel={reliability.get(c, 1.0):.2f}" for c in flipped) + ").")
+            for c in flipped:
                 swap_frame = _refine_swap_frame(
                     dense, tracks, fmat, c, ref, sol[c], ids, ev, min_margin,
-                    fallback=per_cam[c][1])
+                    fallback=per_cam[c][1] if per_cam[c][1] is not None
+                    else (ev.lo + ev.hi) // 2)
                 net[c] = _compose(sol[c], net[c])
                 state[c].append((swap_frame, net[c]))
 
@@ -597,11 +737,13 @@ def _refine_swap_frame(dense, tracks, fmat, cam, ref, s_c, ids, event,
                        min_margin, fallback: int) -> int:
     """Frame-exact swap onset inside the event interval.
 
-    Primary evidence: the dense per-frame vote of ``cam`` against an
-    unswapped reference camera flips exactly where the labels flip: the
-    onset is the first dense frame voting the post-event relation. Falls
-    back to the camera's own closest-approach frame when no reference
-    exists or the dense votes never become decisive.
+    The dense per-frame vote of ``cam`` against an unswapped reference
+    camera brackets the flip: the onset lies after the last decisive
+    pre-event vote and at or before the first decisive post-event vote.
+    Votes are typically indecisive across the crossing itself (that is what
+    made it a swap), so inside that bracket the camera's own
+    closest-approach frame (``fallback``) is the best estimate; a decisive
+    vote bound overrides it only when it contradicts the bracket.
     """
     if ref is None:
         return fallback
@@ -613,9 +755,19 @@ def _refine_swap_frame(dense, tracks, fmat, cam, ref, s_c, ids, event,
         old, new = _inverse(old), _inverse(new)
     ref_tracks = {**tracks[ref], **{i: {**tracks[ref].get(i, {}), **dense[ref].get(i, {})}
                                     for i in dense[ref]}}
+    last_old, first_new = None, None
     for f in range(event.lo, event.hi + 1):
         pi = pair_vote(ref_tracks, dense[cam], fmat[(ref, cam)], fmat[(cam, ref)],
                        f, ids, min_margin_px=min_margin)
-        if pi == new and pi != old:
-            return f
-    return fallback
+        if pi == old and pi != new and first_new is None:
+            last_old = f
+        elif pi == new and pi != old:
+            first_new = f
+            break
+    lo_bound = last_old + 1 if last_old is not None else event.lo
+    hi_bound = first_new if first_new is not None else event.hi
+    if lo_bound <= fallback <= hi_bound:
+        return fallback
+    if fallback < lo_bound:
+        return lo_bound
+    return hi_bound

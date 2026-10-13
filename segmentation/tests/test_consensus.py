@@ -330,3 +330,117 @@ def test_solve_event_two_person_tolerates_noisy_pair():
     as_sets = {tuple(sorted(c for c, s in sol.items() if s != ident))
                for sol in sols}
     assert as_sets == {("A",), ("B", "C", "D")}
+
+
+def test_continuity_cost_absence_is_no_evidence():
+    tracks = {0: {10: (100.0, 100.0), 11: (110.0, 100.0)},
+              1: {10: (140.0, 100.0)}}          # id 1 unobserved at f11
+    cost, frame = consensus.continuity_cost(tracks, (1, 0), [0, 1], 10, 10)
+    assert cost == pytest.approx(40.0) and frame == 10
+    # No frame in the bracket observes the full exchange: no evidence,
+    # never a free swap.
+    cost, frame = consensus.continuity_cost({0: {11: (0.0, 0.0)}, 1: {}},
+                                            (1, 0), [0, 1], 10, 12)
+    assert cost is None and frame == 11
+
+
+def test_camera_reliability_flags_flipping_camera():
+    ident, swap = (0, 1), (1, 0)
+    series = {frozenset(("A", "B")): [(0, 200, ident)],
+              frozenset(("A", "D")): [(0, 90, ident), (100, 200, swap)],
+              frozenset(("B", "D")): [(0, 90, ident), (100, 200, swap)]}
+    rel = consensus.camera_reliability(series, ["A", "B", "D"])
+    assert rel["A"] == 1.0 and rel["B"] == 1.0
+    assert rel["D"] < 0.6
+
+
+def test_reliability_prior_prevents_majority_flip():
+    """The 159fix failure shape: one unreliable, mask-absent camera versus
+    three healthy cameras that all watched the same physical contact. The
+    solver must flip the suspect, never the majority."""
+    ident, swap = (0, 1), (1, 0)
+    ev = consensus._Event(100, 110, {})
+    comp = ["A", "B", "C", "D"]
+    solutions = [{"A": ident, "B": ident, "C": ident, "D": swap},
+                 {"A": swap, "B": swap, "C": swap, "D": ident}]
+    # A/B/C observe both people close together (contact); D observes nothing.
+    close = {0: {f: (500.0, 500.0) for f in range(100, 111)},
+             1: {f: (530.0, 500.0) for f in range(100, 111)}}
+    dense = {"A": close, "B": close, "C": close, "D": {}}
+    reliability = {"A": 1.0, "B": 1.0, "C": 1.0, "D": 0.55}
+    winner, scored, reason = consensus.score_event_hypotheses(
+        solutions, comp, dense, [0, 1], ev, reliability, 40.0)
+    assert winner is not None, reason
+    flipped = [c for c in comp if winner[1][c] != ident]
+    assert flipped == ["D"]
+    # Same geometry but no reliability gap: priors alone must not decide.
+    winner, _scored, reason = consensus.score_event_hypotheses(
+        solutions, comp, dense, [0, 1], ev,
+        {c: 1.0 for c in comp}, 40.0)
+    assert winner is None
+    assert "no continuity evidence" in reason
+
+
+def test_genuine_multi_camera_swap_still_repaired():
+    """Two cameras that both watched the contact and both flipped must stay
+    repairable: the flip penalty cancels between equal-cardinality,
+    equal-reliability hypotheses and continuity decides."""
+    ident, swap = (0, 1), (1, 0)
+    ev = consensus._Event(100, 110, {})
+    comp = ["A", "B", "C", "D"]
+    solutions = [{"A": swap, "B": swap, "C": ident, "D": ident},
+                 {"A": ident, "B": ident, "C": swap, "D": swap}]
+    close = {0: {105: (500.0, 500.0)}, 1: {105: (520.0, 500.0)}}
+    far = {0: {105: (300.0, 500.0)}, 1: {105: (900.0, 500.0)}}
+    dense = {"A": close, "B": close, "C": far, "D": far}
+    winner, _scored, reason = consensus.score_event_hypotheses(
+        solutions, comp, dense, [0, 1], ev,
+        {c: 1.0 for c in comp}, 40.0)
+    assert winner is not None, reason
+    flipped = sorted(c for c in comp if winner[1][c] != ident)
+    assert flipped == ["A", "B"]
+
+
+def test_smeared_event_abstains(tmp_path, monkeypatch):
+    """A vote void wider than MAX_EVENT_FRAMES between regimes must abstain
+    rather than attribute a swap across the smear."""
+    import cv2
+    cams, world = _rig()
+    n = 420
+    long_world = {}
+    for f in range(n):
+        long_world[f] = {0: np.array([-0.5 + 0.001 * f, 0.0, 4.0]),
+                         1: np.array([+0.5 - 0.001 * f, 0.2, 4.0])}
+    for name, cam in cams.items():
+        d = tmp_path / name / "masks"
+        d.mkdir(parents=True)
+        for f in range(n):
+            if 40 <= f < 380:      # long absence smears the transition
+                continue
+            for pid, X in long_world[f].items():
+                oid = pid if f < 40 or name != "A" else 1 - pid
+                u, v = _project(cam, X)
+                m = np.zeros((1500, 2000), np.uint8)
+                cv2.circle(m, (int(u), int(v)), 12, 255, -1)
+                cv2.imwrite(str(d / f"mask_{f:04d}_{oid + 1:02d}.png"), m)
+    logs = []
+    reports = consensus.run_cross_camera_consensus(
+        str(tmp_path), cams,
+        cfg={"consensus_min_segment_frames": 20, "consensus_stride": 5},
+        log=logs.append)
+    assert any("bracket wider" in line for line in logs)
+    assert not any(r.relabeled for r in reports)
+
+
+def test_pair_regimes_rejects_sparse_votes():
+    """A few near-threshold votes stretched over a long span must not form a
+    regime when the sampling grid shows most samples were indecisive."""
+    ident, swap = (0, 1), (1, 0)
+    grid = list(range(0, 300, 5))
+    dense = [(f, ident) for f in range(0, 100, 5)]
+    sparse = [(120, swap), (165, swap), (210, swap), (255, swap)]
+    regs = consensus.pair_regimes(dense + sparse, 45, grid=grid)
+    assert [r[2] for r in regs] == [ident]
+    # The same votes without grid information keep the old span behavior.
+    regs = consensus.pair_regimes(dense + sparse, 45)
+    assert [r[2] for r in regs] == [ident, swap]
