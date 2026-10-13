@@ -133,6 +133,18 @@ def test_sub_gpu_step_caps_cuda_capability():
     assert "CUDAGlobalMemoryMb" not in sub2
 
 
+def test_sub_gpu_step_excludes_blocklisted_machines():
+    """Profile resources.default.exclude_machines keeps cells off wedged
+    GPU hosts (a fast-failing node vacuums the queue)."""
+    sub = htcondor.render_sub(
+        "ma_masks", "/w/ma_masks.sh", "/w/logs/ma_masks",
+        {"gpus": 1, "min_cuda_memory": 24000,
+         "exclude_machines": ["badnode.example.org"]},
+    )
+    assert ("requirements = (TARGET.CUDAGlobalMemoryMb > 24000) && "
+            '(TARGET.Machine =!= "badnode.example.org")') in sub
+
+
 def test_sub_requests_disk_with_explicit_mb_unit():
     # request_disk's bare-number unit is KiB (unlike request_memory's MB), so
     # the MB suffix is load-bearing; the scratch this sizes is where the node

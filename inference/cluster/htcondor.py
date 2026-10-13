@@ -155,6 +155,13 @@ def render_sub(step: str, sh_path: str, log_dir: str, submit_cfg: dict) -> str:
         max_cc = submit_cfg.get("max_cuda_capability")
         if max_cc:
             reqs.append(f"TARGET.CUDACapability <= {max_cc}")
+        # Operational blocklist for wedged GPU hosts: a fast-failing node
+        # keeps grabbing queued cells and can exhaust a node's retries.
+        # Set in the profile under
+        # ``resources.default.exclude_machines``; remove entries once the
+        # host is fixed.
+        for machine in submit_cfg.get("exclude_machines") or []:
+            reqs.append(f'TARGET.Machine =!= "{machine}"')
         if reqs:
             lines.append("requirements = " + " && ".join(f"({r})" for r in reqs))
     lines.append("queue 1")  # single_var: the DAG's VARS supplies seq_arg per node
