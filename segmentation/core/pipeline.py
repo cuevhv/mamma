@@ -537,10 +537,19 @@ def _drop_single_frame_islands(video_segments):
 
 def _atomic_np_save(path, obj):
     """np.save via a temp file + rename, so a kill mid-write can never leave a
-    truncated cache that existence-based resume checks would trust."""
-    tmp = path + ".tmp.npy"
-    np.save(tmp, obj)
-    os.replace(tmp, path)
+    truncated cache that existence-based resume checks would trust. The temp
+    name carries the pid: concurrent writers sharing one temp path interleave
+    their bytes and rename garbage into place."""
+    tmp = f"{path}.tmp.{os.getpid()}.npy"
+    try:
+        np.save(tmp, obj)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _resolve_auto_flag(value, n_frames, min_frames):
@@ -2245,6 +2254,11 @@ class SegmentMultipleFrames:
 
         # Process the first video
         if masks is None:
+            # A cache-hit init load (every fan-out camera cell) must not
+            # rewrite the init camera's products: concurrent cells re-saving
+            # the same masks.npy tears the cache and kills every cell that
+            # loads it afterwards.
+            init_from_cache = os.path.exists(os.path.join(out_path, "masks.npy"))
             found_key = None
             if self.init_with_gt:
                 bbox_candidate_keys = ['bboxes', 'bbox', 'gt_bboxes']
@@ -2300,11 +2314,12 @@ class SegmentMultipleFrames:
             if masks is None:
                 self._log_warn(f"[{cam_name}] Initialization skipped: no valid person detections found.")
                 return None
-            self.save_picked_masks(masks, out_path, render_viz=self._debug_crop_summary())
+            if not init_from_cache:
+                self.save_picked_masks(masks, out_path, render_viz=self._debug_crop_summary())
             self.compute_clip_features(masks)
             if len(self.subject_feature_bank) == 0:
                 self.initialize_subject_feature_bank(masks, expected_subjects=expected_subjects)
-            self._finalize_mask_cache(masks, out_path)
+            self._finalize_mask_cache(masks, out_path, save=not init_from_cache)
 
         # Process new video
         else:
@@ -2415,13 +2430,24 @@ class SegmentMultipleFrames:
             output_path: Directory for output masks and visualizations.
             expected_subjects: Expected number of people (auto-detected if None).
         """
-        if os.path.exists(os.path.join(output_path, "masks.npy")):
+        cache_path = os.path.join(output_path, "masks.npy")
+        if os.path.exists(cache_path):
             self._log_info(
                 f"masks.npy already exists in {output_path}, skipping processing "
                 "(init anchors/prompts are not recomputed)."
             )
-            save_masks = np.load(os.path.join(output_path, "masks.npy"), allow_pickle=True)[()]
-            return save_masks
+            try:
+                return np.load(cache_path, allow_pickle=True)[()]
+            except Exception as exc:  # noqa: BLE001 — a corrupt cache must
+                # re-track, not brick resume forever
+                self._log_warn(
+                    f"Masks cache at {cache_path} is unreadable ({exc}); "
+                    "deleting it and re-tracking this camera."
+                )
+                try:
+                    os.remove(cache_path)
+                except OSError:
+                    pass
 
         os.makedirs(self.output_path, exist_ok=True)
         os.makedirs(output_path, exist_ok=True)
@@ -5943,18 +5969,21 @@ class SegmentMultipleFrames:
                 data.pop("img", None)
                 data.pop("mask", None)
 
-    def _finalize_mask_cache(self, mask_data, out_path):
+    def _finalize_mask_cache(self, mask_data, out_path, save=True):
         """Precompute centroids and (unless full-dump) slim the dict + re-save.
 
         masks.npy was written full by the inner segmentation method (a crash-safe
         completion marker); here we replace it with the slim record once the
         matching essentials exist. With ``debug_full_masks_npy`` we keep the full
-        cache instead.
+        cache instead. ``save=False`` keeps the in-memory work but skips the
+        re-save, for callers holding an already-finalized cache they only read.
         """
         self._compute_centroids(mask_data)
         if self._debug_full_masks_npy():
             return  # keep the full masks.npy written by the inner method
         self._slim_mask_record(mask_data)
+        if not save:
+            return
         try:
             _atomic_np_save(os.path.join(out_path, "masks.npy"), mask_data)
         except Exception as exc:  # noqa: BLE001
