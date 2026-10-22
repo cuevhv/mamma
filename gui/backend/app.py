@@ -28,6 +28,7 @@ import threading
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Make the parent ``mamma_release`` repo importable so ``from inference...``
 # works for ``bootstrap_env()`` below. Same bridge ``runner_main.py`` uses.
@@ -36,7 +37,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from flask import Flask, jsonify, request, send_file
-from flask_cors import CORS
 
 from inference.env import bootstrap_env  # noqa: E402
 
@@ -99,9 +99,8 @@ MOUNT_POINT = os.environ.get("MAMMA_INTERFACE_DIR", str(_DEFAULT_DATA_DIR / "int
 # (``python -m inference run ...``) — single shared output tree.
 DEFAULT_OUTPUT_DIR = os.environ.get("MAMMA_OUTPUT_DIR", str(_REPO_ROOT / "output"))
 # Where the GUI persists the frozen run config it built for each submitted
-# run. One JSON per task_id; the runner re-reads it by path. Previously
-# task_jsons/task_config_<id>.json — renamed 2026-05-24 alongside the
-# preset/run-config vocabulary split (see scripts/migrate_to_presets.py).
+# run. One JSON per task_id; the runner re-reads it by path. Older installs
+# used task_jsons/task_config_<id>.json (see scripts/migrate_to_presets.py).
 RUN_CONFIG_DIR = os.path.join(MOUNT_POINT, "run_configs")
 DEFAULT_PRESET_PATH = os.environ.get(
     "MAMMA_DEFAULT_PRESET",
@@ -251,7 +250,44 @@ def _list_example_presets():
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__)
-CORS(app)
+
+# No CORS headers: the UI calls /api same-origin (prod bundle, or the Vite
+# dev proxy). Extra trusted origins, e.g. a LAN Vite dev server or a reverse
+# proxy that rewrites Host, go in MAMMA_ALLOWED_ORIGINS (comma-separated).
+_ALLOWED_ORIGINS = {
+    o.strip().rstrip("/")
+    for o in os.environ.get("MAMMA_ALLOWED_ORIGINS", "").split(",")
+    if o.strip()
+}
+
+
+def _origin_allowed(origin: str) -> bool:
+    if origin.rstrip("/") in _ALLOWED_ORIGINS:
+        return True
+    u = urlsplit(origin)
+    if u.scheme not in ("http", "https"):
+        return False  # includes the opaque "null" origin of sandboxed pages
+    # Same origin, or a loopback dev server (Vite proxies /api from :3000).
+    return u.netloc == request.host or u.hostname in ("localhost", "127.0.0.1", "::1")
+
+
+@app.before_request
+def _reject_foreign_origin():
+    # Browsers send Origin on cross-origin and state-changing requests; a
+    # foreign one means another site is driving this API.
+    origin = request.headers.get("Origin")
+    if origin is not None and not _origin_allowed(origin):
+        return jsonify({"error": f"Cross-origin request from {origin} refused; "
+                                 "add it to MAMMA_ALLOWED_ORIGINS if trusted"}), 403
+
+
+@app.after_request
+def _sandbox_served_documents(response):
+    # Output files rendered as documents get an opaque origin, so their
+    # scripts cannot call this API even when opened in their own tab.
+    if request.path.startswith("/api/files/") and response.mimetype in ("text/html", "image/svg+xml"):
+        response.headers["Content-Security-Policy"] = "sandbox allow-scripts allow-popups allow-forms"
+    return response
 
 # Data-readiness panel (Home → "Body Models & Weights" card).
 # Self-contained module: registers /api/data/readiness/* routes.
@@ -1906,9 +1942,8 @@ def start_task():
     # Cluster output root: an ABSOLUTE user-chosen dir is honored verbatim
     # (it must be writable by the cluster nodes, e.g. a shared group dir);
     # empty/relative choices (subdirs of this host's default tree, which the
-    # cluster cannot see) fall back to the profile workspace. Task 140
-    # post-mortem: the fallback used to be unconditional and silently
-    # discarded an explicit /is/cluster/... choice.
+    # cluster cannot see) fall back to the profile workspace. An explicit
+    # absolute choice must never be silently replaced by the fallback.
     _raw_out = (data.get("outputDir") or "").strip()
     cluster_out = ""
     if is_cluster:
@@ -2437,14 +2472,12 @@ def get_active_processes():
 
 @app.route("/api/processes/<int:process_id>/stop", methods=["POST"])
 def stop_process(process_id):
-    process = db.get_process_by_id(process_id)
-    if not process:
-        return jsonify({"error": f"Process {process_id} not found"}), 404
-    stoppable = ["Running", "Queued", "Pending", "PENDING", "Retrying"]
-    if process.get("status") not in stoppable:
-        return jsonify({"error": f"Process cannot be stopped (status: {process.get('status')})"}), 400
-    db.set_process_status(process_id, "Cancelled")
-    return jsonify({"message": f"Process {process_id} marked Cancelled"})
+    """Refused: every step of a task runs in one runner process, so a single
+    step cannot be stopped alone, and marking its row Cancelled would leave
+    the work running. Stop the whole task instead."""
+    return jsonify({"error": "A single step cannot be stopped on its own: all steps of "
+                             "a task run in one process. Stop the whole task with "
+                             "POST /api/tasks/<task_id>/stop."}), 409
 
 
 @app.route("/api/processes/<int:process_id>", methods=["DELETE"])
@@ -2631,9 +2664,9 @@ def stop_task(task_id):
     if pid and not dropped_from_queue:
         # Cluster runners distinguish an INTENTIONAL stop (SIGUSR1: cancel
         # the remote DAG via the scheduler) from an incidental SIGTERM
-        # (shutdown/reboot/kill: detach and leave the DAG running; task 135
-        # was cancelled by an OS update reboot before this split). Local
-        # runners keep SIGTERM as their cancel signal.
+        # (shutdown/reboot/kill: detach and leave the DAG running, so a host
+        # reboot does not cancel a healthy run). Local runners keep SIGTERM
+        # as their cancel signal.
         try:
             backend, _prof = db.get_task_backend(task_id)
         except Exception:  # noqa: BLE001

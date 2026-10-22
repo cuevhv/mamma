@@ -26,8 +26,9 @@ interface Props {
     cell: MatrixCell | null;
   } | null;
   onClose: () => void;
-  /** Called when the user clicks Stop on a Running cell. */
-  onStop?: (cell: MatrixCell) => void;
+  /** Called with the cell's task id when the user clicks "Stop task" on a
+   *  Running cell. Stops the whole task: its steps share one runner process. */
+  onStop?: (taskId: string) => void;
   /** Called when the user clicks "Browse outputs". When the parent is on the
    *  Tasks tab, this jumps to the Results detail page deep-linked into the
    *  cell's task/sequence/step. When omitted, the button is hidden. */
@@ -231,11 +232,12 @@ export function CellSidePanel({ selection, onClose, onStop, onBrowseOutputs }: P
           )}
           {canStop && cell && (
             <button
-              onClick={() => onStop?.(cell)}
+              onClick={() => onStop?.(taskId)}
               className="flex items-center justify-center gap-2 px-4 py-2.5 bg-destructive/90 hover:bg-destructive rounded-md text-destructive-foreground text-sm font-medium transition-colors shadow-sm shadow-black/30"
+              title="Stops the whole task: every step and sequence in this run. Finished steps keep their outputs."
             >
               <StopCircle className="w-4 h-4" />
-              Stop this step
+              Stop task
             </button>
           )}
         </section>

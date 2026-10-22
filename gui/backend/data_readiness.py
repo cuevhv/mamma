@@ -831,7 +831,7 @@ def _verify_mpi_credentials(asset: DataAsset, username: str, password: str) -> d
     user blocked).
 
     ``login.php`` is a plain, non-rate-limited auth check. Observed wire
-    behaviour (confirmed live 2026-06-10):
+    behaviour:
 
       * correct credentials  -> 302 redirect away from the login page
       * wrong credentials     -> 200 that re-renders the login form

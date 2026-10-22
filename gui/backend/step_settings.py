@@ -142,21 +142,21 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             id="sam_version", label="Segmenter", widget="select",
             target=_flag("--sam_version"), default="sam2",
             choices=[
-                {"value": "sam2", "label": "SAM 2 + YOLO",
+                {"value": "sam2", "label": "SAM 2 + box detector",
                  "description": "Fastest, lowest VRAM. Frames stream from host RAM to the GPU "
                                 "(CPU offload), so VRAM stays bounded — handles the longest clips."},
-                {"value": "sam3", "label": "SAM 3 + YOLO",
+                {"value": "sam3", "label": "SAM 3 + box detector",
                  "description": "Better tracking (SAM 3 joint consolidation). Same CPU offload, "
                                 "so still good on long clips; more VRAM than SAM 2."},
                 {"value": "sam3_prompt", "label": "SAM 3 text-prompt",
-                 "description": "No YOLO — finds people from the text prompt \"person\". Uses the most "
+                 "description": "No box detector; finds people from the text prompt \"person\". Uses the most "
                                 "GPU memory, and it grows with clip length, so it may run out of memory "
                                 "and crash on long clips."},
-                {"value": "sam3_prompt_light", "label": "SAM 3 text-prompt, light (recommended)",
-                 "description": "No YOLO — same text-prompt detection, but a leaner tracker keeps GPU "
+                {"value": "sam3_prompt_light", "label": "SAM 3 text-prompt, light",
+                 "description": "No box detector; same text-prompt detection, but a leaner tracker keeps GPU "
                                 "memory bounded, to handle longer clips."},
             ],
-            help="How people are detected (YOLO boxes vs SAM 3 text-prompt) and tracked. "
+            help="How people are detected (D-FINE person boxes vs SAM 3 text-prompt) and tracked. "
                  "Pick by VRAM / clip length — each option explains its trade-off.",
         ),
         Setting(
@@ -175,6 +175,37 @@ _STEP_SETTINGS: dict[str, list[Setting]] = {
             note="Camera used to initialize person IDs. Each person you want to track must "
                  "be clearly visible in this view for at least a few frames. Leave blank to use the first camera.",
             help="Camera used to initialize person identities.",
+        ),
+        Setting(
+            id="expected_subjects", label="Number of people", widget="number",
+            target=_flag("--expected_subjects"), default=None, omit_when_default=True,
+            min=1, step=1,
+            note="Leave blank to count people automatically. Set it when people are missed "
+                 "or extra people appear (crowds, partial bodies, reflections).",
+            help="How many people to track in the scene. Blank lets ma_masks count them "
+                 "on the reference camera.",
+        ),
+        Setting(
+            id="rig_vote", label="Identity repair (rig vote)", widget="select",
+            target=_flag("--rig_vote"), default="auto", omit_when_default=True,
+            choices=[
+                {"value": "auto", "label": "Auto (recommended)",
+                 "description": "On for calibrated captures with 12 or more cameras and "
+                                "2 to 6 people; off otherwise."},
+                {"value": "true", "label": "On",
+                 "description": "Run it on any calibrated capture with 2 to 6 people, "
+                                "even with few cameras."},
+                {"value": "false", "label": "Off",
+                 "description": "Skip it to finish sooner, at the risk of people swapping "
+                                "identity in some cameras."},
+            ],
+            note="After tracking, the cameras vote in 3D to fix people whose identity got "
+                 "swapped in some views. Needs calibrated cameras; adds CPU time at the "
+                 "end (a few minutes on large rigs).",
+            help="Post-tracking identity repair: every calibrated camera votes on who is where "
+                 "in 3D, and per-camera identity mistakes are relabeled to agree with the rest "
+                 "of the rig. Never runs on uncalibrated captures. With camera parallelization "
+                 "on the cluster it runs once, in the final ma_masks job.",
         ),
         Setting(
             id="save_masked_outputs", label="Save visualizations", widget="toggle",

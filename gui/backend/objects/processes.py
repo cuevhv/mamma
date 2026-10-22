@@ -3,13 +3,7 @@ from enum import Enum
 
 
 class ProcessType(Enum):
-    """Pipeline steps supported by the cvpr_release branch.
-
-    The face branch (ma_face / ma_smirk / ma_flame2smplx / ma_blender) was
-    removed for this branch — only the body branch ships locally. The
-    public face-branch repos will be added back when the upstream cleanup
-    lands.
-    """
+    """Pipeline steps supported by this release (body pipeline)."""
     ma_cap = "ma_cap"
     ma_masks = "ma_masks"
     ma_2d = "ma_2d"

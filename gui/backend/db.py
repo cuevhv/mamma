@@ -1,4 +1,4 @@
-"""SQLite-backed database layer for the cvpr_release branch.
+"""SQLite-backed database layer for the GUI.
 
 Replaces the postgres + psycopg2 module that lived in `database.py`.
 Public API mirrors the old module so callers in `app.py` only need an
@@ -111,18 +111,16 @@ def initialize_database():
             );"""
         )
         # Idempotent migration for installs where the tasks table predates
-        # the preset_path column (added 2026-05-24 alongside the
-        # preset/run-config vocabulary split).
+        # the preset_path column (preset/run-config vocabulary split).
         existing_cols = {r["name"] for r in cur.execute("PRAGMA table_info(tasks)").fetchall()}
         if "preset_path" not in existing_cols:
             cur.execute("ALTER TABLE tasks ADD COLUMN preset_path TEXT")
-        # Idempotent migration (added 2026-07-28): remote-cluster execution.
+        # Idempotent migration: remote-cluster execution.
         # `backend` is 'local' (default) or 'cluster'; `cluster_profile` names
         # the saved profile a cluster task was submitted with. Local tasks keep
         # backend='local' and a NULL profile. `dag_job_id` continues to hold the
         # runner_main PID (see set_task_runner_pid) for BOTH backends, so Stop
-        # works uniformly: SIGTERM to that PID, which for a cluster run triggers
-        # a condor_rm in runner_main.
+        # works uniformly by signalling that PID (see stop_task in app.py).
         if "backend" not in existing_cols:
             cur.execute("ALTER TABLE tasks ADD COLUMN backend TEXT DEFAULT 'local'")
         if "cluster_profile" not in existing_cols:
@@ -161,7 +159,7 @@ def initialize_database():
             );"""
         )
         # Idempotent migration for installs whose processes table predates the
-        # execution-timing columns (added 2026-06-17). started_at is stamped on
+        # execution-timing columns. started_at is stamped on
         # the Running transition, ended_at on a terminal one; per-step duration
         # = ended_at - started_at, measured in the runner outside the step
         # subprocess (zero pipeline overhead). Old rows keep NULLs (no timing).
@@ -170,7 +168,7 @@ def initialize_database():
             cur.execute("ALTER TABLE processes ADD COLUMN started_at TIMESTAMP")
         if "ended_at" not in proc_cols:
             cur.execute("ALTER TABLE processes ADD COLUMN ended_at TIMESTAMP")
-        # Idempotent migration (added 2026-06-24): actual frame/camera counts,
+        # Idempotent migration: actual frame/camera counts,
         # written on the ma_cap process row once ma_cap finishes for a
         # (task, sequence). Old rows / non-ma_cap rows keep NULLs (shown as "—").
         if "num_frames" not in proc_cols:
@@ -568,7 +566,7 @@ def get_all_task_minimal():
 def set_task_runner_pid(task_id, pid):
     """Stores the local runner PID for a task. The DB column is named
     `dag_job_id` for legacy reasons (HTCondor-era schema) but is
-    repurposed in cvpr_release as the OS PID of `pipeline.cli.run`."""
+    repurposed as the OS PID of the task's runner process."""
     with create_connection() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE tasks SET dag_job_id = ? WHERE task_id = ?", (str(pid), task_id))
@@ -1393,7 +1391,7 @@ def get_tasks_grouped_by_output_id(capture_id):
 def get_task_json_path(task_id):
     """Return the saved run-config path for a task id.
 
-    Post-2026-05-24 these live at
+    Current installs keep these at
     ``$MAMMA_INTERFACE_DIR/run_configs/run_<id>.json``; pre-migration
     rows can still point at the old ``task_jsons/task_config_<id>.json``
     layout (the migration script rewrites these in bulk). Returns None

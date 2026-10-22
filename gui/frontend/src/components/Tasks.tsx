@@ -219,13 +219,9 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
   const [pendingStop, setPendingStop] = useState<{ taskId: string; seqNames: string[] } | null>(null);
   const [stopping, setStopping] = useState(false);
 
-  const handleStopCell = async (cell: MatrixCell) => {
-    try { await fetch(`/api/processes/${cell.processId}/stop`, { method: 'POST' }); }
-    catch (e) { console.error('stop failed', e); }
-  };
-
   // Stop a whole task (kills the runner subprocess + cancels remaining
-  // processes server-side). Used by the row-level Stop button. A task's
+  // processes server-side). Used by the row-level Stop button and the cell
+  // panel's "Stop task" (one step cannot be stopped on its own). A task's
   // sequences all run in ONE process, so Stop is whole-task by nature —
   // when the run has more than one sequence we confirm first (via the modal)
   // so it's clear this cancels every sequence, not just the row clicked.
@@ -462,7 +458,7 @@ export function Tasks({ onSubmitted, onBrowseOutputs, initialSubView }: Props) {
       <CellSidePanel
         selection={selectedCell}
         onClose={() => setSelectedCell(null)}
-        onStop={handleStopCell}
+        onStop={handleStopTask}
         onBrowseOutputs={onBrowseOutputs}
       />
 

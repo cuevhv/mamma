@@ -24,9 +24,9 @@ interface Props {
  *     that references sibling resources (`./style.css`) won't be able
  *     to load them — that's the known limitation.
  *
- * "Open in new tab" is offered as an escape hatch when the embed
- * isn't suitable (e.g. an HTML that only renders well at full width
- * or one that does need same-origin XHR back to a known origin).
+ * "Open in new tab" is offered for HTML that only renders well at full
+ * width. The backend sends `Content-Security-Policy: sandbox` with the
+ * same flags, so the tab gets the same opaque origin as the iframe.
  */
 export function HtmlViewer({ htmlPath, fileName, onClose }: Props) {
   // Close on Escape — matches the rest of the app's modal affordances.

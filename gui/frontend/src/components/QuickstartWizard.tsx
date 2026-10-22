@@ -14,7 +14,6 @@ import { formatTaskId } from './shared/formatTaskId';
  * doesn't apply). Keep this list in sync with the chosen preset.
  */
 const DEMO_REQUIRED_ASSET_IDS = [
-  'yolo',
   'sam2',
   'smplx_locked_head',
   'downsampled_verts',

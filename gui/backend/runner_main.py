@@ -134,8 +134,8 @@ def _run_cluster(args, sink) -> int:
     def _on_detach(_signum, _frame):
         """Incidental SIGTERM/SIGINT (shutdown, reboot, kill): the DAG lives
         in HTCondor independent of this client, so detach WITHOUT cancelling
-        (task 135 post-mortem: an OS-update reboot condor_rm'd a healthy
-        run). Stop it from the GUI (SIGUSR1) or condor_rm to really cancel."""
+        (a host reboot must not remove a healthy run). Stop it from the GUI
+        (SIGUSR1) or condor_rm to really cancel."""
         stop["flag"] = True
         print("[cluster] SIGTERM/SIGINT: detaching; the DAG keeps running "
               "on the cluster (use the GUI Stop to cancel it)", flush=True)

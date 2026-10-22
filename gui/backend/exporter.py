@@ -172,14 +172,14 @@ def _export_one(jid: str, spec: dict) -> tuple[bool, list[str], str | None]:
     # World orientation: the task config's global.up_axis is authoritative
     # (same trust model as ma_vis / the preview blob); pose-based "auto"
     # detection remains the fallback for imported runs and misreads
-    # floor-work sequences (task 139 exported everyone lying down).
+    # floor-work sequences (people lying down read as the wrong up axis).
     up_axis = (spec.get("up_axis") or "").strip() or _task_up_axis(spec.get("tag", ""))
     cmd = [sys.executable, str(_REPO_ROOT / "optimization" / "export_blender.py"),
            "--ma-3d-dir", spec["ma_3d_dir"], "--seq-name", spec["seq"],
            "--out-dir", str(out_dir), "--formats", ",".join(spec["formats"]),
            "--unit", spec.get("unit", "m"),
            # = form: a negative axis ("-y") as a separate token reads as an
-           # option flag to argparse (task 118).
+           # option flag to argparse.
            f"--up-axis={up_axis}",
            "--blender-format", spec.get("blender_format", "auto")]
     if not spec.get("ground", True):
@@ -373,7 +373,7 @@ def _preview_scene_blob(tag: str, capture: str, seq: str, ma_3d_dir: str,
         if out.is_file() and out.stat().st_mtime >= src_mtime and _blob_is_current(out):
             return out, None
         # --up-axis uses the = form: a negative axis value ("-y") as a
-        # separate token reads as an option flag to argparse (task 118).
+        # separate token reads as an option flag to argparse.
         cmd = [sys.executable, "-m", "visualization.preview_scene",
                "--ma-3d-dir", str(root), "--seq-name", seq, "--out", str(out),
                f"--up-axis={up_axis or 'auto'}"]

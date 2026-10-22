@@ -201,7 +201,7 @@ python -m inference run \\
               head={['Stage', 'What it does', 'Writes to']}
               rows={[
                 ['ma_cap',   'Loads multi-view capture, normalizes cameras and frames', 'output/ma_cap/<tag>/<dataset>/<seq>/'],
-                ['ma_masks', 'Per-person segmentation (SAM + YOLO) with re-ID',         'output/ma_masks/<tag>/<dataset>/<seq>/'],
+                ['ma_masks', 'Per-person segmentation (SAM + D-FINE) with re-ID',       'output/ma_masks/<tag>/<dataset>/<seq>/'],
                 ['ma_2d',    '2D landmark detection per camera (MammaNet)',             'output/ma_2d/<tag>/<dataset>/<seq>/'],
                 ['ma_3d',    'Multi-view SMPL-X optimization',                          'output/ma_3d/<tag>/<dataset>/<seq>/'],
                 ['ma_vis',   'Per-camera overlays + interactive scene',                 'output/ma_vis/<tag>/<dataset>/<seq>/'],
@@ -358,7 +358,7 @@ docs/steps.md                   step → directory → builder mapping + DAG
 
 inference/                      orchestration: env, runner, step builders, doctor CLI
 capture/                        ma_cap   (capture / camera normalization)
-segmentation/                   ma_masks (SAM + YOLO + re-ID)
+segmentation/                   ma_masks (SAM + D-FINE + re-ID)
 landmarks/                      ma_2d    (2D landmark detection)
 optimization/                   ma_3d    (multi-view SMPL-X fitting)
 visualization/                  ma_vis   (overlays + preview)

@@ -86,6 +86,8 @@ def get_flags(step_name: str, *, force_refresh: bool = False) -> dict:
         try:
             cached = json.loads(cache_file.read_text())
             if cached.get("scriptMtime") == script_mtime:
+                # Re-parse the stored help so parser fixes apply without a cache bust.
+                cached["flags"] = parse_argparse_help(cached.get("rawHelp", "")) or cached["flags"]
                 return cached
         except (OSError, ValueError):
             pass  # corrupt cache -> re-parse
@@ -207,7 +209,8 @@ def parse_argparse_help(text: str) -> list[dict]:
         # Parse the header: each comma-separated form may carry a
         # metavar (e.g. "-j JOBS, --jobs JOBS"). Pick the long form
         # for the canonical name; keep the metavar as a value hint.
-        forms = [p.strip() for p in header.split(",")]
+        # Commas inside a {a,b,c} choices metavar do not separate forms.
+        forms = [p.strip() for p in re.split(r",(?![^{]*\})", header)]
         long_form = next((p for p in forms if p.startswith("--")), forms[-1])
         # Split flag name from metavar by first whitespace.
         name, _, metavar = long_form.partition(" ")
