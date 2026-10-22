@@ -1,11 +1,11 @@
 # MAMMA datasets
 
 The MAMMA project releases several dataset collections. The **MammaSyn**
-synthetic training data is published on Hugging Face — the default, fastest
+synthetic training data is published on Hugging Face, the default, fastest
 download (see [MammaSyn (training)](#mammasyn-training) below). The captures
 and evaluation data are fetched with the account-based scripts under
 [`data/`](../data/): register a free account on the project page
-(<https://mamma.is.tue.mpg.de/>) — sign up, click the confirmation link in
+(<https://mamma.is.tue.mpg.de/>), sign up, click the confirmation link in
 the email you receive, then run any account-based script and supply your
 credentials when prompted (or export them once per session):
 
@@ -21,7 +21,7 @@ the layout the shipped capture configs in
 Use `--output DIR` to override.
 
 > **Note:** the project team is still verifying that all data is
-> ready for download — broken links / missing files are being
+> ready for download; broken links / missing files are being
 > corrected on a rolling basis.
 
 ---
@@ -30,11 +30,11 @@ Use `--output DIR` to override.
 
 | Script | Dataset | Minutes | FPS |
 |---|---|---|---|
-| [`data/download_mamma_dance.sh`](../data/download_mamma_dance.sh) | **Markerless Dance** (captured with MAMMA) — 123 dance sequences (West Coast Swing, Bachata, Breakdance, Ballroom), 32 cameras | 67 | 30 |
-| [`data/download_mamma_multi_people.sh`](../data/download_mamma_multi_people.sh) | **Markerless Multi-People** (captured with MAMMA) — 34 interaction sequences with 3–6 people, 32 cameras | 8 | 30 |
-| [`data/download_mamma_iphone.sh`](../data/download_mamma_iphone.sh) | **Markerless iPhone Captures** (captured with MAMMA) — 42 sequences (16 indoors + 26 outdoors), 4 iPhone cameras | 10 | 30 |
-| [`data/download_mamma_eval.sh`](../data/download_mamma_eval.sh) | **MammaEval-Singles**, **MammaEval-Dance**, **MammaEval-Extra** — 52 evaluation sequences (22 singles + 18 dance + 12 extra), 16 or 32 cameras | 24 | 30 |
-| [`data/download_mamma_syn_hf.sh`](../data/download_mamma_syn_hf.sh) | **MammaSyn-Interactions**, **MammaSyn-Singles**, **MammaSyn-Hands** — synthetic training data, each scene rendered from 8 views, WebDataset format. From [Hugging Face](https://huggingface.co/datasets/Intelligent-Systems/MammaSyn) by default; [`download_mamma_syn_wd.sh`](../data/download_mamma_syn_wd.sh) is the MAMMA-account alternative. | varies | 6 |
+| [`data/download_mamma_dance.sh`](../data/download_mamma_dance.sh) | **Markerless Dance** (captured with MAMMA), 123 dance sequences (West Coast Swing, Bachata, Breakdance, Ballroom), 32 cameras | 67 | 30 |
+| [`data/download_mamma_multi_people.sh`](../data/download_mamma_multi_people.sh) | **Markerless Multi-People** (captured with MAMMA), 34 interaction sequences with 3–6 people, 32 cameras | 8 | 30 |
+| [`data/download_mamma_iphone.sh`](../data/download_mamma_iphone.sh) | **Markerless iPhone Captures** (captured with MAMMA), 42 sequences (16 indoors + 26 outdoors), 4 iPhone cameras | 10 | 30 |
+| [`data/download_mamma_eval.sh`](../data/download_mamma_eval.sh) | **MammaEval-Singles**, **MammaEval-Dance**, **MammaEval-Extra**, 52 evaluation sequences (22 singles + 18 dance + 12 extra), 16 or 32 cameras | 24 | 30 |
+| [`data/download_mamma_syn_hf.sh`](../data/download_mamma_syn_hf.sh) | **MammaSyn-Interactions**, **MammaSyn-Singles**, **MammaSyn-Hands**, synthetic training data, each scene rendered from 8 views, WebDataset format. From [Hugging Face](https://huggingface.co/datasets/Intelligent-Systems/MammaSyn) by default; [`download_mamma_syn_wd.sh`](../data/download_mamma_syn_wd.sh) is the MAMMA-account alternative. | varies | 6 |
 
 All datasets use **IOI** Victorem/Volucam cameras except the
 **iPhone** captures (4 iPhones).
@@ -158,10 +158,10 @@ bash data/download_mamma_eval.sh --gt --masks --markers --ioi 01 02 03
 
 Synthetic SMPL-X renders (WebDataset `.tar` shards), grouped as:
 
-- `--interactions` — Harmony4D, Inter-X, InteractionCouple, LatinDance10 (~2.71 TiB)
-- `--singles` — BEDLAM, MoYo (~2.67 TiB)
-- `--hands` — InterHand (~0.64 TiB)
-- `--all` — all of the above (~6.0 TiB)
+- `--interactions`: Harmony4D, Inter-X, InteractionCouple, LatinDance10 (~2.71 TiB)
+- `--singles`: BEDLAM, MoYo (~2.67 TiB)
+- `--hands`: InterHand (~0.64 TiB)
+- `--all`: all of the above (~6.0 TiB)
 
 #### Default: Hugging Face
 
@@ -169,7 +169,7 @@ MammaSyn is a **gated** Hugging Face dataset
 (<https://huggingface.co/datasets/Intelligent-Systems/MammaSyn>). One-time setup:
 
 1. Create a free Hugging Face account.
-2. On the dataset page, click **Agree and access** to accept the license —
+2. On the dataset page, click **Agree and access** to accept the license,
    access is granted automatically.
 3. Authenticate: `hf auth login` (or `export HF_TOKEN=hf_...`). The `hf` CLI
    ships with `huggingface_hub`, included in the project `mamma` env.
@@ -184,7 +184,7 @@ bash data/download_mamma_syn_hf.sh --all
 bash data/download_mamma_syn_hf.sh --hands --dry-run   # preview, fetch nothing
 ```
 
-Or call the `hf` CLI directly (note this keeps the `MammaSyn-<Group>/` prefix —
+Or call the `hf` CLI directly (note this keeps the `MammaSyn-<Group>/` prefix;
 the script strips it for you):
 
 ```bash
@@ -196,7 +196,7 @@ hf download Intelligent-Systems/MammaSyn --repo-type dataset \
 `--local-dir` and can't drop the group prefix, so the script downloads into a
 hidden, resumable staging dir (`data/.mammasyn_hf/`, beside `data/mammasyn/`) and
 then **moves** each dataset into place as a real directory at
-`data/mammasyn/<dataset>/` — matching the loader and the account-based script.
+`data/mammasyn/<dataset>/`, matching the loader and the account-based script.
 Staging is removed once the download completes. For very fast links you can opt
 into `export HF_XET_HIGH_PERFORMANCE=1` (off by default). In the GUI, the
 *MAMMA Datasets → MammaSyn (Hugging Face)* panel does the same and shows your

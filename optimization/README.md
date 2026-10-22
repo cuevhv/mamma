@@ -2,12 +2,12 @@
 
 Fits SMPL-X bodies to multi-view sequences using per-camera 2D keypoints, camera metadata, and optimization settings defined in YAML configs. This is the `ma_3d` step of the MAMMA pipeline.
 
-**Entry point:** `run_ma_3d.py` — fits SMPL-X to multi-person, multi-camera sequences.
+**Entry point:** `run_ma_3d.py`, fits SMPL-X to multi-person, multi-camera sequences.
 
 For the end-to-end pipeline see the [top-level README](../README.md); for the
 environment + CUDA + weights setup see [`docs/INSTALL.md`](../docs/INSTALL.md)
 (activate `mamma` before running `run_ma_3d.py` directly). This README documents
-running `ma_3d` standalone — its config structure, data contracts, and outputs.
+running `ma_3d` standalone, its config structure, data contracts, and outputs.
 
 > **Run all commands from the repository root** (the same launch dir as
 > `python -m inference`). Script and config paths below are written relative to
@@ -25,7 +25,7 @@ Every YAML under `config_files/` controls:
 To customize a config:
 
 1. Copy the closest template, e.g. `config_files/contact_configs/config_real_gmf_small_vals_detr_exp_no_vtemplate.yaml`.
-2. Adjust `optim` stages — change iteration counts, learning rates, or loss weights.
+2. Adjust `optim` stages, change iteration counts, learning rates, or loss weights.
 3. Toggle `use_v_template` or `n_betas` if you have subject-specific templates or want more/less shape freedom.
 
 Pass your edited file through `--config_file` when running the script.
@@ -51,11 +51,11 @@ The script internally constructs:
 
 | Argument | Required | Default | Description |
 |---|---|---|---|
-| `--seq_name` | yes | — | Sequence subdirectory name inside both `--ma_cap_dir` and `--ma_2d_dir`. Also used as the output folder name. |
-| `--ma_cap_dir` | yes | — | Root of the MA-CAP data tree. Sequence GT data lives at `<ma_cap_dir>/<seq_name>/gt/`. |
-| `--ma_2d_dir` | yes | — | Root of the 2D landmark prediction tree. Per-sequence predictions live at `<ma_2d_dir>/<seq_name>/`. |
-| `--config_file` | yes (in practice) | — | YAML optimization config (see *Fitting Configs* above). The argparse default points at a `config_files/config.yaml` that isn't shipped, so always pass a preset, e.g. `optimization/config_files/contact_configs/config_real_gmf_small_vals_detr_exp_no_vtemplate.yaml`. |
-| `--out_path` | yes | — | Output root. Results are written to `<out_path>/<seq_name>/`. |
+| `--seq_name` | yes | - | Sequence subdirectory name inside both `--ma_cap_dir` and `--ma_2d_dir`. Also used as the output folder name. |
+| `--ma_cap_dir` | yes | - | Root of the MA-CAP data tree. Sequence GT data lives at `<ma_cap_dir>/<seq_name>/gt/`. |
+| `--ma_2d_dir` | yes | - | Root of the 2D landmark prediction tree. Per-sequence predictions live at `<ma_2d_dir>/<seq_name>/`. |
+| `--config_file` | yes (in practice) | - | YAML optimization config (see *Fitting Configs* above). The argparse default points at a `config_files/config.yaml` that isn't shipped, so always pass a preset, e.g. `optimization/config_files/contact_configs/config_real_gmf_small_vals_detr_exp_no_vtemplate.yaml`. |
+| `--out_path` | yes | - | Output root. Results are written to `<out_path>/<seq_name>/`. |
 | `--cam_names` | no | `[]` | Explicit list of camera names to use (e.g. `IOI_01 IOI_02`). Overrides `--cam_name_prefix`. |
 | `--cam_name_prefix` | no | `IOI_` | Glob prefix for camera selection when `--cam_names` is empty. |
 | `--start_frame` | no | `0` | First frame index to use. All earlier frames are excluded from the data entirely. |
@@ -140,7 +140,7 @@ Prediction files are matched to camera files by the same criterion and aligned b
 
 ### Cross-View Re-Identification (Multi-Person)
 
-For multi-person sequences, the 2D detector assigns body IDs independently per camera — the same physical person may receive different integer IDs in different camera views. Before optimization the pipeline runs a **temporal multi-view re-ID** step (`utils/epipolar_association.py: mvpose_style_associate_and_triangulate_temporal`) that:
+For multi-person sequences, the 2D detector assigns body IDs independently per camera, so the same physical person may receive different integer IDs in different camera views. Before optimization the pipeline runs a **temporal multi-view re-ID** step (`utils/epipolar_association.py: mvpose_style_associate_and_triangulate_temporal`) that:
 
 1. Triangulates each body's 3D trajectory from all cameras.
 2. Builds a geometric affinity matrix across views using reprojection error.
@@ -181,6 +181,6 @@ through the call graph). For where the weights themselves live, see
 
 When spawned by the MAMMA inference runner, the runner-side wrapper
 (`inference/steps/ma_3d.py`) translates the corresponding `MAMMA_*` environment
-variables into these flags before launching the subprocess — and strips
+variables into these flags before launching the subprocess, and strips
 `MAMMA_*` from the child env, so subprocesses must consume paths via argv only.
 For direct invocation outside the runner, pass the flags yourself.

@@ -2,12 +2,12 @@
 
 ## What's a preset?
 
-A **preset** is a YAML file that tells MAMMA *which* pipeline steps to run and *with what* hyperparameters. It's **capture-independent** — one preset can drive runs against many different captures.
+A **preset** is a YAML file that tells MAMMA *which* pipeline steps to run and *with what* hyperparameters. It's **capture-independent**: one preset can drive runs against many different captures.
 
 Two are shipped under [`configs/examples/presets/`](../configs/examples/presets/):
 
-- [`quick.yaml`](../configs/examples/presets/quick.yaml) — restricted to 30 frames, ~5 min on one GPU. The smoke fixture.
-- [`full.yaml`](../configs/examples/presets/full.yaml) — full-frame, no slicing.
+- [`quick.yaml`](../configs/examples/presets/quick.yaml): restricted to frames 60-120, a quick end-to-end check on one GPU. The smoke fixture.
+- [`full.yaml`](../configs/examples/presets/full.yaml): full-frame, no slicing.
 
 Shape (excerpted from `quick.yaml`):
 
@@ -16,7 +16,7 @@ global:
   out_dir: output
   conda_env: mamma
   start_frame: 60
-  end_frame: 90
+  end_frame: 120
 ma_cap:
   enabled: true
   engine: conda
@@ -39,12 +39,12 @@ Each top-level key controls one part of the run:
 |------------|----------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------|
 | `global`   | Run-wide settings: output dir, conda env, frame range, log dir, default engine.  | [Schema reference → `global`](#schema-reference)                                                                |
 | `ma_cap`   | Loads the multi-view capture (videos + calibration → per-camera NPZs).           | [common ↓](#ma_cap) · [`capture/run_ma_cap.py`](../capture/run_ma_cap.py)                   |
-| `ma_masks` | Per-person segmentation (SAM + YOLO).                                            | [common ↓](#ma_masks) · [`segmentation/run_ma_masks.py`](../segmentation/run_ma_masks.py) |
+| `ma_masks` | Per-person segmentation (SAM + D-FINE).                                          | [common ↓](#ma_masks) · [`segmentation/run_ma_masks.py`](../segmentation/run_ma_masks.py) |
 | `ma_2d`    | 2D landmark detection (MammaNet).                                                | [common ↓](#ma_2d) · [`landmarks/run_ma_2d.py`](../landmarks/run_ma_2d.py)               |
 | `ma_3d`    | Multi-view SMPL-X optimization (the actual body fit).                            | [common ↓](#ma_3d) · [`optimization/run_ma_3d.py`](../optimization/run_ma_3d.py)      |
 | `ma_vis`   | Per-camera overlays + interactive Rerun scene.                                   | [common ↓](#ma_vis) · [`visualization/cli.py`](../visualization/cli.py)                    |
 
-The per-step `flags:` list in a preset takes any of the argv switches documented in the linked source files (argparse `help=` strings). Each step block also declares its `engine`, `dependencies`, and where the script lives — see [Per-step](#per-step-ma_cap-ma_masks-ma_2d-ma_3d-ma_vis) in the Schema reference for those structural fields.
+The per-step `flags:` list in a preset takes any of the argv switches documented in the linked source files (argparse `help=` strings). Each step block also declares its `engine`, `dependencies`, and where the script lives; see [Per-step](#per-step-ma_cap-ma_masks-ma_2d-ma_3d-ma_vis) in the Schema reference for those structural fields.
 
 ## Modify a shipped preset
 
@@ -68,45 +68,93 @@ Common edits:
 
 ### Common per-step flags
 
-A hand-curated subset — the most-tuned flags per step. The complete list lives in each entry script's argparse `help=` strings; run `python <script> --help` (or open the linked source) for the full surface.
+A hand-curated subset: the most-tuned flags per step. The complete list lives in each entry script's argparse `help=` strings; run `python <script> --help` (or open the linked source) for the full surface.
 
 #### `ma_cap`
 
 Source: [`capture/run_ma_cap.py`](../capture/run_ma_cap.py).
 
-- `--start N` / `--end N` — frame-range slice (per-camera). Usually set via `global.start_frame`/`end_frame` instead.
-- `--fps N` — override the FPS recorded in `global.npz`. Defaults to the capture's `cam_fps`.
-- `-v` / `-vv` — INFO / DEBUG logging.
+- `--start N` / `--end N`: frame-range slice (per-camera). Usually set via `global.start_frame`/`end_frame` instead.
+- `--fps N`: override the FPS recorded in `global.npz`. Defaults to the capture's `cam_fps`.
+- `-v` / `-vv`: INFO / DEBUG logging.
 
 #### `ma_masks`
 
-Source: [`segmentation/run_ma_masks.py`](../segmentation/run_ma_masks.py).
+Source: [`segmentation/run_ma_masks.py`](../segmentation/run_ma_masks.py). Algorithm settings live in the
+backend's config YAML under [`segmentation/configs/`](../segmentation/configs/) (picked from `--sam_version`, or
+passed with `--cfg`); see [`segmentation/README.md`](../segmentation/README.md). **[new]** marks flags and keys added
+after the CVPR code release (v1.0.x): extra features that make the step more robust and cover more use cases.
 
-- `--sam_version sam2|sam3|sam3_prompt` — SAM backend; quick.yaml ships `sam2`.
-- `--expected_subjects N` — force the person count (auto-detected when unset).
-- `--init_frame N` — frame index used for person-detection initialisation.
-- `--interactive` — click-to-init through a GUI instead of YOLO auto-detect.
-- `--undistort` — apply lens undistortion (any supported model) before segmentation.
+- `--sam_version sam2|sam3|sam3_prompt|sam3_prompt_light`: SAM backend (default `sam2`; quick.yaml ships `sam2`).
+  **[new]** `sam3_prompt_light` finds people with SAM3's text prompt and tracks them with the lean SAM3 tracker: no
+  box detector, and less VRAM than `sam3_prompt` on long clips. The SAM3 backends need the gated SAM 3 weights
+  (see [INSTALL](INSTALL.md)).
+- **[new]** `--detector dfine|yolo|package.module:Class`: person box detector for `sam2` / `sam3`. Default `dfine`
+  (D-FINE-X, Apache-2.0; about 240 MB, downloaded from Hugging Face on first use). `yolo` needs
+  `pip install ultralytics` and a `.pt` file. **[new]** `--detector-checkpoint` sets the weights: a Hugging Face model
+  id or local directory for `dfine`, a `.pt` file for `yolo`. `--yolo-checkpoint PATH` is deprecated and equals
+  `--detector yolo --detector-checkpoint PATH`.
+- **[new]** `--cross-camera-strategy auto|track_then_match|match_then_track`: how non-init cameras get their
+  identities (overrides `masks.cross_camera_strategy`). `auto` tracks each camera on its own and then remaps whole
+  tracklets (track-then-match) for `sam3_prompt_light`, and for `sam2` / `sam3` when the cameras are calibrated;
+  without calibration `sam2` / `sam3` use match-then-track. `sam3_prompt` always tracks then matches.
+- **[new]** `--rig_vote auto|true|false`: post-tracking identity repair across the calibrated rig (overrides
+  `masks.rig_vote`). `auto` runs it with at least `masks.rig_vote_min_cameras` (12) calibrated cameras; it handles
+  2 to 6 people and needs at least 5 cameras with masks.
+- **[new]** `--png`: write loose PNG masks instead of the packed `masks.zip` (see [ma_masks output](#ma_masks-output)).
+- `--cfg <yaml>`: another config file, e.g. `segmentation/configs/sam3_default.yaml` (SAM3's unmodified tracking
+  defaults). From the runner, give a path relative to `segmentation/` or an absolute path.
+- `--expected_subjects N`: force the person count (auto-detected when unset).
+- `--init_frame N`: frame index used for person-detection initialisation.
+- `--interactive`: click-to-init through a GUI instead of automatic person detection (not for `sam3_prompt`).
+- `--undistort`: undistort the frames the person detector and identity matching see (any supported lens model). SAM still segments the raw frames, so masks stay in raw-image geometry, which ma_2d expects by default.
+
+Config keys in the backend YAML (`segmentation/configs/sam2.yaml`, `sam3.yaml`, `sam3_default.yaml`) added after the
+CVPR code release:
+
+| Key | Default | What it does |
+|---|---|---|
+| **[new]** `matching.detector`, `matching.detector_checkpoint` | `null` (D-FINE-X) | Person detector and weights; the CLI flags override them. |
+| **[new]** `matching.seed_center_bias` | `0.5` | Prefers seed / prompt frames away from the clip ends on clips over 1000 frames. |
+| **[new]** `masks.cross_camera_strategy` | `auto` | See `--cross-camera-strategy`. |
+| **[new]** `masks.max_seed_tracklets` | `20` | Ceiling on the people seeded per non-init camera under track-then-match. |
+| **[new]** `masks.mask_continuity_gate` | `true` | Removes short teleports and duplicate mask stretches. |
+| **[new]** `masks.recover_collapsed_tracklets` | `true` in `sam2.yaml` and `sam3_default.yaml`, `false` in `sam3.yaml` | Re-detects a person lost to a tracker takeover and re-tracks that stretch. |
+| **[new]** `masks.rig_vote`, `masks.rig_vote_min_cameras` | `auto`, `12` | See `--rig_vote`. A config without `rig_vote` uses `auto`. |
+| **[new]** `sam.lazy_frame_loading` (+ `lazy_min_frames`, `lazy_frame_window`, `lazy_video_chunk`) | `auto` from 1500 frames | Loads frames on demand to bound host RAM on long clips. |
+| **[new]** `sam.prune_memory_state`, `sam.memory_keep_window` | `false`, `32` | Opt-in pruning of SAM2 memory on very long clips. |
+
+Code defaults that the shipped YAMLs leave out can still be set in the same section, e.g. `masks.seed_prescreen`
+(**[new]**, `auto`: on crowded calibrated views, keep the best candidates per subject before tracking) and
+`masks.truncate_relatched_tracklets` (**[new]**, `true`: cut a tracklet that re-latches onto another person).
+
+##### ma_masks output
+
+Per camera, ma_masks writes `<camera>/masks/masks.zip` **[new]**: a ZIP archive (stored, no compression) of
+grayscale PNGs named `mask_{frame:04d}_{person:02d}.png` (person ids from 1; 255 = person, 0 = background), the same
+names the loose files have. ma_2d reads `masks.zip` or loose PNGs, preferring `masks.zip`, and the GUI file browser
+opens it like a folder. Add `--png` to the ma_masks `flags` to get loose PNG files, e.g. for external tools. Full
+output layout: [`segmentation/README.md`](../segmentation/README.md#output).
 
 #### `ma_2d`
 
 Source: [`landmarks/run_ma_2d.py`](../landmarks/run_ma_2d.py).
 
-- `--tensorrt` — compile the landmark network to a TensorRT engine for a faster
+- `--tensorrt`: compile the landmark network to a TensorRT engine for a faster
   forward (~5× FP16). **Opt-in, NVIDIA-only** (the FP16 speedup needs a Volta-or-newer
   GPU with tensor cores); falls back to plain PyTorch when
   `torch-tensorrt` is unavailable, so configs stay portable. The compiled engine is
   cached to disk (keyed by weight contents/shape/precision/GPU), so after the first run it
-  loads in ~2 s — it pays off most on long / many-camera sequences. Needs the
+  loads in ~2 s; it pays off most on long / many-camera sequences. Needs the
   optional dep in [`requirements/requirements-tensorrt.txt`](../requirements/requirements-tensorrt.txt).
-- `--tensorrt-fp32` — with `--tensorrt`, use the near-exact FP32 engine (~2×) instead
+- `--tensorrt-fp32`: with `--tensorrt`, use the near-exact FP32 engine (~2×) instead
   of FP16 (~5×).
-- `--disable-visualizations` — turn off the per-body debug viz frames + preview video.
-  Visualizations are **on by default** (they aren't consumed downstream — purely for
+- `--disable-visualizations`: turn off the per-body debug viz frames + preview video.
+  Visualizations are **on by default** (they aren't consumed downstream; purely for
   inspection). The old `--save_cam_output` / `--no-save_cam_output` pair is kept as a
   deprecated alias.
-- `--video_fps F` — FPS for generated viz videos (default 5).
-- `--undistort` — undistort frames before landmark inference. **Usually not what you
+- `--video_fps F`: FPS for generated viz videos (default 5).
+- `--undistort`: undistort frames before landmark inference. **Usually not what you
   want for the fit**: the landmark network was trained on distorted frames, so
   undistorted input is out-of-distribution and measurably *worsens* the 3D fit even
   though the geometry is correct. Use undistortion on the ma_vis side (overlays)
@@ -116,34 +164,36 @@ Source: [`landmarks/run_ma_2d.py`](../landmarks/run_ma_2d.py).
 
 Source: [`optimization/run_ma_3d.py`](../optimization/run_ma_3d.py).
 
-- `--config_file <path>` — alternate optimizer YAML (default
+- `--config_file <path>`: alternate optimizer YAML (default
   `config_files/config.yaml`).
-- `--ignore_start_frames N` — exclude the first N frames from the optimization
+- `--ignore_start_frames N`: exclude the first N frames from the optimization
   loss (still rendered in the output).
-- `--skip_detection_analysis` — skip post-run 2D-detection plots + CSVs.
-- `--detection_analysis_top_k K` — top-K least-confident frames to report
+- `--skip_detection_analysis`: skip post-run 2D-detection plots + CSVs.
+- `--detection_analysis_top_k K`: top-K least-confident frames to report
   (default 30).
-- `--use-gt` — evaluation only: also compute MPJPE/PVE/PA-MPJPE against the
+- `--use-gt`: evaluation only: also compute MPJPE/PVE/PA-MPJPE against the
   ground-truth SMPL-X poses in `<ma_cap_dir>/<seq>/gt/global.npz` (e.g. the
-  `mamma_eval_dance` sequences). **Off by default** — normal in-the-wild captures
+  `mamma_eval_dance` sequences). **Off by default**: normal in-the-wild captures
   have no GT.
-- `--tf32` — allow TF32 tensor-core math during the fit (Ampere+ GPUs). Measured
+- `--tf32`: allow TF32 tensor-core math during the fit (Ampere+ GPUs). Measured
   ~2.5× faster optimization, but the iterative fit lands in a nearby different
   optimum: ~5–6 mm vs the FP32 result, +1.6 mm MPJPE against ground truth on the
-  eval sequence. **Off by default** — good for iteration/preview runs; keep FP32
+  eval sequence. **Off by default**: good for iteration/preview runs; keep FP32
   for release-quality fits.
 
 #### `ma_vis`
 
 Source: [`visualization/cli.py`](../visualization/cli.py).
 
-- `--overlay-num-workers N` — parallelize per-camera overlay rendering (measured
-  ~2× at `N=4` on 6 cameras). Default `1` (serial) to stay safe where concurrent
-  offscreen pyrender/EGL is finicky; the example presets ship `4`.
-- `--up-axis x|y|z` — world up axis (default `z`).
-- `--fps N` — Rerun timeline + overlay video FPS (default 30).
-- `--cam-names-overlay <list>` — restrict overlay rendering to a camera subset.
-- `--rerun-light` — skip the heavy Rerun scene; only emit overlays.
+- `--overlay-num-workers N`: parallel per-camera overlay rendering. Default: automatic, `min(#cameras, 4)`, with a
+  serial retry for any camera whose worker fails; `1` renders serially.
+- `--up-axis x|y|z|-x|-y|-z`: signed world up axis (default `z`). The runner passes the capture's up axis
+  (`up_axis` in the capture JSON, else detected from the camera rig).
+- `--fps N`: Rerun timeline + overlay video FPS. Default: the capture's recorded frame rate, else 30.
+- `--cam-names-overlay <list>`: cameras to render as overlays (`all` for every camera; default the first 4).
+- `--no-rerun-video`: per-frame JPEG backdrop in the Rerun scene instead of the default H.264 video.
+- `--rerun-light`: skip loading the ma_2d landmarks and logging their projections; meshes, cameras and backdrop are
+  still logged.
 
 For the full set of editable fields, see [Schema reference](#schema-reference) below.
 
@@ -152,7 +202,7 @@ For the full set of editable fields, see [Schema reference](#schema-reference) b
 | Role              | What                                                          | Capture-bound? | Format          |
 |-------------------|---------------------------------------------------------------|----------------|-----------------|
 | **Preset**        | Reusable template: which steps run + per-step hyperparameters.| **No**         | YAML (shipped) or JSON (GUI-saved) |
-| **Run config**    | Concrete capture-bound execution snapshot (preset + capture). | **Yes**        | JSON (always — mechanical write)   |
+| **Run config**    | Concrete capture-bound execution snapshot (preset + capture). | **Yes**        | JSON (always, mechanical write)   |
 
 A **run** is the executed work. A **run config** is the frozen file that captures everything needed to reproduce it.
 
@@ -164,17 +214,17 @@ python -m inference run --preset <preset>.yaml --capture <capture>.json --out-ta
 python -m inference run --task gui/var/interface/run_configs/run_42.json
 ```
 
-The CLI rejects mixing `--task` with `--preset/--capture`. `--preset` requires `--capture` and vice versa. Internally, `--preset+--capture` is merged in memory by `inference.config.materialize_run_config()` and written to a temp file before dispatch — the same code path the GUI's submit flow uses.
+The CLI rejects mixing `--task` with `--preset/--capture`. `--preset` requires `--capture` and vice versa. Internally, `--preset+--capture` is merged in memory by `inference.config.materialize_run_config()` and written to a temp file before dispatch, the same code path the GUI's submit flow uses.
 
 Shipped presets ([`configs/examples/presets/`](../configs/examples/presets/)) are YAML; everything the GUI writes (saved presets, frozen run configs) is JSON. Both loaders (`inference/config.py:load_run_config`, `gui/backend/config_io.py:load_config_file`) accept either format.
 
 ## Canonical smoke fixture (Breakdance quick)
 
 [`examples/presets/quick.yaml`](../configs/examples/presets/quick.yaml)
-+ [`examples/captures/140725_Breakdance.json`](../configs/examples/captures/140725_Breakdance.json)
-— drives all five steps (`ma_cap → ma_masks → ma_2d → ma_3d → ma_vis`)
-end-to-end against the Breakdance capture, restricted to 30 frames
-(60–90) so the full pipeline completes in ~5 minutes:
++ [`examples/captures/140725_Breakdance.json`](../configs/examples/captures/140725_Breakdance.json),
+drives all five steps (`ma_cap → ma_masks → ma_2d → ma_3d → ma_vis`)
+end-to-end against the Breakdance capture, restricted to frames 60-120 so
+the full pipeline completes quickly:
 
 ```
 python -m inference run \
@@ -186,12 +236,12 @@ python -m inference run \
 `scripts/smoke_test.py` uses this same fixture for its end-to-end
 pipeline-walk check and for every builder-shape test. Swap the
 `--capture` argument for any other JSON under
-`configs/examples/captures/` (13 shipped capture manifests — the
+`configs/examples/captures/` (13 shipped capture manifests, the
 preset is capture-independent). Use `configs/examples/presets/full.yaml`
 for full-frame runs.
 
 The example capture manifests and calibration files ship ready to use
-under `configs/examples/`. The GUI auto-discovers them — see
+under `configs/examples/`. The GUI auto-discovers them; see
 [`gui/README.md`](../gui/README.md) for the multi-root scan rules.
 For the on-disk data layout, see [`docs/INSTALL.md`](INSTALL.md).
 
@@ -203,8 +253,8 @@ For the on-disk data layout, see [`docs/INSTALL.md`](INSTALL.md).
 
 | Field           | Type         | Required | Description |
 |-----------------|--------------|----------|-------------|
-| `dataset_name`  | string       | yes (run; presets omit) | Used to compose output paths — see [Output path layout](#output-path-layout). Presets omit this field; the materializer derives it from the capture filename at submit time. |
-| `capture_json`  | path         | yes (run)| Capture-config JSON listing all sequences. **Presets omit this** — the materializer fills it from `--capture`. |
+| `dataset_name`  | string       | yes (run; presets omit) | Used to compose output paths, see [Output path layout](#output-path-layout). Presets omit this field; the materializer derives it from the capture filename at submit time. |
+| `capture_json`  | path         | yes (run)| Capture-config JSON listing all sequences. **Presets omit this**: the materializer fills it from `--capture`. |
 | `seq_ids`       | int list     | no       | Subset of sequence ids to run. Empty / omitted = all sequences in `capture_json`. Override on the CLI with `--seqs`. |
 | `out_dir`       | path         | yes      | Root output directory. Override on the CLI with `--out-dir`. |
 | `cam_names`     | string list  | yes (run; presets omit) | Camera names. Forwarded as `--cam_names` to most steps. Presets omit this; the materializer derives it from `capture.cams` at submit time. |
@@ -236,10 +286,10 @@ from the bound capture JSON at submit/run time.
 
 | Step field            | Required | Derived from (when preset is silent)                                                                  |
 |-----------------------|----------|--------------------------------------------------------------------------------------------------------|
-| `ma_cap.videos_dir`   | yes      | `<capture.capture_root>/{seq_name}/<capture.videos_subdir>` — defaults to `videos_crf24`. iphones captures set `videos_subdir: videos` since they ship raw videos. |
+| `ma_cap.videos_dir`   | yes      | `<capture.capture_root>/{seq_name}/<capture.videos_subdir>`, defaults to `videos_crf24`. iphones captures set `videos_subdir: videos` since they ship raw videos. |
 | `ma_cap.calibration`  | yes      | `capture.calib`, resolved relative to the capture JSON's parent dir.                                   |
 
-Setting either field on the preset overrides the derivation — useful
+Setting either field on the preset overrides the derivation; useful
 when you want a one-off video tier (e.g. `videos_light/`) or an
 alternate calibration.
 
@@ -258,20 +308,20 @@ runner (for DONE-sentinel resolution + input lookup) and the GUI
 |-------------------|------------------------------------------------------------------------|---------------------------------------------------------------------------------------|
 | `<out_dir>`       | `global.out_dir` in the run config; overridable via CLI `--out-dir`.   | Root of the on-disk output tree. Many runs across many datasets share this root.      |
 | `<step>`          | The step name (`ma_cap`, `ma_masks`, `ma_2d`, `ma_3d`, `ma_vis`).      | Per-step isolation; lets each step's outputs live next to (not inside) the others.    |
-| `<output_id>`     | CLI: `--out-tag` (default `local`). GUI: form's "Output ID" field, default equal to `task_id` but reusable to extend a previous run group. | Per-submission namespace. Two runs of the same preset against the same capture stay isolated. **Not the same as `task_id`** — `task_id` is the DB row id, never appears in paths; the GUI exposes a separate `output_id` so users can fold related runs into one tree. |
+| `<output_id>`     | CLI: `--out-tag` (default `local`). GUI: form's "Output ID" field, default equal to `task_id` but reusable to extend a previous run group. | Per-submission namespace. Two runs of the same preset against the same capture stay isolated. **Not the same as `task_id`**: `task_id` is the DB row id, never appears in paths; the GUI exposes a separate `output_id` so users can fold related runs into one tree. |
 | `<dataset_name>`  | `global.dataset_name` in the run config; the materializer derives it from the capture filename when the preset is silent. | Per-capture namespace. The same preset against two different captures lands in two different subtrees, so downstream-step input resolution (e.g. `ma_2d` reading `ma_cap` outputs from the "standard location") doesn't need explicit per-capture overrides. |
 | `<seq>`           | Sequence name from the capture JSON's `sequences[...].name`/`ioi`.     | Per-sequence isolation. Sequence names embed the capture prefix today (e.g. `140725_Breakdance_Improv_1_…`), so collisions are unlikely, but the segment keeps the layout self-describing. |
 
 DONE sentinels live at `…/<seq>/DONE` (same path; one extra file).
 Per-(step, seq) log files live in a different root under
-`global.jobs_log_dir`: `<jobs_log_dir>/<user>/<output_id>/<step>/<seq>.{log,out,err}`
-— no `<dataset_name>` segment there, since logs are short-lived.
+`global.jobs_log_dir`: `<jobs_log_dir>/<user>/<output_id>/<step>/<seq>.{log,out,err}`,
+no `<dataset_name>` segment there, since logs are short-lived.
 
 ### Step input overrides
 
 Each step takes its inputs from the standard layout
 `<out_dir>/<dep>/<output_id>/<dataset_name>/`. To point a step at a *different*
-prior-step output, set `<step>.<dep>_dir` (e.g. `ma_2d.ma_cap_dir`) — empty
+prior-step output, set `<step>.<dep>_dir` (e.g. `ma_2d.ma_cap_dir`), empty
 string means "use the standard location."
 
 ## DONE-sentinel re-run semantics
@@ -303,8 +353,13 @@ Engines mix freely across steps in one preset.
 `ma_masks.fanout_cameras: true` in a run-config splits each sequence's
 ma_masks work into one cluster job per camera: an init job defines the
 identities, then the remaining cameras run as parallel jobs that resume the
-init cache and process one view each. Downstream steps wait for all cameras.
+init cache and process one view each, and a finalize job runs the rig vote
+and the collage once. Downstream steps wait for all cameras.
 Concurrency is capped by `ma_masks.submit_cfg.max_jobs` (DAGMan `MAXJOBS`).
-Local runs ignore the key. Trade-off: cross-camera identity references
-reduce to the init camera (measured equivalent on calibrated captures);
-wall time drops roughly by the concurrency factor.
+Both keys need `global.cam_names` with at least two cameras; local runs ignore
+them. Trade-off: cross-camera identity references reduce to the init camera,
+and the appearance bank is not enriched across cameras; wall time drops
+roughly by the concurrency factor.
+
+`ma_2d.fanout_cameras: true` does the same for ma_2d: one independent job per
+camera (no init or finalize job).

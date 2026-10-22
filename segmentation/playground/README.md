@@ -8,6 +8,6 @@ scripts used for:
 - small reference demos against the upstream SAM repos.
 
 For actual usage of the segmentation pipeline, see the top-level `README.md`
-and the entry points `run_ma_masks.py` / `process_sequence.py`.
+and the entry point `run_ma_masks.py`.
 
 Scripts here are not kept in sync with pipeline refactors and may lag behind.

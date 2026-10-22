@@ -2,8 +2,8 @@
 
 To run MAMMA on a new multi-view capture you bring two pieces:
 
-1. **Multi-view footage** — one video file (or image directory) per camera, organized into sequences.
-2. **Calibration** — per-camera intrinsics + extrinsics.
+1. **Multi-view footage**, one video file (or image directory) per camera, organized into sequences.
+2. **Calibration**, per-camera intrinsics + extrinsics.
 
 Then either let the GUI mint a capture descriptor for you, or hand-author one. Both paths end with the same pipeline-run command.
 
@@ -40,7 +40,7 @@ data/<your-dataset>/
 │       └── …
 ```
 
-Camera names (`cam_01`, etc.) are yours to choose — they just have to match the names you list in the calibration and capture descriptor below.
+Camera names (`cam_01`, etc.) are yours to choose; they just have to match the names you list in the calibration and capture descriptor below.
 
 ---
 
@@ -117,7 +117,7 @@ python -m inference run \
 
 Or use the GUI's **Tasks** board: pick the preset + your capture, click **Run**.
 
-Outputs land under `output/ma_*/run01/<your-dataset>/<sequence>/…` — see [CONFIGS.md → Output path layout](CONFIGS.md#output-path-layout) for the per-segment meaning.
+Outputs land under `output/ma_*/run01/<your-dataset>/<sequence>/…`, see [CONFIGS.md → Output path layout](CONFIGS.md#output-path-layout) for the per-segment meaning.
 
 ### Even quicker: skip the capture JSON
 

@@ -1,7 +1,7 @@
-# MammaNet — 2D landmark detection (`ma_2d`)
+# MammaNet: 2D landmark detection (`ma_2d`)
 
 Training, evaluation, and standalone inference for the MammaNet 2D landmark
-detector — the `ma_2d` step of the MAMMA pipeline. For the end-to-end pipeline
+detector, the `ma_2d` step of the MAMMA pipeline. For the end-to-end pipeline
 and dataset downloads, see the [top-level README](../README.md); for the
 environment + CUDA + weights setup, see [`docs/INSTALL.md`](../docs/INSTALL.md).
 
@@ -15,8 +15,8 @@ WebDataset (data loading).
 ## Environment Variables
 
 Most paths are baked into the repo under `data/` (see
-[Body models and weights](#body-models-and-weights)). The few remaining knobs —
-SAM2 mask root, optional W&B key — live in a `.env` file at the repo root; see
+[Body models and weights](#body-models-and-weights)). The few remaining knobs (SAM2 mask root,
+optional W&B key) live in a `.env` file at the repo root; see
 the table in [`configs/constants.py`](configs/constants.py) for the canonical
 list.
 
@@ -25,7 +25,7 @@ list.
 `configs/constants.py` (or `run_ma_2d.py`) is imported. Exporting in your shell
 works too.
 
-The webdataset root itself is **not** an env var — pass it as a Hydra CLI
+The webdataset root itself is **not** an env var; pass it as a Hydra CLI
 override:
 
 ```bash
@@ -127,24 +127,24 @@ Training reuses the same `data/` layout as inference (see
 [`docs/INSTALL.md`](../docs/INSTALL.md) for the full setup). The assets training
 needs:
 
-- `data/body_models/smplx_locked_head/` — SMPL-X locked-head model.
-- `data/body_models/downsampled_verts/verts_512.pkl` — the 512-vertex SMPL-X
+- `data/body_models/smplx_locked_head/`: SMPL-X locked-head model.
+- `data/body_models/downsampled_verts/verts_512.pkl`: the 512-vertex SMPL-X
   subsampling loaded by `BEDLAM_WD` (also used by `DrawUV` for visualization).
-- `data/weights/vitpose/vitpose-b-multi-coco.pth` — pretrained ViTPose backbone
+- `data/weights/vitpose/vitpose-b-multi-coco.pth`: pretrained ViTPose backbone
   ([download](https://drive.google.com/file/d/1sCkVDSSqyzltPyGDaBKsTwY-Adag2Vgr/view?usp=sharing)).
-- `data/weights/hrnet/pose_hrnet_w48_256x192.pth` — COCO-pretrained HRNet-W48,
+- `data/weights/hrnet/pose_hrnet_w48_256x192.pth`: COCO-pretrained HRNet-W48,
   only needed if you train the HRNet variant.
 
 ## Training
 
 Training is driven by `train.py` (Hydra + PyTorch Lightning) with configs under
 `configs/train/models_2d/`. A separate `train_hrnet.py` entry point exists for
-the HRNet backbone — it's a stripped-down variant of `train.py` (no `bf16-mixed`
+the HRNet backbone; it's a stripped-down variant of `train.py` (no `bf16-mixed`
 precision, no per-step checkpointing) tuned for HRNet's memory characteristics.
 
 ### Prerequisites
 
-1. **`data/` assets** — body models, SMPL-X subsampling files, and pretrained
+1. **`data/` assets**: body models, SMPL-X subsampling files, and pretrained
    ViTPose backbone. See [Body models and weights](#body-models-and-weights) for
    the full layout.
 2. **Training data**: point `dataset_path` (Hydra CLI override; default
@@ -228,39 +228,39 @@ Weights & Biases. Leave it unset to disable wandb logging.
 ## Standalone 2D inference
 
 `run_ma_2d.py` runs the trained MammaNet over a multi-camera sequence and writes
-dense 2D landmarks (plus per-landmark visibility, contact, and floor-contact) —
+dense 2D landmarks (plus per-landmark visibility, contact, and floor-contact),
 one NPZ per camera. This is the standalone form of the `ma_2d` pipeline step; its
 output is exactly the input contract the `ma_3d` step consumes (see
 [`optimization/README.md`](../optimization/README.md#2d-landmark-predictions-ma_2d_dirseq_name)).
 
 It takes **exactly one** of three input modes:
 
-- `--img_folder <ma_cap_root>` — chained mode: reads the per-camera NPZ manifests
+- `--img_folder <ma_cap_root>`: chained mode; reads the per-camera NPZ manifests
   at `<img_folder>/<seq_name>/gt/IOI_*.npz` (each carrying per-frame
   `img_abs_path`). Use with `--seq_name`.
-- `--videos_dir <dir>` — one `<cam_name>.mp4` per camera.
-- `--images_root_dir <dir>` — one `<cam_name>/` frame directory per camera.
+- `--videos_dir <dir>`: one `<cam_name>.mp4` per camera.
+- `--images_root_dir <dir>`: one `<cam_name>/` frame directory per camera.
 
 Key arguments:
 
-- `--config_path` — model config (e.g. `landmarks/configs/train/models_2d/config_mammanet_mask_512.yaml`).
-- `--weights` (required) — trained MammaNet checkpoint.
-- `--downsampled-verts` — path to `verts_512.pkl` (used by the UV visualization);
+- `--config_path`: model config (e.g. `landmarks/configs/train/models_2d/config_mammanet_mask_512.yaml`).
+- `--weights` (required): trained MammaNet checkpoint.
+- `--downsampled-verts`: path to `verts_512.pkl` (used by the UV visualization);
   pass `data/body_models/downsampled_verts/verts_512.pkl` (the bundled location).
-- `--mask_path` — folder of segmentation masks
+- `--mask_path`: folder of segmentation masks
   (`<mask_path>/<cam>/masks/mask_<frame>_<bodyid>.png`); one body is exported per
   mask ID. If omitted, Detectron2 detects people online and keeps the single box
   closest to the image center (single-person assumption).
-- `--out_folder` (default `out`) — outputs; with `--seq_name` set, results are
+- `--out_folder` (default `out`): outputs; with `--seq_name` set, results are
   scoped under `<out_folder>/<seq_name>/`.
-- `--cam_names IOI_01 IOI_02 …` — restrict to specific cameras.
-- `--calibration` + `--undistort` — apply Vicon-radial-2 undistortion before
+- `--cam_names IOI_01 IOI_02 …`: restrict to specific cameras.
+- `--calibration` + `--undistort`: apply Vicon-radial-2 undistortion before
   inference (videos / images modes).
-- `--start` / `--end` — frame range (videos / images modes only; NPZ mode uses
+- `--start` / `--end`: frame range (videos / images modes only; NPZ mode uses
   the manifest's range).
-- `--save_cam_output` / `--no-save_cam_output` — per-camera viz frames + preview MP4.
+- `--save_cam_output` / `--no-save_cam_output`: per-camera viz frames + preview MP4.
 
-Example (from the repo root) — per-camera videos, masks from the `ma_masks` step:
+Example (from the repo root), per-camera videos, masks from the `ma_masks` step:
 
 ```bash
 python landmarks/run_ma_2d.py \

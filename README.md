@@ -15,7 +15,6 @@ Hanz Cuevas Velasquez<sup>1\*</sup>, Anastasios Yiannakidis<sup>1\*</sup>, Soyon
 </div>
 
 ## News
-- [2026-08] v1.1.0 released: export (FBX / ABC / BVH / USD) and a redesigned GUI.
 - [2026-06] 🎉 MAMMA being presented at CVPR 2026
 - [2026-06] Code released (inference + training)
 
@@ -69,7 +68,7 @@ Outputs land under `output/ma_*/demo/mamma_example/…`.
 | Step       | What it does                                 |
 |------------|----------------------------------------------|
 | `ma_cap`   | Loads multi-view capture |
-| `ma_masks` | Per-person segmentation (SAM + YOLO)         |
+| `ma_masks` | Per-person segmentation (SAM + D-FINE)       |
 | `ma_2d`    | 2D landmark detection (MammaNet)             |
 | `ma_3d`    | Multi-view SMPL-X optimization               |
 | `ma_vis`   | Per-camera overlays + interactive scene      |
@@ -78,11 +77,11 @@ Entry point: `python -m inference run` (source: [`inference/cli/run.py`](inferen
 
 | Argument               | What it is                                                                                  |
 |------------------------|---------------------------------------------------------------------------------------------|
-| `--cfg` / `--preset`   | Pipeline-configuration YAML — declares which steps run and their hyperparameters. Capture-independent. ([what a preset is + how to modify one](docs/CONFIGS.md)) |
+| `--cfg` / `--preset`   | Pipeline-configuration YAML: declares which steps run and their hyperparameters. Capture-independent. ([what a preset is + how to modify one](docs/CONFIGS.md)) |
 | `--footage`            | Dataset root containing sequence subdirs (use with `--seq_name` + `--calib`). ([layout reference](docs/YOUR-DATA.md#1-lay-out-your-footage)) |
 | `--seq_name`           | One sequence subdirectory name under `--footage` to process (one run = one sequence).      |
 | `--calib`              | Calibration file (`.yaml` / `.xcp` / OpenCV `.json`); applies to every sequence under `--footage`. ([format reference](docs/YOUR-DATA.md#2-author-the-calibration-file)) |
-| `--capture`            | Advanced: capture JSON pointing at footage, calibration, sequences, and camera names — used to iterate over many sequences in one invocation. ([schema reference](docs/YOUR-DATA.md#3-mint-a-capture-descriptor)) |
+| `--capture`            | Advanced: capture JSON pointing at footage, calibration, sequences, and camera names, used to iterate over many sequences in one invocation. ([schema reference](docs/YOUR-DATA.md#3-mint-a-capture-descriptor)) |
 | `--out-tag`            | Output sub-directory tag under `output/ma_*/<tag>/` (default: `local`).                     |
 | `-v`                   | Verbose runner logs.                                                                        |
 
@@ -92,7 +91,7 @@ Three things are needed:
 
 1. A **calibration file** ([how to make one](docs/YOUR-DATA.md#2-author-the-calibration-file))
 2. A **folder with your sequence** ([how to set it up](docs/YOUR-DATA.md#1-lay-out-your-footage))
-3. A **preset** — use a shipped one: [`quick.yaml`](configs/examples/presets/quick.yaml) (~2 s smoke test, frames 60–120) or [`full.yaml`](configs/examples/presets/full.yaml) (all frames, low-memory `ma_masks`, runs anywhere). Both keep visualizations on. One-off tweaks (TensorRT, extra debug output) are plain per-step flags — see [`docs/CONFIGS.md`](docs/CONFIGS.md) to modify or author your own.
+3. A **preset**: use a shipped one: [`quick.yaml`](configs/examples/presets/quick.yaml) (~2 s smoke test, frames 60–120) or [`full.yaml`](configs/examples/presets/full.yaml) (all frames; `ma_masks` bounds its memory automatically on long clips). Both keep visualizations on. One-off tweaks (TensorRT, extra debug output) are plain per-step flags; see [`docs/CONFIGS.md`](docs/CONFIGS.md) to modify or author your own.
 
 Then:
 
@@ -105,7 +104,7 @@ python -m inference run \
   --out-tag  run01 -v
 ```
 
-**Alternative — iterate over many sequences in one invocation.** A [capture JSON](docs/YOUR-DATA.md#3-mint-a-capture-descriptor) enumerates sequences, cameras, and the calibration in one file; the runner walks them automatically:
+**Alternative: iterate over many sequences in one invocation.** A [capture JSON](docs/YOUR-DATA.md#3-mint-a-capture-descriptor) enumerates sequences, cameras, and the calibration in one file; the runner walks them automatically:
 
 ```bash
 python -m inference run \
@@ -146,15 +145,15 @@ Setup and deployment: [`gui/README.md`](gui/README.md).
 
 ## MAMMA datasets
 
-The paper's released captures and evaluation data live on the MAMMA project page (free account); the **MammaSyn** synthetic training data is published on [Hugging Face](https://huggingface.co/datasets/Intelligent-Systems/MammaSyn) (gated — accept the license once for instant access).
+The paper's released captures and evaluation data live on the MAMMA project page (free account); the **MammaSyn** synthetic training data is published on [Hugging Face](https://huggingface.co/datasets/Intelligent-Systems/MammaSyn) (gated; accept the license once for instant access).
 
-- **MammaSyn (synthetic training) — Hugging Face, default.** Accept the license, then `hf auth login`:
+- **MammaSyn (synthetic training): Hugging Face, default.** Accept the license, then `hf auth login`:
 
   ```bash
   bash data/download_mamma_syn_hf.sh --hands     # or --interactions / --singles / --all
   ```
 
-- **Captures / eval — MAMMA account.** Register at <https://mamma.is.tue.mpg.de/>, confirm your email, then use the GUI's *MAMMA Datasets* panel (sign in once, click to download) or the shell scripts under [`data/`](data/):
+- **Captures / eval: MAMMA account.** Register at <https://mamma.is.tue.mpg.de/>, confirm your email, then use the GUI's *MAMMA Datasets* panel (sign in once, click to download) or the shell scripts under [`data/`](data/):
 
   ```bash
   bash data/download_mamma_dance.sh --bachata --meta --pred --videos_crf24
@@ -162,7 +161,7 @@ The paper's released captures and evaluation data live on the MAMMA project page
 
 Both surfaces are also driven from the GUI's *MAMMA Datasets* panel. Per-dataset sizes, video encodings, and the full script flag surface live in **[docs/DATASETS.md](docs/DATASETS.md)**.
 
-> Just running on your own footage? You don't need any of this — see [Run the pipeline](#run-the-pipeline) above.
+> Just running on your own footage? You don't need any of this; see [Run the pipeline](#run-the-pipeline) above.
 
 ---
 
@@ -207,7 +206,7 @@ Both surfaces are also driven from the GUI's *MAMMA Datasets* panel. Per-dataset
 MAMMA builds on a number of open-source models, datasets, and tools. We thank their authors for releasing their work openly.
 
 - [**SAM 2**](https://github.com/facebookresearch/sam2) and [**SAM 3**](https://github.com/facebookresearch/sam3): Meta FAIR; segmentation backbones.
-- [**YOLOv12**](https://github.com/ultralytics/ultralytics): Ultralytics; person detection.
+- [**D-FINE**](https://github.com/Peterande/D-FINE): person detection (Apache-2.0), run through Hugging Face [transformers](https://github.com/huggingface/transformers).
 - [**SMPL-X**](https://smpl-x.is.tue.mpg.de/): MPI-IS; expressive body model.
 - [**ViTPose**](https://github.com/ViTAE-Transformer/ViTPose): pretrained human-pose backbone.
 - [**HRNet**](https://github.com/HRNet): alternative pose-estimation backbone.

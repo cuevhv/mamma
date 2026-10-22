@@ -15,15 +15,15 @@ directory is just orchestration + UI + bookkeeping on top of it.
 | **Frontend** | React 18 + TypeScript + Tailwind v4, bundled with Vite. |
 | **Job submission** | Spawns `python -m runner_main` (a thin shim over `inference.runner.run_dag`) per task. |
 | **DB** | SQLite, single file under `gui/var/` (gitignored). |
-| **Pipeline engines** | `conda` (default), `apptainer`, or `docker` — picked per-step from the task file. |
-| **Auth** | None — single-user local tool. Bound to `127.0.0.1` by default. |
+| **Pipeline engines** | `conda` (default), `apptainer`, or `docker`, picked per-step from the task file. |
+| **Auth** | None, single-user local tool. Bound to `127.0.0.1` by default. |
 
 ## Install
 
 Everything lives in a single `mamma` conda env maintained by the parent
-repo. Flask, Flask-CORS, python-dotenv, pyyaml, waitress, and Node 20
+repo. Flask, python-dotenv, pyyaml, waitress, and Node 20
 are all pulled in by
-`mamma_release/requirements/{mamma_conda.yaml,requirements.txt}` — no
+`mamma_release/requirements/{mamma_conda.yaml,requirements.txt}`, no
 separate "webtool" env. Follow the parent
 [`INSTALL.md`](../docs/INSTALL.md) for the full pipeline install, then:
 
@@ -38,7 +38,7 @@ conda activate mamma
 conda activate mamma
 ```
 
-**Dev mode** — hot module replacement, two-port topology, Werkzeug
+**Dev mode**, hot module replacement, two-port topology, Werkzeug
 backend (debugger + auto-reloader on):
 
 ```bash
@@ -49,7 +49,7 @@ gui/scripts/dev.sh
 - Vite on http://localhost:3000 (proxies `/api/*` to :8000)
 - Open <http://localhost:3000>.
 
-**Prod mode** — single port, single waitress worker, static React
+**Prod mode**, single port, single waitress worker, static React
 bundle, no Vite, no debugger, multi-threaded:
 
 ```bash
@@ -73,7 +73,7 @@ Five top-level tabs:
 
 | Tab | Purpose |
 |---|---|
-| **Home** | Landing page — pipeline overview and shortcuts. |
+| **Home** | Landing page, pipeline overview and shortcuts. |
 | **Captures** | Manage `capture.json` files. Add from an images-root + calibration; edit fields inline; delete with a confirmation that warns when historical tasks reference the capture. |
 | **Tasks** | Submit new pipeline runs and monitor live progress. The cross-capture **(task × sequence) matrix** is the main view, with status-pill, capture, and free-text filters and a "Latest run only" collapse. Click a cell → side panel with status, log/out/err viewers, **View task config**, **Browse outputs**, and **Stop** for running steps. |
 | **Results** | Browse the filesystem outputs of past runs. Pick a capture → (task / sequence / process) tuple → walk the produced files. |
@@ -125,7 +125,7 @@ Final artifacts land in:
 mamma_release/output/<step>/<output_id>/140725_Breakdance/140725_Breakdance_Improv_1_03684_03686_1/
 ```
 
-Pipeline run identical to what the CLI would produce —
+Pipeline run identical to what the CLI would produce:
 `python -m inference run --task configs/examples/quick_tasks/140725_Breakdance.yaml`.
 
 ## Adding & editing presets
@@ -161,7 +161,7 @@ pipeline.
 
 ## Pipeline
 
-Body branch only — the public release ships 5 steps:
+Body branch only; the public release ships 5 steps:
 
 ```
 ma_cap → ma_masks → ma_2d → ma_3d → ma_vis
@@ -216,7 +216,7 @@ bundle is served at `/` from the same origin.
 | Route | Purpose |
 |---|---|
 | `GET /api/captures` | List every capture in the DB (with task counts and rolled-up status). |
-| `GET /api/captures/<name>` | Per-capture detail — sequences + tasks + each task's processes. |
+| `GET /api/captures/<name>` | Per-capture detail, sequences + tasks + each task's processes. |
 | `GET /api/captures/list-jsons` | List raw `*.json` files in `$MAMMA_INTERFACE_DIR/capture_jsons/`. |
 | `POST /api/captures/parse-sequences` `{captureJsonPath}` | Read a capture.json and return its sequences/cams. |
 | `POST /api/captures/generate-json` `{ioiRoot, calib, outputName}` | Create a new capture.json from an images-root + calibration; seeds a `captures` DB row. |
@@ -231,13 +231,14 @@ bundle is served at `/` from the same origin.
 | `GET /api/tasks/history` | All tasks across captures, with per-(seq, step) processes. Feeds the Tasks matrix. |
 | `POST /api/tasks` `{captureJsonPath, taskJsonPath, seqNames, cameras, outputDir, outputId, processes, taskOverrides?}` | Submit a new task. `taskOverrides` deep-merges into the preset. |
 | `GET /api/tasks/<id>/config-path` | Resolve the path of a task's saved `task_config_<id>.json`. |
+| `POST /api/tasks/<id>/stop` | Stop a task: signal its runner (a cluster run also cancels its DAG) and mark unfinished steps Cancelled. |
 
 ### Processes
 
 | Route | Purpose |
 |---|---|
 | `GET /api/processes/active` | Currently-running processes for the live polling loop. |
-| `POST /api/processes/<id>/stop` | Cancel a running process. Downstream dependents cascade-cancel. |
+| `POST /api/processes/<id>/stop` | Refused with 409: a task's steps share one runner process, so stop the whole task instead. |
 
 ### Task presets
 
@@ -282,10 +283,10 @@ gui/
 │   ├── app.py                  # Flask routes + static-serve fallback for prod
 │   ├── db.py                   # SQLite layer
 │   ├── sync.py                 # DB ↔ filesystem reconciliation (Database tab)
-│   ├── sinks.py                # SqliteSink(task_id) — StatusSink implementation
+│   ├── sinks.py                # SqliteSink(task_id), StatusSink implementation
 │   ├── runner_main.py          # Spawn target: bootstraps env + calls inference.runner
 │   ├── objects/                # Dataclasses for serialization
-│   ├── requirements.txt        # flask + flask-cors (full deps in parent's requirements.txt)
+│   ├── requirements.txt        # flask (full deps in parent's requirements.txt)
 │   └── README.md
 ├── frontend/
 │   ├── src/
@@ -308,7 +309,7 @@ gui/
 ├── scripts/
 │   ├── dev.sh                  # Flask :8000 + Vite :3000
 │   └── prod.sh                 # waitress :8000 serving the built bundle
-├── var/                        # gitignored — SQLite, generated task configs, runner logs
+├── var/                        # gitignored, SQLite, generated task configs, runner logs
 └── README.md                   # this file
 ```
 
@@ -322,14 +323,15 @@ gui/
 | `MAMMA_OUTPUT_DIR` | `<repo>/output` (top-level) | Default for the form's "Output dir" field. Form input wins when an absolute path is typed. Shared with CLI runs. |
 | `MAMMA_DEFAULT_TASK_JSON` | `<repo>/configs/examples/quick_tasks/140725_Breakdance.yaml` | Task template the New-task form falls back to. |
 | `MAMMA_LOCAL_USER` | `getpass.getuser()` | The string written to `tasks.username`. |
-| `MAMMA_BIND_HOST` | `127.0.0.1` | Flask bind host. **Do not bind 0.0.0.0** unless the network is trusted — the file APIs accept arbitrary absolute paths. |
+| `MAMMA_BIND_HOST` | `127.0.0.1` | Flask bind host. **Do not bind 0.0.0.0** unless the network is trusted: the file APIs accept arbitrary absolute paths. |
 | `MAMMA_BIND_PORT` | `8000` | Flask bind port. |
+| `MAMMA_ALLOWED_ORIGINS` | _empty_ | Comma-separated extra browser origins allowed to call the API, e.g. `http://gpu-box.lan:3000` for a Vite dev server reached by LAN hostname, or the public origin of a reverse proxy that rewrites `Host`. Same-origin requests and loopback dev servers (`localhost`, `127.0.0.1`) are always allowed; other origins get HTTP 403. |
 | `MAMMA_DEBUG` | `1` (`dev.sh`), `0` (`prod.sh`) | Flask debug mode (auto-reload + verbose error pages). Only honored by `python app.py` / `dev.sh`; `prod.sh` runs waitress and ignores this. |
 | `MAMMA_RERUN_BIN` | _auto-discovered_ | Absolute path to the `rerun` CLI. When unset, the backend looks on `$PATH` then `~/{miniforge3,mambaforge,miniconda3,anaconda3}/envs/*/bin/rerun`. |
 
 `MAMMA_*` vars used by the pipeline itself (`MAMMA_SMPLX_LOCKHEAD_MODELS`,
 `MAMMA_MA2D_CHECKPOINT`, etc.) are resolved by `inference.env.bootstrap_env()`
-in both the Flask process and the spawned runner subprocesses — see the
+in both the Flask process and the spawned runner subprocesses, see the
 parent [`INSTALL.md`](../docs/INSTALL.md#customising-paths) and the `.env.local`
 override.
 
@@ -337,12 +339,12 @@ override.
 
 ### GUI / runner
 
-- **"port 8000 already in use"** — `MAMMA_BIND_PORT=8001 gui/scripts/dev.sh`, or kill the offender (`lsof -ti :8000 | xargs kill`).
-- **Tasks matrix stays "Waiting"** — the spawned `runner_main` either failed to import or crashed. Tail `gui/var/logs/jobs/<user>/<task_id>/runner.log`.
-- **DONE sentinels never appear** — the per-step subprocess exited non-zero. Tail `gui/var/logs/jobs/<user>/<task_id>/<step>/<seq>.err`.
-- **Form's preset picker is empty** — `$MAMMA_INTERFACE_DIR/samples/tasks/` is empty. `dev.sh` / `prod.sh` seed it from `configs/examples/` on first launch; if you have a custom `MAMMA_INTERFACE_DIR`, drop your `.json` / `.yaml` files there.
-- **"This is a development server" warning at startup** — expected when running `dev.sh` (Werkzeug). Use `prod.sh` if you want the production-grade waitress server without the warning.
-- **404 on `/api/some-typo`** — the prod-mode static-serve fallback returns 404 for unknown `/api/*` paths (instead of the SPA index). Working as intended; check the URL.
+- **"port 8000 already in use"**: `MAMMA_BIND_PORT=8001 gui/scripts/dev.sh`, or kill the offender (`lsof -ti :8000 | xargs kill`).
+- **Tasks matrix stays "Waiting"**: the spawned `runner_main` either failed to import or crashed. Tail `gui/var/logs/jobs/<user>/<task_id>/runner.log`.
+- **DONE sentinels never appear**: the per-step subprocess exited non-zero. Tail `gui/var/logs/jobs/<user>/<task_id>/<step>/<seq>.err`.
+- **Form's preset picker is empty**: `$MAMMA_INTERFACE_DIR/samples/tasks/` is empty. `dev.sh` / `prod.sh` seed it from `configs/examples/` on first launch; if you have a custom `MAMMA_INTERFACE_DIR`, drop your `.json` / `.yaml` files there.
+- **"This is a development server" warning at startup**: expected when running `dev.sh` (Werkzeug). Use `prod.sh` if you want the production-grade waitress server without the warning.
+- **404 on `/api/some-typo`**: the prod-mode static-serve fallback returns 404 for unknown `/api/*` paths (instead of the SPA index). Working as intended; check the URL.
 
 ### Pipeline conda env build
 

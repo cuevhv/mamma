@@ -1,6 +1,6 @@
 # Running the pipeline in Docker / Apptainer
 
-The runner supports three engines per step — `conda` (default), `docker`,
+The runner supports three engines per step, `conda` (default), `docker`,
 `apptainer` (`inference/engines.py`). The files here provide **one unified
 image that runs every step** (ma_cap, ma_masks, ma_2d, ma_3d, ma_vis),
 mirroring the `mamma` conda env from [docs/INSTALL.md](../docs/INSTALL.md)
@@ -8,7 +8,7 @@ mirroring the `mamma` conda env from [docs/INSTALL.md](../docs/INSTALL.md)
 
 The image contains the **environment only**. At run time the pipeline
 bind-mounts the repo root at `/repo` and runs each step from
-`/repo/<step subdir>` — the same shape as the conda engine — and passes
+`/repo/<step subdir>`, the same shape as the conda engine, and passes
 absolute host paths (weights, footage, output) on the command line, so the
 container also needs those host paths visible at the *same* locations (see
 *Binds* below). Weights and data stay on the host; nothing is baked in.
@@ -21,11 +21,11 @@ container also needs those host paths visible at the *same* locations (see
 docker build -f docker/Dockerfile -t mamma:v1.1.0 .
 ```
 
-**Apptainer** — two routes:
+**Apptainer**, two routes:
 
 ```bash
-# a) From the docker image (preferred when docker exists — identical env).
-#    NOTE: use the wrapper .def, not docker-daemon:// directly — the direct
+# a) From the docker image (preferred when docker exists: identical env).
+#    NOTE: use the wrapper .def, not docker-daemon:// directly: the direct
 #    conversion adopts the NVIDIA base image's ENTRYPOINT as the runscript,
 #    which breaks the runner's `apptainer run <sif> <script> <args…>` contract:
 apptainer build mamma.sif docker/mamma_from_docker.def
@@ -35,9 +35,9 @@ apptainer build --fakeroot mamma.sif docker/mamma.def
 ```
 
 > If the build dies in the final squashfs step (`mksquashfs command failed:
-> exit status 134/139` — a squashfs-tools crash seen on large images), retry
-> single-threaded: `APPTAINER_MKSQUASHFS_PROCS=1 APPTAINER_MKSQUASHFS_MEM=8G
-> apptainer build …`.
+> exit status 134/139`, a squashfs-tools crash seen on large images), retry
+> single-threaded: `apptainer build --mksquashfs-args "-processors 1 -mem 8G" …`
+> (about 20 minutes for this image).
 
 ## 2. Configure a preset
 
@@ -45,7 +45,7 @@ Copy a shipped preset (e.g. `configs/examples/presets/quick.yaml`) and set,
 **per step**, the engine keys ([docs/CONFIGS.md](../docs/CONFIGS.md) §step
 keys). All five steps can use the same image / sif.
 
-**Docker** — every step gets `engine` + `docker_image`, and `global.bind`
+**Docker**, every step gets `engine` + `docker_image`, and `global.bind`
 carries an identity mount of the repo root so the absolute host paths in the
 command line resolve inside the container:
 
@@ -67,9 +67,9 @@ docker run --rm --gpus all --user <uid>:<gid> -w /repo/<step> -v <repo root>:/re
     -v /abs/path/to/mamma:/abs/path/to/mamma mamma:v1.1.0 python <script> <args…>
 ```
 
-**Apptainer** — `sif_path` instead of `docker_image`; GPU steps additionally
+**Apptainer**, `sif_path` instead of `docker_image`; GPU steps additionally
 need `submit_cfg.gpus: 1`, which adds `--nv` (every step except ma_cap wants
-it — ma_vis renders through EGL too):
+it, ma_vis renders through EGL too):
 
 ```yaml
 ma_masks:
@@ -89,11 +89,11 @@ footage live under your home directory no `bind` entries are needed; anything
 elsewhere (scratch filesystems, cluster storage) goes into `global.bind`
 exactly like docker.
 
-Engines mix freely — e.g. `ma_cap` on `conda`, GPU steps in a container.
+Engines mix freely, e.g. `ma_cap` on `conda`, GPU steps in a container.
 
 ## 3. Run
 
-**Terminal** — exactly like a conda run:
+**Terminal**, exactly like a conda run:
 
 ```bash
 python -m inference run --cfg my_docker_preset.yaml \
@@ -101,11 +101,11 @@ python -m inference run --cfg my_docker_preset.yaml \
   --calib configs/examples/calib/iphones_outdoors.yaml --out-tag docker01 -v
 ```
 
-**GUI** — the engine is part of the preset, not a per-run widget: save your
+**GUI**: the engine is part of the preset, not a per-run widget: save your
 preset (drop the YAML into `configs/examples/presets/` or save it as a user
 preset from the New Task form), then select it when creating the task. The
 command preview in the New Task form shows the full `docker run …` /
-`apptainer run …` invocation — what you preview is byte-identical to what
+`apptainer run …` invocation, what you preview is byte-identical to what
 runs. The GUI itself (Flask backend + browser) stays on the host env.
 
 ## 4. Requirements on the host
@@ -117,7 +117,7 @@ runs. The GUI itself (Flask backend + browser) stays on the host env.
   ma_3d contact viz) works.
 - **Apptainer:** ≥ 1.1 with `--nv` support and a working NVIDIA driver.
 - The host needs **no** conda env, CUDA toolkit, or Python for the
-  containerized steps — only for the GUI/runner itself (any Python ≥ 3.10
+  containerized steps, only for the GUI/runner itself (any Python ≥ 3.10
   with PyYAML can drive `python -m inference run`).
 
 ## Notes
@@ -126,8 +126,9 @@ runs. The GUI itself (Flask backend + browser) stays on the host env.
   ma_masks-only standalone image (SAM2/SAM3 with a newer Python/torch than
   the pipeline env). They also work with the runner (code runs from `/repo`
   when bound), but the files here are the pipeline-tested route.
-- TensorRT (`ma_2d --tensorrt`) is not installed in the image — add
+- TensorRT (`ma_2d --tensorrt`) is not installed in the image, add
   `requirements/requirements-tensorrt.txt` to the Dockerfile if you need it
   containerized.
-- The first ma_masks/ma_2d run may download detector weights into the
+- The first ma_masks run downloads the D-FINE person detector (about 240 MB)
+  into the Hugging Face cache, like SAM 3; ma_2d may download weights into the
   bound repo `data/` directory, same as the conda engine.

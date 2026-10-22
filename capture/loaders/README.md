@@ -1,4 +1,4 @@
-# `capture/loaders` — calibration file loaders
+# `capture/loaders`: calibration file loaders
 
 Format-specific parsers for multi-camera calibration. Each loader reads one file
 format and returns `{cam_name: Camera}`; the public entry point
@@ -27,10 +27,10 @@ This is the historical source of user confusion. Two ways to express extrinsics:
 
 Every loader normalizes to the same in-memory `Camera`, which stores **both**
 `T_cam_world` (what the projection pipeline uses) and `T_world_cam` (the natural
-pose). What differs is the *input* convention each format assumes — see the table.
+pose). What differs is the *input* convention each format assumes, see the table.
 
 A wrong convention does **not** error: the pipeline runs and produces garbage 3D.
-Use the GUI's **"Preview camera rig"** (`gui/backend/calib_preview.py`) to check —
+Use the GUI's **"Preview camera rig"** (`gui/backend/calib_preview.py`) to check:
 a correct rig shows cameras around the scene, looking inward.
 
 ## Supported formats
@@ -38,9 +38,9 @@ a correct rig shows cameras around the scene, looking inward.
 | Loader | Extension / shape | Input convention | Distortion | Quaternion | Notes |
 |---|---|---|---|---|---|
 | `yaml_loader.py` | single `.yaml`/`.yml`, MAMMA schema | **declared** via `extrinsics_convention` (default `cam2world`) | `radtan` (4) / `vicon_radial_2` (5) | `[w,x,y,z]` Hamilton (`quaternion_order: xyzw` to flip) | The recommended format for new rigs. |
-| `opencv_loader.py` | OpenCV FileStorage `.yml` (single file, or a **folder** of per-camera files) | **world2cam** (`K`/`D`/`R`/`T`) | `opencv_brown` (5) | — (matrices) | Tolerant parser (handles tabs + the non-standard `%YAML:1.0` directive that crash `cv2.FileStorage`). Camera name = file stem; resolution inferred from the principal point if absent. |
+| `opencv_loader.py` | OpenCV FileStorage `.yml` (single file, or a **folder** of per-camera files) | **world2cam** (`K`/`D`/`R`/`T`) | `opencv_brown` (5) | - (matrices) | Tolerant parser (handles tabs + the non-standard `%YAML:1.0` directive that crash `cv2.FileStorage`). Camera name = file stem; resolution inferred from the principal point if absent. |
 | `xcp_loader.py` | Vicon `.xcp` (XML) | camera pose in world | `vicon_radial_2` (5) | `[x,y,z,w]` JPL/scipy | Millimetres → metres at parse time. |
-| `json_loader.py` | OpenCV-style `.json` (nested / flat / legacy) | OpenCV layout: **world2cam** `extrinsics_matrix`; legacy: pose-in-world | `opencv_brown` (5) / `vicon_radial_2` | — (matrices) | Auto-detects the sub-layout. |
+| `json_loader.py` | OpenCV-style `.json` (nested / flat / legacy) | OpenCV layout: **world2cam** `extrinsics_matrix`; legacy: pose-in-world | `opencv_brown` (5) / `vicon_radial_2` | - (matrices) | Auto-detects the sub-layout. |
 
 The MAMMA YAML schema (with the new explicit fields):
 
@@ -78,7 +78,7 @@ projects with `K · T_cam_world · X`.
 ## Adding a new loader
 
 1. Create `myformat_loader.py` exposing `load(path) -> Dict[str, Camera]`. Build
-   each `Camera` with **both** transforms — set whichever the format gives you and
+   each `Camera` with **both** transforms, set whichever the format gives you and
    compute the inverse (`T_world_cam = inv(T_cam_world)` etc.). Raise
    `CalibrationError` (from `..calibration`) on malformed input.
 2. Wire it into `load_calibration` in [`../calibration.py`](../calibration.py)

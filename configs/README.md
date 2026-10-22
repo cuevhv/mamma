@@ -4,7 +4,7 @@ Configuration files used by the runner. The full schema reference (preset vs run
 
 Layout:
 
-- `examples/presets/` — shipped pipeline presets (`full.yaml`, `quick.yaml`).
-- `examples/captures/` — shipped capture descriptors (one JSON per capture).
-- `examples/calib/` — shipped calibration files (one YAML per capture).
-- `task_local_template.json` — template for the GUI's local runs.
+- `examples/presets/`: shipped pipeline presets (`full.yaml`, `quick.yaml`).
+- `examples/captures/`: shipped capture descriptors (one JSON per capture).
+- `examples/calib/`: shipped calibration files (one YAML per capture).
+- `task_local_template.json`: template for the GUI's local runs.

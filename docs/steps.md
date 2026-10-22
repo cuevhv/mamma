@@ -31,7 +31,7 @@ ma_cap ──► ma_masks ──► ma_2d ──► ma_3d ──► ma_vis
 `ma_vis` consumes everything upstream and renders the final SMPL-X result
 overlays.
 
-To run a subset, set `enabled: false` on the steps you want to skip — the
+To run a subset, set `enabled: false` on the steps you want to skip, the
 runner drops them and reorders the remaining steps so each one's inputs
 are produced before it runs.
 

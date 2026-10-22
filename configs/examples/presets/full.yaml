@@ -1,6 +1,6 @@
-# full — production preset: ALL frames with visualizations on. ma_masks runs in
-# low-memory mode (lazy frame loading + memory-state pruning) so long sequences
-# stay within memory.
+# full: production preset, ALL frames with visualizations on. ma_masks runs sam2
+# with segmentation/configs/sam2.yaml, whose defaults bound memory on long clips
+# (lazy frame loading and memory-bank offload turn on from 1500 frames).
 global:
   version: 1.0
   description: 'Full sequence with all visualizations on.'
