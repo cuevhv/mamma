@@ -11,13 +11,13 @@ with known identities (the *visible masked area*, not the full projected body).
 
 SCORING. For a ma_masks run's output masks, each predicted id is matched to a GT
 subject per frame by mask IoU (Hungarian). We then report, per camera:
-  * id_switches  — how often a predicted id's matched GT subject changes over time
+  * id_switches : how often a predicted id's matched GT subject changes over time
                    (the metric the temporal-continuity fix targets),
-  * dom_id_frac  — fraction of a predicted id's MATCHED frames spent on its
+  * dom_id_frac : fraction of a predicted id's MATCHED frames spent on its
                    dominant GT id. NOT the MOT-literature IDF1 (it ignores
                    false negatives entirely and reports 1.0 on a total
                    identity collapse); renamed accordingly.
-  * mean_iou     — mean visible-mask IoU of matched pairs.
+  * mean_iou    : mean visible-mask IoU of matched pairs.
 
 REAL-WORLD PROTOCOL. Run ma_masks with several random >=4-camera subsets (and for
 each of: baseline / +continuity / sam3_prompt), then point this script at each run
@@ -26,9 +26,9 @@ the fix works.
 
 Usage:
   python scripts/eval_id_continuity.py \
-      --seq data/mamma_multi/260216_MultiMama_3_accidental_bump_000111_1 \
-      --run output/ma_masks/<run>/mamma_multi/<seq> \
-      --calib configs/examples/calib/260216_MultiMama.yaml \
+      --seq data/<dataset>/<seq> \
+      --run output/ma_masks/<run>/<dataset>/<seq> \
+      --calib configs/examples/calib/<calibration>.yaml \
       --smplx-models data/body_models/smplx_locked_head \
       [--cams IOI_01 IOI_07 ...] [--frame-stride 5] [--max-frames 200]
 
@@ -52,7 +52,7 @@ os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 
 # ---------------------------------------------------------------------------
-# Metric (no heavy deps) — match predicted ids to GT ids per frame, count switches
+# Metric (no heavy deps) - match predicted ids to GT ids per frame, count switches
 # ---------------------------------------------------------------------------
 def _iou(a, b):
     a = a > 0
@@ -84,20 +84,21 @@ def match_frame(gt_masks: dict, pred_masks: dict, min_iou=0.1):
     return out
 
 
-def score_camera(gt_by_frame: dict, pred_by_frame: dict, min_iou=0.1):
+def score_camera(gt_by_frame: dict, pred_by_frame: dict, min_iou=0.1,
+                 records=None):
     """gt_by_frame/pred_by_frame: {frame: {id: mask}}. Returns per-camera metrics.
 
     Besides the original stability metrics (id_switches / dom_id_frac), reports the
     cleanup-quality metrics the mask-gate work is judged by:
-      * id_accuracy — per-frame matches agreeing with the GLOBAL pred->gt
+      * id_accuracy: per-frame matches agreeing with the GLOBAL pred->gt
         mapping (matched-frame-count Hungarian over the whole camera, summed
         IoU as tie-break). Robust to the arbitrary id initialization;
         punishes mid-tracklet swaps.
-      * dup_rate    — fraction of scored frames where two PREDICTED masks
+      * dup_rate   : fraction of scored frames where two PREDICTED masks
         overlap at IoU > 0.5 (two ids on one person).
-      * dup_inst_rate — duplicated pred instances / all pred instances, a
+      * dup_inst_rate: duplicated pred instances / all pred instances, a
         magnitude companion to the per-frame incidence dup_rate.
-      * gt_recall   — matched person-frames / GT-visible person-frames
+      * gt_recall  : matched person-frames / GT-visible person-frames
         (coverage: how much of what is genuinely visible got a mask).
     """
     from scipy.optimize import linear_sum_assignment
@@ -118,6 +119,17 @@ def score_camera(gt_by_frame: dict, pred_by_frame: dict, min_iou=0.1):
     for f in frames:
         gt_person_frames += len(gt_by_frame[f])
         m = match_frame(gt_by_frame[f], pred_by_frame[f], min_iou)
+        if records is not None:
+            records.append({
+                "frame": int(f),
+                "gt_ids": [int(g) for g in gt_by_frame[f]],
+                # A blank PNG is an absent observation, not a predicted
+                # instance. Keep historical per-camera metrics unchanged.
+                "pred_ids": [int(p) for p, mask in pred_by_frame[f].items()
+                             if np.any(mask)],
+                "matches": [[int(p), int(g), float(iou)]
+                            for p, (g, iou) in m.items()],
+            })
         matched_person_frames += len(m)
         for pid, (gid, iou) in m.items():
             per_pid_seq.setdefault(pid, []).append((f, gid))
@@ -176,22 +188,93 @@ def score_camera(gt_by_frame: dict, pred_by_frame: dict, min_iou=0.1):
     }
 
 
+def score_sequence_records(records_by_camera):
+    """Score identities with ONE pred->GT permutation for the entire rig.
+
+    The historical per-camera ``id_accuracy`` deliberately remains unchanged.
+    This companion catches a camera-wide permutation and counts missing masks
+    in identity recall. Records come from ``score_camera(..., records=[])``;
+    no masks or model dependencies are needed to rescore exported evidence.
+    IDs in records and in the returned mapping are zero-based.
+    """
+    from collections import defaultdict
+    from scipy.optimize import linear_sum_assignment
+
+    counts, iou_sums = defaultdict(int), defaultdict(float)
+    for records in records_by_camera.values():
+        for record in records:
+            for pid, gid, iou in record["matches"]:
+                counts[pid, gid] += 1
+                iou_sums[pid, gid] += iou
+    pids = sorted({p for p, _ in counts})
+    gids = sorted({g for _, g in counts})
+    mapping = {}
+    if pids and gids:
+        # The TOTAL IoU contribution of any assignment is strictly below one
+        # count, so the tie-break cannot trade away a matched observation.
+        tie = 1.0 / (1.0 + sum(iou_sums.values()))
+        weights = np.array([[counts[p, g] + tie * iou_sums[p, g]
+                             for g in gids] for p in pids])
+        ri, ci = linear_sum_assignment(-weights)
+        mapping = {pids[i]: gids[j] for i, j in zip(ri, ci)
+                   if counts[pids[i], gids[j]] > 0}
+
+    def metrics(records):
+        matched = correct = visible = predicted = 0
+        for record in records:
+            visible += len(record["gt_ids"])
+            predicted += len(record["pred_ids"])
+            for pid, gid, _ in record["matches"]:
+                matched += 1
+                correct += int(mapping.get(pid) == gid)
+        return {
+            "id_accuracy": correct / matched if matched else 0.0,
+            "id_recall": correct / visible if visible else 0.0,
+            "id_precision": correct / predicted if predicted else 0.0,
+            "gt_recall": matched / visible if visible else 0.0,
+            "correct_instances": correct, "matched_instances": matched,
+            "gt_instances": visible, "pred_instances": predicted,
+        }
+
+    all_records = [r for records in records_by_camera.values() for r in records]
+    return {"mapping": mapping, "overall": metrics(all_records),
+            "cameras": {c: metrics(rs) for c, rs in records_by_camera.items()}}
+
+
 # ---------------------------------------------------------------------------
 # Predicted masks (ma_masks PNGs)
 # ---------------------------------------------------------------------------
 def load_pred_masks(run_seq_dir, cam, frames):
+    """Predicted masks per frame from the packed ``masks.zip`` (ma_masks default)
+    or, without one, the legacy loose ``mask_FFFF_PP.png`` files."""
     import cv2
+    import zipfile
     mdir = os.path.join(run_seq_dir, cam, "masks")
+    archive = os.path.join(mdir, "masks.zip")
+    zf = zipfile.ZipFile(archive) if os.path.isfile(archive) else None
+    names = zf.namelist() if zf is not None else [
+        os.path.basename(p) for p in glob.glob(os.path.join(mdir, "mask_*.png"))]
+    by_frame = {}
+    for n in names:
+        parts = n[:-4].split("_") if n.startswith("mask_") and n.endswith(".png") else []
+        if len(parts) == 3:
+            by_frame.setdefault(int(parts[1]), []).append((int(parts[2]) - 1, n))
     out = {}
     for f in frames:
         d = {}
-        for p in glob.glob(os.path.join(mdir, f"mask_{f:04d}_*.png")):
-            pid = int(os.path.basename(p).split("_")[2].split(".")[0]) - 1
-            m = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+        for pid, n in by_frame.get(f, []):
+            if zf is not None:
+                m = cv2.imdecode(np.frombuffer(zf.read(n), np.uint8), cv2.IMREAD_GRAYSCALE)
+            else:
+                m = cv2.imread(os.path.join(mdir, n), cv2.IMREAD_GRAYSCALE)
             if m is not None:
                 d[pid] = m > 127
         if d:
             out[f] = d
+    if zf is not None:
+        zf.close()
+    if not out:
+        print(f"  [warn] {cam}: no predicted masks found under {mdir}")
     return out
 
 
@@ -225,7 +308,7 @@ def load_subjects(seq_dir, smplx_models_dir, device="cuda"):
 
 
 def gt_visible_masks_for_camera(verts_world, faces, cam, frames, depth_eps=0.005,
-                                min_area_frac=0.0002):
+                                min_area_frac=0.0002, visibility_out=None):
     """{frame: {subject_id: visible_mask}} for one camera, occlusion-resolved.
 
     ``depth_eps`` is the z-buffer visibility tolerance in meters; large values
@@ -233,6 +316,11 @@ def gt_visible_masks_for_camera(verts_world, faces, cam, frames, depth_eps=0.005
     Subjects whose visible area is below ``min_area_frac`` of the image are
     dropped: a sliver a few pixels wide can never reach min_iou against any
     real prediction, so admitting it builds an unreachable recall deficit.
+
+    Optional visibility_out records visible/solo projected areas for an
+    occlusion audit, including below-threshold subjects. It does not change
+    masks or scoring. The denominator is the on-image solo silhouette, not
+    the full body area outside the image.
     """
     from utils.utils_camera import w2c
     from scene_debug.renderer import Renderer
@@ -246,6 +334,8 @@ def gt_visible_masks_for_camera(verts_world, faces, cam, frames, depth_eps=0.005
     min_area = max(1, int(round(min_area_frac * W * H)))
     out = {}
     for f in frames:
+        if visibility_out is not None:
+            visibility_out[f] = {}
         vc = [w2c(verts_world[s][f], T) for s in range(S)]   # OpenCV camera-frame verts
         in_front = [v for v in vc if (v[:, 2] > 0).any()]    # skip subjects fully behind
         if not in_front:
@@ -257,6 +347,13 @@ def gt_visible_masks_for_camera(verts_world, faces, cam, frames, depth_eps=0.005
                 continue
             _, depth_s = rnd.render_front_view([vc[s]], return_depth=True)
             vis = (depth_s > 0) & (np.abs(depth_s - depth_all) < depth_eps)
+            if visibility_out is not None:
+                visible_area, solo_area = int(vis.sum()), int((depth_s > 0).sum())
+                visibility_out[f][s] = {
+                    "visible_area": visible_area, "solo_area": solo_area,
+                    "visible_fraction": visible_area / solo_area if solo_area else None,
+                    "eligible": visible_area >= min_area,
+                }
             if vis.sum() >= min_area:
                 masks[s] = vis
         if masks:
@@ -269,7 +366,7 @@ def gt_visible_masks_for_camera(verts_world, faces, cam, frames, depth_eps=0.005
 # ---------------------------------------------------------------------------
 def evaluate(seq_dir, run_seq_dir, calib_path, smplx_models_dir, cams=None,
              frame_stride=5, max_frames=None, depth_eps=0.005, min_iou=0.1,
-             json_out=None):
+             json_out=None, sequence_json_out=None, evidence_out=None):
     from capture.calibration import load_calibration
     calib = load_calibration(calib_path)
     verts, faces = load_subjects(seq_dir, smplx_models_dir)
@@ -281,12 +378,14 @@ def evaluate(seq_dir, run_seq_dir, calib_path, smplx_models_dir, cams=None,
         cams = sorted(c for c in calib.cameras
                       if os.path.isdir(os.path.join(run_seq_dir, c, "masks")))
     results = {}
+    records_by_camera = {}
     for cam in cams:
         if cam not in calib.cameras:
             print(f"  [skip] {cam}: not in calibration"); continue
         gt = gt_visible_masks_for_camera(verts, faces, calib.cameras[cam], frames, depth_eps)
         pred = load_pred_masks(run_seq_dir, cam, frames)
-        results[cam] = score_camera(gt, pred, min_iou)
+        records_by_camera[cam] = []
+        results[cam] = score_camera(gt, pred, min_iou, records=records_by_camera[cam])
         r = results[cam]
         print(f"  {cam}: id_acc={r['id_accuracy']:.3f}  dup={r['dup_rate']:.3f}  "
               f"recall={r['gt_recall']:.3f}  meanIoU={r['mean_iou']:.3f}  "
@@ -294,6 +393,16 @@ def evaluate(seq_dir, run_seq_dir, calib_path, smplx_models_dir, cams=None,
     tot = sum(r["id_switches"] for r in results.values())
     miou = np.mean([r["mean_iou"] for r in results.values()]) if results else 0.0
     print(f"TOTAL id_switches={tot}  mean IoU={miou:.3f}  over {len(results)} cameras")
+    shared = score_sequence_records(records_by_camera)
+    print(f"SHARED mapping={shared['mapping']}  "
+          f"id_acc={shared['overall']['id_accuracy']:.6f}  "
+          f"id_recall={shared['overall']['id_recall']:.6f}")
+    for path, payload in ((sequence_json_out, shared),
+                          (evidence_out, records_by_camera)):
+        if path:
+            import json
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=1)
     if json_out:
         import json
         with open(json_out, "w") as f:
@@ -346,6 +455,10 @@ def main():
     ap.add_argument("--depth-eps", type=float, default=0.005)
     ap.add_argument("--json-out", default=None,
                     help="Write the per-camera metrics dict as JSON here")
+    ap.add_argument("--sequence-json-out", default=None,
+                    help="Write identity metrics using one mapping across ALL cameras")
+    ap.add_argument("--evidence-out", default=None,
+                    help="Write per-frame IoU matches and visible/predicted IDs for auditing")
     args = ap.parse_args()
     if args.self_test:
         _self_test(); return
@@ -353,7 +466,8 @@ def main():
         ap.error("--seq, --run and --calib are required (or use --self-test)")
     evaluate(args.seq, args.run, args.calib, args.smplx_models, cams=args.cams,
              frame_stride=args.frame_stride, max_frames=args.max_frames,
-             depth_eps=args.depth_eps, json_out=args.json_out)
+             depth_eps=args.depth_eps, json_out=args.json_out,
+             sequence_json_out=args.sequence_json_out, evidence_out=args.evidence_out)
 
 
 if __name__ == "__main__":

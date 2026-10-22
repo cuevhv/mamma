@@ -69,3 +69,8 @@ gui/backend/__pycache__/
 
 # Experimental, throwaway scripts (not part of the pipeline).
 experimental_scripts/
+
+# Ad-hoc run logs, profiler dumps and scratch dirs at the repo root.
+/*.out
+/*.prof
+/scratch_*/

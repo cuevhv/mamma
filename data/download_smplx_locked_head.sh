@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Download the SMPL-X locked-head body model used by ma_3d.
-# Requires registration at https://smpl-x.is.tue.mpg.de/ — this is the
+# Requires registration at https://smpl-x.is.tue.mpg.de/, the
 # SMPL-X account (separate from the MAMMA account that the dataset
 # scripts use).
 #
@@ -121,7 +121,7 @@ mkdir -p "$(dirname "$ZIP_PATH")"
 if ! wget --post-data "username=$username&password=$password" \
           "${BASE_URL}&sfile=${REMOTE_SFILE}" \
           -O "$ZIP_PATH" \
-          --no-check-certificate --continue --quiet --show-progress 2>&1; then
+          --continue --no-verbose --show-progress 2>&1; then
     rm -f "$ZIP_PATH"
     echo "  [FAIL] ${REMOTE_SFILE} (network / auth)"
     exit 1
@@ -129,7 +129,7 @@ fi
 
 if ! is_valid_download "$ZIP_PATH"; then
     rm -f "$ZIP_PATH"
-    echo "  [FAIL] ${REMOTE_SFILE} (server returned an error page — check credentials and SMPL-X license acceptance)"
+    echo "  [FAIL] ${REMOTE_SFILE} (server returned an error page; check credentials and SMPL-X license acceptance)"
     exit 1
 fi
 

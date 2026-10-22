@@ -45,7 +45,7 @@ From: nvidia/cuda:12.6.2-cudnn-runtime-ubuntu22.04
     micromamba run -n "${SAM_ENV_NAME}" \
         python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-    # 4. Install project dependencies (SAM2, YOLO, CLIP, etc.)
+    # 4. Install project dependencies (SAM2, D-FINE, CLIP, etc.)
     if [ -f /opt/masks/requirements.txt ]; then
         micromamba run -n "${SAM_ENV_NAME}" \
             python -m pip install -r /opt/masks/requirements.txt

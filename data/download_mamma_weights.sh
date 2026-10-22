@@ -154,7 +154,7 @@ download () {
     if wget --post-data "username=$username&password=$password" \
             "${BASE_URL}&sfile=${remote_sfile}" \
             -O "$outpath" \
-            --no-check-certificate --continue --quiet --show-progress 2>&1; then
+            --continue --no-verbose --show-progress 2>&1; then
         if mamma_is_valid_download "$outpath"; then
             echo "  [ok] ${local_relpath}"
             return 0

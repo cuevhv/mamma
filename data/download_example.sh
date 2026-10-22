@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
 # Download the MAMMA demo sequence (pushing_and_lifting_from_ground) from
-# the public MPI-IS server. No login required — the assets live under
+# the public MPI-IS server. No login required: the assets live under
 # /mamma/assets/download/ on download.is.tue.mpg.de and are served as
 # plain HTTPS GET. After this finishes you can run the example pipeline:
 #
-#     bash gui/scripts/dev.sh        # GUI route — pick mamma_example in the wizard
+#     bash gui/scripts/dev.sh        # GUI route, pick mamma_example in the wizard
 #   OR
 #     python -m inference --task configs/examples/presets/quick.yaml \
 #         --capture configs/examples/captures/mamma_example.json
@@ -143,9 +143,7 @@ for cam in "${CAMERAS[@]}"; do
     fi
 
     # --continue lets a partially-downloaded file resume across retries.
-    # --no-check-certificate keeps it working on hosts with outdated CA
-    # bundles (the iPhone reference script uses the same flag).
-    if wget --continue --no-check-certificate --quiet --show-progress \
+    if wget --continue --no-verbose --show-progress \
             -O "$target" "$url"; then
         if is_valid_download "$target"; then
             echo "  [ok]   ${cam}.mp4 ($(stat -c%s "$target") bytes)"
@@ -155,7 +153,7 @@ for cam in "${CAMERAS[@]}"; do
     fi
 
     rm -f "$target"
-    echo "  [FAIL] ${cam}.mp4 — see ${url}"
+    echo "  [FAIL] ${cam}.mp4 (see ${url})"
     fail=$((fail+1))
 done
 

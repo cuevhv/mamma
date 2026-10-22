@@ -285,7 +285,6 @@ _MAMMA_ENV_KEYS = (
     "MAMMA_DOWNSAMPLED_VERTS_PKL",
     "MAMMA_MA2D_CHECKPOINT",
     "MAMMA_SAM2_CHECKPOINT",
-    "MAMMA_YOLO_CHECKPOINT",
     "MAMMA_BUN_MODELS",
     "MAMMA_PART_MESH_PATH",
 )
@@ -339,7 +338,6 @@ def _c_defaults_shape():
         "MAMMA_SMPLX_LOCKHEAD_MODELS",
         "MAMMA_DOWNSAMPLED_VERTS_PKL",
         "MAMMA_MA2D_CHECKPOINT",
-        "MAMMA_YOLO_CHECKPOINT",
         "MAMMA_SAM2_CHECKPOINT",
     }
     missing = required - set(DEFAULTS)
@@ -554,7 +552,9 @@ def _c_no_env_reads_optimization():
     opt = _REPO_ROOT / "optimization"
     if not opt.exists():
         raise _Skip("optimization/ not present")
-    hits = _scan_env_reads(opt, skip_files={"paths_config.py"})
+    # export_blender.py is the optional Blender export tool, off the pipeline path;
+    # its MAMMA_BLENDER_BIN fallback is documented user-facing configuration.
+    hits = _scan_env_reads(opt, skip_files={"paths_config.py", "export_blender.py"})
     assert not hits, "Bare MAMMA_* env reads remain:\n  " + "\n  ".join(hits)
 
 
@@ -568,8 +568,9 @@ def _c_no_env_reads_segmentation():
     assert not hits, "Bare MAMMA_* env reads remain:\n  " + "\n  ".join(hits)
 
 
-@check("ma_masks builder: --yolo-checkpoint always injected; --sam_checkpoint is version-aware",
-       description="Five cases. (A) fixture default (sam2): inject "
+@check("ma_masks builder: no detector flag injected; --sam_checkpoint is version-aware",
+       description="Five cases. (A) fixture default (sam2): no detector flag (the "
+                   "default detector self-resolves through the HF cache); inject "
                    "--sam_checkpoint <MAMMA_SAM2_CHECKPOINT default, anchored>. "
                    "(B) override to sam3_prompt: no --sam_checkpoint (SAM 3 "
                    "self-resolves through HF cache). (C) sam2 + env override: "
@@ -601,7 +602,9 @@ def _c_ma_masks_argv_has_paths():
     # (A) Fixture defaults — quick.yaml uses --sam_version sam2. Runner
     # injects --sam_checkpoint from MAMMA_SAM2_CHECKPOINT (anchored).
     argv = _build_argv()
-    assert "--yolo-checkpoint" in argv, f"(A) missing --yolo-checkpoint: {argv}"
+    assert not {"--yolo-checkpoint", "--detector-checkpoint"} & set(argv), (
+        f"(A) runner must not inject a detector checkpoint: {argv}"
+    )
     assert "--sam_checkpoint" in argv, (
         f"(A) sam2 fixture should trigger runner --sam_checkpoint injection: {argv}"
     )
@@ -648,25 +651,17 @@ def _c_ma_masks_argv_has_paths():
     assert sam_count == 1, f"(E) expected exactly 1 --sam_checkpoint, got {sam_count}: {argv}"
 
 
-@check("ma_masks builder raises actionable error when required path missing",
-       description="Without MAMMA_YOLO_CHECKPOINT, the builder must raise a clear error. "
-                   "MAMMA_SAM_CHECKPOINT is optional (segmentation has a per-version "
-                   "default), so its absence alone must NOT raise.")
-def _c_ma_masks_actionable_error():
+@check("ma_masks builder needs no installation path",
+       description="With every MAMMA_* unset the builder still builds: the person "
+                   "detector self-resolves through the HF cache and the SAM "
+                   "checkpoint has a per-version default.")
+def _c_ma_masks_no_required_paths():
     from inference.steps.ma_masks import MaMasksBuilder
     cfg = _load_fixture()
     with _clean_mamma_env():
         # No bootstrap_env: every MAMMA_* unset.
         b = MaMasksBuilder(cfg["ma_masks"], cfg["global"], "local")
-        try:
-            b.python_argv(_FIXTURE_SEQ)
-        except RuntimeError as e:
-            msg = str(e)
-            assert "MAMMA_YOLO_CHECKPOINT" in msg, (
-                f"error message missing MAMMA_YOLO_CHECKPOINT: {msg!r}"
-            )
-        else:
-            raise AssertionError("expected RuntimeError, none raised")
+        b.python_argv(_FIXTURE_SEQ)
 
 
 @check("builders emit --undistort when global.undistort is set",

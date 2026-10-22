@@ -33,7 +33,7 @@ RUN micromamba create -y -n "${SAM_ENV_NAME}" -c conda-forge python=3.12 pip && 
 RUN micromamba run -n "${SAM_ENV_NAME}" \
     python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-# 4. Install project dependencies (SAM2, YOLO, CLIP, etc.)
+# 4. Install project dependencies (SAM2, D-FINE, CLIP, etc.)
 COPY requirements.txt /opt/masks/requirements.txt
 RUN micromamba run -n "${SAM_ENV_NAME}" \
     python -m pip install -r /opt/masks/requirements.txt

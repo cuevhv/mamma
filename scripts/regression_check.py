@@ -1,17 +1,16 @@
 #!/usr/bin/env python
 """MAMMA output regression harness.
 
-Guards the optimization program (see ``docs/optimization-roadmap.md``)
-against silent quality regressions. The repository has no ground-truth
-SMPL-X for its in-the-wild example, so "correct" is defined as
+Guards performance work against silent quality regressions. The repository
+has no ground-truth SMPL-X for its in-the-wild example, so "correct" is defined as
 *self-consistency vs. the current ``main`` branch*: we snapshot the
 pipeline's numeric outputs as a golden reference, then gate every later
 change on the drift away from that golden plus a timing budget.
 
 What is compared (per camera / per body, matched by path):
 
-* ``ma_2d`` ``<cam>.npz`` — predicted 2D ``landmarks`` (pixel drift).
-* ``ma_3d`` ``verts_joints_body_id-NN.npz`` — ``pred_vertices`` (PVE)
+* ``ma_2d`` ``<cam>.npz``: predicted 2D ``landmarks`` (pixel drift).
+* ``ma_3d`` ``verts_joints_body_id-NN.npz``: ``pred_vertices`` (PVE)
   and ``pred_joints`` (MPJPE), reported in millimetres.
 
 Per-step wall-clock comes from the runner's ``--status-jsonl`` stream
@@ -125,7 +124,7 @@ def _preflight(cfg: Path, capture: Path) -> None:
 def _run_pipeline(cfg: Path, capture: Path, out_dir: Path, out_tag: str) -> Report:
     """Run the full DAG into ``out_dir``/``out_tag`` and collect timing."""
     # Steps self-skip when their output .npz already exists, and the runner's
-    # --force only clears DONE sentinels — so without a clean slate a check
+    # --force only clears DONE sentinels - so without a clean slate a check
     # silently reuses stale outputs and reports zero drift. Wipe the tree to
     # guarantee every step recomputes from scratch.
     if out_dir.exists():
@@ -138,7 +137,7 @@ def _run_pipeline(cfg: Path, capture: Path, out_dir: Path, out_tag: str) -> Repo
         "--capture", str(capture),
         "--out-dir", str(out_dir),
         "--out-tag", out_tag,
-        "--force",  # never skip via DONE sentinels — we need fresh numbers
+        "--force",  # never skip via DONE sentinels - we need fresh numbers
         "--status-jsonl", str(status_path),
         "-v",
     ]
@@ -163,6 +162,8 @@ def _parse_timing(status_path: Path) -> Dict[str, float]:
         if not line:
             continue
         rec = json.loads(line)
+        if "status" not in rec:
+            continue  # e.g. ``event: counts`` records
         key = (rec["step"], rec["seq"])
         if rec["status"] == "Running":
             starts[key] = rec["ts"]
@@ -212,10 +213,13 @@ def _euclidean_drift(a: np.ndarray, b: np.ndarray, unit: str) -> Optional[Tuple[
     if finite.size == 0:
         return (float("nan"), float("nan"), float("nan"))
     scale = 1000.0 if unit == "mm" else 1.0
+    worst = float(finite.max() * scale)
+    if not np.array_equal(np.isfinite(a), np.isfinite(b)):
+        worst = float("inf")  # NaN/inf on only one side is a regression, not a skip
     return (
         float(finite.mean() * scale),
         float(np.percentile(finite, 99) * scale),
-        float(finite.max() * scale),
+        worst,
     )
 
 
@@ -285,7 +289,7 @@ def _print_drifts(drifts: List[Drift], tol: Dict[str, float]) -> bool:
     for d in sorted(drifts, key=lambda x: (x.relpath, x.key)):
         if d.note:
             ok = False
-            print(f"  {'FAIL':>6}  {d.key:<7} {'—':>10} {'—':>10} {'—':>10}  "
+            print(f"  {'FAIL':>6}  {d.key:<7} {'-':>10} {'-':>10} {'-':>10}  "
                   f"{d.relpath}  [{d.note}]")
             continue
         limit = tol["px"] if d.unit == "px" else tol[d.key]
@@ -317,7 +321,7 @@ def _print_timing(candidate: Report, golden_timing: Dict[str, float],
     else:
         print(f"    {'total':<10} {candidate.total_s:>8.2f}s   (no golden timing)")
     print("    note: wall-clock is cache-sensitive (cold vs. warm OS/GPU caches);"
-          " a coarse guard — the drift check is the real gate.")
+          " a coarse guard - the drift check is the real gate.")
     return ok
 
 
@@ -341,8 +345,8 @@ def _parse_args(argv: Optional[List[str]]) -> argparse.Namespace:
     p.add_argument("--out-tag", default=_DEFAULT_OUT_TAG)
     p.add_argument("--skip-run", action="store_true",
                    help="Compare existing outputs in --out-dir without re-running the pipeline.")
-    # Tolerances. Defaults are intentionally tight; tune per the noise floor
-    # measured by a main-vs-main run (see docs/optimization-roadmap.md).
+    # Tolerances. Defaults are intentionally tight; tune them to the
+    # run-to-run noise floor (two runs of the same commit).
     p.add_argument("--pred_vertices-tol-mm", dest="tol_pve", type=float, default=1.0,
                    help="Max allowed per-vertex drift (PVE), millimetres.")
     p.add_argument("--pred_joints-tol-mm", dest="tol_mpjpe", type=float, default=1.0,
@@ -385,9 +389,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     print()
     if quality_ok and timing_ok:
-        print("PASS — outputs within tolerance, timing not regressed.")
+        print("PASS: outputs within tolerance, timing not regressed.")
         return 0
-    print("FAIL — see flagged rows above.")
+    print("FAIL: see flagged rows above.")
     return 1
 
 

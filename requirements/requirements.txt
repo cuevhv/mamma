@@ -31,7 +31,7 @@ transforms3d>=0.4.1,<0.5
 pyyaml>=6.0
 pycocotools
 iopath>=0.1.10
-ultralytics
+transformers>=4.52,<5.19  # D-FINE person detector (Apache-2.0); 5.19+ needs torch>=2.6
 open_clip_torch
 setuptools
 scikit-image
@@ -45,7 +45,6 @@ git+https://github.com/facebookresearch/sam3
 # is used by inference.env.bootstrap_env to load .env.local. pyyaml is
 # already listed above.
 flask
-flask-cors
 python-dotenv>=1.0
 # Production WSGI server used by gui/scripts/prod.sh. Pure-Python,
 # cross-platform, ~50 KB. Multi-threaded by default so a streaming

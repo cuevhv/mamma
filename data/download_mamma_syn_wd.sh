@@ -3,7 +3,7 @@
 # Download MAMMA synthetic training webdatasets from the MPI server.
 # Requires registration at https://mamma.is.tue.mpg.de/
 #
-# ALTERNATIVE source. The default (faster) way is Hugging Face — see
+# ALTERNATIVE source. The default (faster) way is Hugging Face; see
 # download_mamma_syn_hf.sh. Use this script if you prefer a MAMMA account.
 #
 # Usage:
@@ -184,7 +184,7 @@ download () {
     if wget --post-data "username=$username&password=$password" \
             "${BASE_URL}&sfile=${remote_sfile}" \
             -O "$outpath" \
-            --no-check-certificate --continue --quiet --show-progress 2>&1; then
+            --continue --no-verbose --show-progress 2>&1; then
         if mamma_is_valid_download "$outpath"; then
             echo "  [ok] ${sfile}"
             return 0

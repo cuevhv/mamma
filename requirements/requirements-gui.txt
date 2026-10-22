@@ -4,7 +4,7 @@
 # submitting local AND cluster runs, the status matrix, results browsing,
 # calibration preview, thumbnails, the SMPL-X mesh preview, the Exporter,
 # and MammaSyn downloads. What it leaves out is the machinery the pipeline
-# STEPS need (sam2/sam3, ultralytics, open3d, pyrender, detectron2, CUDA
+# STEPS need (sam2/sam3, transformers, open3d, pyrender, detectron2, CUDA
 # torch), because the GUI never imports those: it shells out.
 #
 #     python -m venv .venv-gui && . .venv-gui/bin/activate
@@ -38,7 +38,6 @@
 # requirements/requirements.txt, which is where the full install gets
 # the same packages.
 flask
-flask-cors
 python-dotenv>=1.0
 pyyaml>=6.0
 # Creating a capture and the calibration status line import `capture`, whose

@@ -3,7 +3,8 @@ loguru
 sam2
 einops
 pycocotools
-ultralytics
+transformers>=4.52,<5.19  # D-FINE person detector (Apache-2.0); 5.19+ needs torch>=2.6
+opencv-python-headless
 open_clip_torch
 scikit-learn
 seaborn

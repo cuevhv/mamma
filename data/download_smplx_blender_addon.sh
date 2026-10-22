@@ -6,11 +6,11 @@
 #
 # Same download.php wire format as download_smplx_locked_head.sh (domain=smplx).
 # The zip is SELF-CONTAINED: add-on code + smplx_model_lh_*.blend + hand poses +
-# regressors. We do NOT install it into Blender — the exporter imports it as a
+# regressors. We do NOT install it into Blender: the exporter imports it as a
 # library and calls its operators (object.smplx_export_fbx / _alembic).
 #
 # If the zip is already in data/ (e.g. you downloaded it manually), this just
-# extracts it — no credentials needed.
+# extracts it (no credentials needed).
 #
 # Usage:
 #   bash data/download_smplx_blender_addon.sh
@@ -93,12 +93,12 @@ else
     echo "Download:   ${REMOTE_SFILE} (domain=smplx)"
     if ! wget --post-data "username=$username&password=$password" \
               "${BASE_URL}&sfile=${REMOTE_SFILE}" -O "$ZIP_PATH" \
-              --no-check-certificate --continue --quiet --show-progress 2>&1; then
+              --continue --no-verbose --show-progress 2>&1; then
         rm -f "$ZIP_PATH"; echo "  [FAIL] ${REMOTE_SFILE} (network / auth)" >&2; exit 1
     fi
     if ! is_valid_download "$ZIP_PATH"; then
         rm -f "$ZIP_PATH"
-        echo "  [FAIL] server returned an error page — check credentials and SMPL-X license acceptance" >&2
+        echo "  [FAIL] server returned an error page; check credentials and SMPL-X license acceptance" >&2
         exit 1
     fi
 fi

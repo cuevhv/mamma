@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 """Measure wall-time, peak GPU memory, and peak CPU RSS of a subprocess.
 
-A small, reusable harness for quantifying optimization PRs (see
-``docs/optimization-roadmap.md``). It runs an arbitrary command (typically a
-single pipeline step), samples peak GPU memory (per-process, via
-``nvidia-smi``) and peak CPU RSS (the process tree, via ``psutil``), and times
-the whole run. Each invocation appends one JSON line to
+A small, reusable harness for quantifying performance changes. It runs an
+arbitrary command (typically a single pipeline step), samples peak GPU memory
+(per-process, via ``nvidia-smi``) and peak CPU RSS (the process tree, via
+``psutil``), and times the whole run. Each invocation appends one JSON line to
 ``docs/benchmarks/results.jsonl`` and regenerates ``docs/benchmarks/README.md``
-so improvements are tracked over time and comparable across commits.
+(both created on first run) so improvements are tracked over time and
+comparable across commits.
 
 Usage::
 
@@ -92,20 +92,20 @@ class _Sampler(threading.Thread):
         self.peak_gpu_mb = 0
         self.peak_rss_mb = 0.0
         self._gpu_seen = False
-        self._stop = False
+        self._stop_event = threading.Event()
 
     def run(self) -> None:
-        while not self._stop and self.proc.poll() is None:
+        while not self._stop_event.is_set() and self.proc.poll() is None:
             pids = _tree_pids(self.proc)
             g = _gpu_mb(pids)
             if g is not None:
                 self._gpu_seen = True
                 self.peak_gpu_mb = max(self.peak_gpu_mb, g)
             self.peak_rss_mb = max(self.peak_rss_mb, _rss_mb(pids))
-            time.sleep(self.interval)
+            self._stop_event.wait(self.interval)
 
     def stop(self) -> None:
-        self._stop = True
+        self._stop_event.set()
 
 
 def _render_table() -> None:

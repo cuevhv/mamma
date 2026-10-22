@@ -2,14 +2,14 @@
 #
 # Download the VPoser v2.05 variational human pose prior used *optionally*
 # by ma_3d during SMPL-X fitting (the vposer_recon_loss manifold prior).
-# Requires registration at https://smpl-x.is.tue.mpg.de/ — this is the
+# Requires registration at https://smpl-x.is.tue.mpg.de/, the
 # SMPL-X account (the same gate as download_smplx_locked_head.sh, separate
 # from the MAMMA account that the dataset scripts use).
 #
 # Same download.php wire format as the other SMPL-X/MAMMA scripts, with
 # domain "smplx"; the file is a zip extracted in place after download.
 #
-# This asset is OPTIONAL — only configs that enable vposer_recon_loss need
+# This asset is OPTIONAL: only configs that enable vposer_recon_loss need
 # it (see optimization/.../config_*_occlusion_vposer.yaml). The default
 # pipeline runs without it.
 #
@@ -63,7 +63,7 @@ REMOTE_SFILE="V02_05.zip"
 BASE_URL="https://download.is.tue.mpg.de/download.php?domain=smplx&resume=1"
 
 # The zip wraps the model in a top-level V02_05/ directory, so we extract
-# into the vposer/ parent and the model lands at vposer/V02_05/ — exactly
+# into the vposer/ parent and the model lands at vposer/V02_05/, exactly
 # the path optimization/losses/losses.py loads by default.
 VPOSER_DIR="${OUTPUT_DIR}/body_models/vposer"
 EXPECTED_DIR="${VPOSER_DIR}/V02_05"
@@ -132,7 +132,7 @@ mkdir -p "$(dirname "$ZIP_PATH")"
 if ! wget --post-data "username=$username&password=$password" \
           "${BASE_URL}&sfile=${REMOTE_SFILE}" \
           -O "$ZIP_PATH" \
-          --no-check-certificate --continue --quiet --show-progress 2>&1; then
+          --continue --no-verbose --show-progress 2>&1; then
     rm -f "$ZIP_PATH"
     echo "  [FAIL] ${REMOTE_SFILE} (network / auth)"
     exit 1
@@ -140,7 +140,7 @@ fi
 
 if ! is_valid_download "$ZIP_PATH"; then
     rm -f "$ZIP_PATH"
-    echo "  [FAIL] ${REMOTE_SFILE} (server returned an error page — check credentials and SMPL-X license acceptance)"
+    echo "  [FAIL] ${REMOTE_SFILE} (server returned an error page; check credentials and SMPL-X license acceptance)"
     exit 1
 fi
 

@@ -16,7 +16,7 @@ set -euo pipefail
 
 # Anchor OUTPUT_DIR to the script's directory (the repo's data/ folder)
 # rather than the caller's cwd, so files always land where the
-# configs/examples/captures/*.json files expect them — regardless of
+# configs/examples/captures/*.json files expect them, regardless of
 # where the user invokes the script from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_DIR="$SCRIPT_DIR"
@@ -237,7 +237,7 @@ download () {
     if wget --post-data "username=$username&password=$password" \
             "${BASE_URL}&sfile=${remote_sfile}" \
             -O "$outpath" \
-            --no-check-certificate --continue --quiet --show-progress 2>&1; then
+            --continue --no-verbose --show-progress 2>&1; then
         if mamma_is_valid_download "$outpath"; then
             echo "  [ok] ${sfile}"
             return 0
