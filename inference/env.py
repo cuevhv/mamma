@@ -25,6 +25,7 @@ them into explicit ``--flag`` arguments at the boundary.
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -97,6 +98,12 @@ def bootstrap_env() -> None:
         if p.is_absolute():
             continue
         os.environ[key] = str((_REPO_ROOT / p).resolve())
+
+    # 4. v1.0.x set the YOLO weights here; the runner no longer passes them.
+    if os.environ.get("MAMMA_YOLO_CHECKPOINT"):
+        warnings.warn("MAMMA_YOLO_CHECKPOINT is ignored: ma_masks detects people with D-FINE-X. "
+                      "To use YOLO, add --detector yolo --detector-checkpoint <file>.pt to the "
+                      "ma_masks flags.", stacklevel=2)
 
 
 def _looks_like_hf_model_id(value: str) -> bool:

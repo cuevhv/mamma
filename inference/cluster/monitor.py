@@ -76,8 +76,7 @@ class ClusterMonitor:
         # DAGMan's .dag.lock on the shared FS: exists exactly while DAGMan
         # runs, removed on any clean exit. The authoritative liveness
         # cross-check against schedds whose condor_q serves a CACHE that can
-        # come back empty under load (task 139: two empty probes while 94
-        # cells were mid-flight).
+        # come back empty under load while cells are still running.
         self.dag_lock = dag_lock or ""
         self._lock_override_streak = 0
         # finished() debouncing: right after submit the job may not be
@@ -155,6 +154,10 @@ class ClusterMonitor:
         self.sink.update(step, seq, status, pid=r.get("pid"))
         if status in _TERMINAL:
             self._terminal.add((step, seq))
+        else:
+            # A DAGMan retry, or the next fan-out cell of this (step, seq),
+            # reopens it for the queue view and finalize_missing.
+            self._terminal.discard((step, seq))
 
     def _tick_scheduler(self) -> None:
         """The scheduler's queue view fills in-flight scheduling state for
@@ -194,10 +197,9 @@ class ClusterMonitor:
 
     # Consecutive "gone" probes needed before declaring the run finished.
     # After the job was seen alive, 2 (one blip forgiven). Never seen alive:
-    # 6 (grace for submit-to-queue visibility latency; task 127 post-mortem:
-    # the DAG was not yet in condor_q one second after condor_submit_dag_bid
-    # returned, the old single-probe check exited, and the run went
-    # untracked while it kept executing on the cluster).
+    # 6 (grace for submit-to-queue visibility latency: the DAG may not be in
+    # condor_q yet right after condor_submit_dag_bid returns, and a single
+    # probe would stop tracking a run that keeps executing on the cluster).
     GONE_STREAK_SEEN = 2
     GONE_STREAK_UNSEEN = 6
     # Queue says gone but the DAG lock is still on disk: keep polling this
@@ -227,12 +229,12 @@ class ClusterMonitor:
             return True
         try:
             lock_alive = self.tr.exists(self.dag_lock)
-        except Exception:  # noqa: BLE001 — transport hiccup: keep polling
+        except Exception:  # noqa: BLE001 - transport hiccup: keep polling
             return False
         if not lock_alive:
             return True
         # Queue view empty but DAGMan still holds its lock: the schedd's
-        # cached condor_q lied (task 139). Keep tracking.
+        # cached condor_q is stale. Keep tracking.
         self._lock_override_streak += 1
         if self._lock_override_streak == 1:
             log.warning("queue reports the DAG gone but %s still exists; "
@@ -271,7 +273,7 @@ def reconcile(transport: Transport, status_dir: str, dag_lock: str,
     if dag_lock:
         try:
             alive = transport.exists(dag_lock)
-        except Exception:  # noqa: BLE001 — transport hiccup: don't finalize on doubt
+        except Exception:  # noqa: BLE001 - transport hiccup: don't finalize on doubt
             alive = True
     downgraded = 0 if alive else mon.finalize_missing()
     return {"alive": alive, "seen": len(mon._seen), "downgraded": downgraded}

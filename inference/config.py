@@ -115,7 +115,9 @@ def synthesize_capture(
             either a videos subdir or per-camera image directories.
 
     Returns:
-        Capture-config dict. Keys: ``capture_root``, ``calib``,
+        Capture-config dict. Keys: ``capture_root`` (``ioi_root`` in
+        images mode, which marks an image-layout capture for
+        :func:`_derive_videos_dir`), ``calib``,
         ``cam_fps`` (default 30), ``cams``, ``sequences``,
         ``videos_subdir`` (only set in videos mode when not the
         default ``videos_crf24``), and an optional ``up_axis`` (signed
@@ -180,7 +182,9 @@ def synthesize_capture(
         )
 
     capture: dict = {
-        "capture_root": str(footage),
+        # ioi_root without videos_subdir is the image-layout capture shape
+        # (as the GUI writes it); capture_root implies the videos default.
+        ("capture_root" if layout == "videos" else "ioi_root"): str(footage),
         "calib": str(calib_abs),
         "cam_fps": 30,
         "cams": cams,

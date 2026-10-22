@@ -10,8 +10,8 @@ wrapper that re-enters the runner for a single cell::
 
 Because the node wrapper defers to ``run-cell`` -> ``engines.dispatch``, no
 per-step argv logic lives here: it stays in :mod:`inference.steps`. This is
-the converged counterpart of ``mamma_apptainer/{submit_dag.py,
-jobs/mamma_steps.py}`` (which hand-wrote the apptainer command per step).
+the same code path as a local run, so no apptainer command is hand-written
+per step.
 
 Graph shape (enabled steps, topo order) and sequence resolution are reused
 from :mod:`inference.runner`, so a DAG matches what ``run_dag`` would walk.
@@ -81,7 +81,7 @@ def render_node_sh(step: str, opts: CondorOpts, out_tag: str, log_tag: str) -> s
     suffix), each cell writes its own ``<seq>.<step>.jsonl`` inside it: one
     writer per file. Concurrent cells on different nodes must never share an
     append target: NFS/Lustre appends from multiple clients tear and
-    overwrite each other (task 130 post-mortem). A ``.jsonl`` path keeps the
+    overwrite each other. A ``.jsonl`` path keeps the
     legacy single shared file.
     """
     activate = f"{opts.activate}\n" if opts.activate else ""
@@ -97,12 +97,12 @@ def render_node_sh(step: str, opts: CondorOpts, out_tag: str, log_tag: str) -> s
         "set -euo pipefail\n"
         'SEQ="$1"\n'
         '# Camera fan-out cells pass a cell id + extra step flags; plain\n'
-        '# nodes pass empty strings and run identically to before.\n'
+        '# nodes pass empty strings.\n'
         'CELL="${2:-}"\n'
         'CELL_FLAGS="${3:-}"\n'
         "# Temp spills (the ma_masks mask store etc.) belong in the job's\n"
-        "# request_disk-sized scratch, not the node's shared /tmp (ENOSPC,\n"
-        "# task 152). Condor usually sets TMPDIR already; this pins it even\n"
+        "# request_disk-sized scratch, not the node's shared /tmp (ENOSPC).\n"
+        "# Condor usually sets TMPDIR already; this pins it even\n"
         "# when only _CONDOR_SCRATCH_DIR is provided.\n"
         'TMPDIR="${_CONDOR_SCRATCH_DIR:-${TMPDIR:-/tmp}}"\n'
         "export TMPDIR\n"
@@ -143,9 +143,9 @@ def render_sub(step: str, sh_path: str, log_dir: str, submit_cfg: dict) -> str:
         f"request_disk = {submit_cfg.get('disk', 8000)}MB",
         f"max_materialize = {submit_cfg.get('max_jobs', 20)}",
     ]
+    reqs = []
     if gpus > 0:
         lines.append(f"request_gpus = {gpus}")
-        reqs = []
         min_cuda = submit_cfg.get("min_cuda_memory")
         if min_cuda:
             reqs.append(f"TARGET.CUDAGlobalMemoryMb > {min_cuda}")
@@ -155,15 +155,15 @@ def render_sub(step: str, sh_path: str, log_dir: str, submit_cfg: dict) -> str:
         max_cc = submit_cfg.get("max_cuda_capability")
         if max_cc:
             reqs.append(f"TARGET.CUDACapability <= {max_cc}")
-        # Operational blocklist for wedged GPU hosts: a fast-failing node
-        # keeps grabbing queued cells and can exhaust a node's retries.
-        # Set in the profile under
-        # ``resources.default.exclude_machines``; remove entries once the
-        # host is fixed.
-        for machine in submit_cfg.get("exclude_machines") or []:
-            reqs.append(f'TARGET.Machine =!= "{machine}"')
-        if reqs:
-            lines.append("requirements = " + " && ".join(f"({r})" for r in reqs))
+    # Operational blocklist for wedged hosts: a fast-failing or hanging node
+    # keeps grabbing queued cells and can exhaust a node's retries. CPU steps
+    # land on the same hosts, so it applies to every step. Set in the profile
+    # under ``resources.default.exclude_machines``; remove entries once the
+    # host is fixed.
+    for machine in submit_cfg.get("exclude_machines") or []:
+        reqs.append(f'TARGET.Machine =!= "{machine}"')
+    if reqs:
+        lines.append("requirements = " + " && ".join(f"({r})" for r in reqs))
     lines.append("queue 1")  # single_var: the DAG's VARS supplies seq_arg per node
     return "\n".join(lines) + "\n"
 
@@ -299,15 +299,16 @@ def emit_dag(
             # Camera fan-out: one init node defining identities, then one
             # node per remaining camera (each resumes the init cache and
             # processes a single view), then one finalize node that skips
-            # the per-camera caches and runs the cross-camera consensus
-            # exactly once over the full rig. Cells must not run consensus
-            # themselves: concurrent pairwise passes would race on renames.
+            # the per-camera caches and runs the rig-vote identity repair
+            # and the collage exactly once over the full rig.
+            # Cells must not run them: concurrent passes would race on renames,
+            # and a per-cell collage is rebuilt by every later cell anyway.
             init_name = f"{step}_init_{idx}"
             jobs.append({"name": init_name, "sub": sub_path, "category": step,
                          "vars": {"seq_arg": seq, "cell_id": "init",
                                   "cell_flags": f"--cam_names {fanout_init} "
                                                 f"--cam_init {fanout_init} "
-                                                f"--cross_camera_consensus false"}})
+                                                f"--rig_vote false --skip_collage"}})
             node_to_seq[init_name] = seq
             edges.append((parents, init_name))
             cam_names = []
@@ -319,7 +320,7 @@ def emit_dag(
                              "vars": {"seq_arg": seq, "cell_id": cam,
                                       "cell_flags": f"--cam_names {fanout_init} "
                                                     f"{cam} --cam_init {fanout_init} "
-                                                    f"--cross_camera_consensus false"}})
+                                                    f"--rig_vote false --skip_collage"}})
                 node_to_seq[name] = seq
                 edges.append(([init_name], name))
                 cam_names.append(name)

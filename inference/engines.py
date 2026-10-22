@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 
 
 # Tracks the currently-running engine subprocess so the runner's SIGTERM
-# handler can kill it. Single-threaded by design — the runner is serial.
+# handler can kill it. Single-threaded by design: the runner is serial.
 _current_lock = threading.Lock()
 _current_proc: Optional[subprocess.Popen] = None
 
@@ -145,7 +145,7 @@ def _run(cmd: List[str], cwd: Optional[str], out_f, err_f) -> int:
 
 
 def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optional[str]]:
-    """Return ``(cmd, cwd)`` — the exact argv + working directory that
+    """Return ``(cmd, cwd)``: the exact argv + working directory that
     :func:`dispatch` would ``Popen`` for this step, with **no side effects**
     (no log dirs created, no process spawned).
 
@@ -211,8 +211,8 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
             nv_flag = ["--nv", "--nvccli"] if nvccli else ["--nv"]
         # HTCondor points TMPDIR at the job's request_disk-sized scratch dir,
         # but that path is not auto-bound inside the container, so Python's
-        # tempfile silently falls back to the node's small shared /tmp (task
-        # 152: ENOSPC from the ma_masks mask spill at ~3 GB). Bind the scratch
+        # tempfile silently falls back to the node's small shared /tmp, which
+        # large temp spills (the ma_masks mask store) can fill. Bind the scratch
         # at the same path and pin TMPDIR explicitly so in-container temp
         # files land on the disk the job actually requested. /tmp and
         # /var/tmp are already apptainer default binds: nothing to do there.
@@ -235,9 +235,9 @@ def build_command(builder: StepBuilder, seq_name: str) -> Tuple[List[str], Optio
     for b in builder.binds():
         volumes += ["-v", b]
     # Run as the invoking user: docker defaults to root, which would leave
-    # every output file root-owned on the host — breaking resume/DONE checks
+    # every output file root-owned on the host, breaking resume/DONE checks
     # and any later conda/GUI run over the same output tree. HOME=/tmp gives
-    # tools that want a writable home (ultralytics settings, torch caches) a
+    # tools that want a writable home (Hugging Face and torch caches) a
     # container-local scratch dir. (apptainer already runs as the caller.)
     user_flags: List[str] = []
     if hasattr(os, "getuid"):

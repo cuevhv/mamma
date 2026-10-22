@@ -11,7 +11,7 @@ restating them:
 * :mod:`inference.cli.doctor`'s per-step requirement table
 * :mod:`gui.backend.data_readiness`'s ``ASSETS`` (the GUI panel)
 
-The registry is a *leaf* module — it imports nothing from elsewhere in
+The registry is a *leaf* module: it imports nothing from elsewhere in
 ``inference/`` or ``gui/``. This is deliberate so the rest of the
 codebase can depend on it without circular-import risk.
 
@@ -20,13 +20,13 @@ to :data:`ASSETS` and every consumer above picks it up automatically.
 
 Each record bundles three concerns:
 
-* **Identity**: ``id``, ``label``, ``purpose``, ``group`` — descriptive
+* **Identity**: ``id``, ``label``, ``purpose``, ``group``: descriptive
   metadata used by the doctor and the GUI panel.
 * **Installation contract**: ``env_key``, ``default``, ``fs_kind``,
-  ``consumers`` — what env var holds the path, where the default
+  ``consumers``: what env var holds the path, where the default
   expects it on disk, and which step subprocesses receive it as a CLI
   flag.
-* **Provenance**: ``source`` — how the asset is obtained (public URL,
+* **Provenance**: ``source``: how the asset is obtained (public URL,
   MPI gated download, HF cache, GDrive interstitial, manual). The
   source descriptor classes are defined here so a future CLI
   downloader can consume them without depending on the GUI module.
@@ -143,7 +143,7 @@ class InstallationAsset:
     # Installation contract
     env_key: Optional[str] = None            # MAMMA_* key (None = no env contract)
     default: Optional[str] = None            # default rel path OR HF model id
-    fs_kind: str = "file"                    # "file" | "dir" — for probe + display
+    fs_kind: str = "file"                    # "file" | "dir", for probe + display
     consumers: Tuple[StepConsumer, ...] = ()  # step subprocesses that consume it
 
     # Provenance
@@ -161,34 +161,42 @@ class InstallationAsset:
 
 ASSETS: Tuple[InstallationAsset, ...] = (
     InstallationAsset(
-        id="yolo",
-        label="YOLO12x detector",
-        purpose="ma_masks · person detection",
+        id="person_detector",
+        label="D-FINE-X person detector",
+        purpose="ma_masks · person detection (sam2 / sam3)",
         group="detectors",
-        size_hint_mb=119,
-        env_key="MAMMA_YOLO_CHECKPOINT",
-        default="data/weights/yolo/yolo12x.pt",
-        fs_kind="file",
-        consumers=(
-            StepConsumer(step="ma_masks", cli_flag="--yolo-checkpoint"),
-        ),
-        source=PublicSource(
-            url="https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo12x.pt",
+        size_hint_mb=240,
+        # No env_key: like SAM 3, the subprocess loads it with
+        # from_pretrained(), which downloads to the HF cache on first use
+        # (public, no login). Other weights: --detector-checkpoint in the
+        # preset's `flags`.
+        env_key=None,
+        default=None,
+        fs_kind="dir",
+        consumers=(),
+        source=HFHubSource(
+            model_id="ustc-community/dfine-xlarge-coco",
+            account_label="Hugging Face",
+            register_url="https://huggingface.co/ustc-community/dfine-xlarge-coco",
+            steps=(
+                "Weights download on the first ma_masks run; no action needed here.",
+            ),
         ),
     ),
     InstallationAsset(
         id="sam3",
         label="SAM 3",
-        purpose="ma_masks · default segmenter (HF-gated)",
+        purpose="ma_masks · SAM 3 backends (HF-gated)",
         group="segmenters",
         size_hint_mb=3300,
-        # No env_key: SAM 3 self-resolves through HuggingFace Hub —
+        # No env_key: SAM 3 self-resolves through HuggingFace Hub:
         # the subprocess calls from_pretrained("facebook/sam3") which
         # downloads to ~/.cache/huggingface/hub on first use (gated,
         # needs `hf auth login`). The runner never needs to
-        # inject --sam_checkpoint for sam3*. Users wanting a pinned
-        # revision or local .pt file pass --sam_checkpoint in the
-        # preset's `flags` list directly.
+        # inject --sam_checkpoint for sam3*. sam3_prompt can be pinned
+        # to a local .pt file with --sam_checkpoint in the preset's
+        # `flags` list; sam3 and sam3_prompt_light always load the Hub
+        # checkpoint.
         env_key=None,
         default=None,
         fs_kind="dir",
@@ -202,14 +210,14 @@ ASSETS: Tuple[InstallationAsset, ...] = (
                 "Request access on the SAM 3 Hugging Face page; wait for approval.",
                 "Activate the env: micromamba activate mamma (or conda activate mamma).",
                 "Authenticate once: hf auth login.",
-                "Weights download lazily on the first ma_masks run — no action needed here.",
+                "Weights download lazily on the first ma_masks run; no action needed here.",
             ),
         ),
     ),
     InstallationAsset(
         id="sam2",
         label="SAM 2.1 (large)",
-        purpose="ma_masks · fallback (sam2 engine)",
+        purpose="ma_masks · default segmenter (sam2)",
         group="segmenters",
         size_hint_mb=856,
         panel_optional=True,
@@ -266,7 +274,7 @@ ASSETS: Tuple[InstallationAsset, ...] = (
         fs_kind="dir",
         # Read directly from the environment by optimization/losses/losses.py
         # (vposer_recon_loss), not injected as a CLI flag into the ma_3d
-        # subprocess — hence no StepConsumer. Only configs that enable
+        # subprocess, hence no StepConsumer. Only configs that enable
         # vposer_recon_loss load it; the default pipeline never touches it.
         consumers=(),
         note=(
@@ -345,7 +353,7 @@ ASSETS: Tuple[InstallationAsset, ...] = (
         # Training-only; the path is hardcoded inside the landmarks
         # submodule (see landmarks/configs/constants.py:
         # PATHS.PRETRAINED_VITPOSE_CKPT_PTH). There is no MAMMA_* env
-        # var for it — the env.py defaults intentionally do not include
+        # var for it; the env.py defaults intentionally do not include
         # MAMMA_VITPOSE_CHECKPOINT. The asset stays in the registry so
         # the GUI panel still surfaces it for users who want to train.
         env_key=None,
@@ -383,8 +391,8 @@ def defaults_dict() -> dict:
         if a.env_key:
             out[a.env_key] = a.default
     # Optional env vars that have no default but should still be
-    # tracked by the env machinery. Today only the two ma_3d optionals
-    # — they're declared via empty consumers below, but they need an
+    # tracked by the env machinery. Today only the two ma_3d optionals:
+    # they're declared via empty consumers below, but they need an
     # env_key entry so the runner can pick up `.env.local` overrides.
     for env_key in _OPTIONAL_KEYS_WITHOUT_DEFAULT:
         out.setdefault(env_key, None)
@@ -395,7 +403,7 @@ def path_keys() -> Tuple[str, ...]:
     """Return env-keys that participate in the anchoring loop.
 
     Feeds ``inference.env._PATH_KEYS``. Every env-bearing asset is
-    included — even HF-id assets like ``MAMMA_SAM_CHECKPOINT`` —
+    included, even one whose value may be a Hugging Face model id,
     because the user may override the env var with a relative file
     path that legitimately needs anchoring to the repo root. The
     per-value HF-id-vs-path decision is made by env.py's
@@ -445,7 +453,7 @@ def step_optional_translation(step: str) -> Tuple[Tuple[str, str], ...]:
     Two sources contribute:
 
     1. Registry consumers with ``required=False`` and ``mechanical=True``
-       (e.g. ``MAMMA_SAM_CHECKPOINT`` on ma_masks — an opt-in override).
+       (opt-in overrides; none are registered today).
     2. The :data:`_OPTIONAL_KEYS_WITH_FLAGS` mapping for env keys that
        don't have an :class:`InstallationAsset` record (ma_3d's
        ``--bun-models`` / ``--part-mesh``).
@@ -523,7 +531,7 @@ def dump_env_example() -> str:
     # Registry-backed assets first, in registry order. Assets with a
     # `note` get a blank-line separator above so the comment doesn't
     # visually attach to the preceding entry. Multi-line notes are
-    # rendered as consecutive `# <line>` comments — author the note
+    # rendered as consecutive `# <line>` comments; author the note
     # with explicit ``\n`` line breaks to control wrapping.
     for a in ASSETS:
         if not a.env_key:

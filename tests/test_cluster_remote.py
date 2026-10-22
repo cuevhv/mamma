@@ -127,7 +127,7 @@ def test_ssh_transport_connect_and_probe_argv():
 
     probe = tr._auth_probe_argv()
     # BatchMode forbids prompting, so the probe can only succeed via
-    # keys/agent or a live master — never by asking the user.
+    # keys/agent or a live master, never by asking the user.
     assert "BatchMode=yes" in " ".join(probe)
     assert probe[-1] == "true"
 
@@ -405,8 +405,8 @@ def test_monitor_replays_jsonl_and_maps_condor():
 
 def test_monitor_finished_grace_before_first_sighting():
     # A DAG not yet visible in condor_q right after submit (bid-scheduler
-    # latency) must not be declared finished by the first empty probes;
-    # task 127 went untracked exactly this way.
+    # latency) must not be declared finished by the first empty probes,
+    # or the run would go untracked.
     tr = _MonTransport()
     tr.in_queue = False
     mon = ClusterMonitor(tr, "42", "/ws/s.jsonl", {}, _RecSink())
@@ -445,8 +445,7 @@ def test_monitor_replays_counts_events(tmp_path):
 
 
 def test_monitor_lock_overrides_lying_queue():
-    # A cached condor_q can return empty while the DAG runs (task 139: the
-    # monitor exited with 94 cells mid-flight). With a dag_lock configured,
+    # A cached condor_q can return empty while the DAG runs. With a dag_lock configured,
     # queue-gone alone must NOT finish while the lock is on disk.
     tr = _MonTransport()
     mon = ClusterMonitor(tr, "42", "/ws/s.jsonl", {}, _RecSink(),

@@ -2,8 +2,8 @@
 
 An explicit --weights among the raw task flags must suppress the builder's
 own injection, so the final command carries exactly ONE --weights and it is
-the user's (previously both appeared and argparse's last-wins tie-break
-silently decided).
+the user's (with both present, argparse's last-wins tie-break would
+silently decide).
 """
 import os
 import sys

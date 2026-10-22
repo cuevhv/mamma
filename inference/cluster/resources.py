@@ -4,7 +4,7 @@ Separates *what to run* (the task / run-config) from *what to ask the
 scheduler for* (cpus, memory, gpus, CUDA floor, per-step job cap). Resolution
 order, later wins:
 
-1. ``DEFAULT_STEP_RESOURCES`` below (safe, live-validated per-step baseline;
+1. ``DEFAULT_STEP_RESOURCES`` below (safe per-step baseline;
    in particular every GPU step requests a GPU, so a bare task file can never
    silently land on a CPU-only node again),
 2. the cluster profile's ``resources`` map (per-cluster overrides, the
@@ -26,17 +26,14 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-# Baseline requests per pipeline step. Values are the live-validated ones
-# (smoke run on the MPI-IS cluster; lifted from the legacy
-# mamma_apptainer/configs/tasks blocks, memory sized for multi-camera
-# full-length sequences). Steps absent from this table (unknown or
+# Baseline requests per pipeline step, sized for multi-camera full-length
+# sequences. Steps absent from this table (unknown or
 # site-specific) fall back to render_sub's own defaults.
 DEFAULT_STEP_RESOURCES: Dict[str, dict] = {
     # ``disk`` (MB) sizes the job's scratch dir (HTCondor request_disk); the
     # node wrapper routes TMPDIR there so temp spills are billed against it
-    # instead of the node's small shared /tmp (task 152 post-mortem: the
-    # ma_masks disk-backed mask store is ~0.8 MB/frame/person at 2056x1504,
-    # so a long multi-person camera needs several GB of temp space).
+    # instead of the node's small shared /tmp (the ma_masks disk-backed mask
+    # store of a long multi-person camera needs several GB of temp space).
     "ma_cap":   {"cpus": 4, "memory": 16000, "gpus": 0, "max_jobs": 20,
                  "disk": 4000},
     "ma_masks": {"cpus": 8, "memory": 64000, "gpus": 1,

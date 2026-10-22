@@ -85,7 +85,7 @@ def test_node_sh_omits_activate_when_empty():
 
 def test_node_sh_per_cell_status_files_in_dir_mode():
     # A status DIRECTORY means one file per (step, seq): single writer each,
-    # so concurrent nodes never tear a shared append target (task 130).
+    # so concurrent nodes never tear a shared append target.
     sh = htcondor.render_node_sh(
         "ma_masks", _opts(status_jsonl="/cluster/dag/7/status"), "t7", "t7")
     assert "mkdir -p /cluster/dag/7/status" in sh
@@ -145,10 +145,23 @@ def test_sub_gpu_step_excludes_blocklisted_machines():
             '(TARGET.Machine =!= "badnode.example.org")') in sub
 
 
+def test_sub_cpu_step_also_excludes_blocklisted_machines():
+    """CPU steps (ma_cap) land on the same hosts, so the blocklist applies
+    to them too; without GPUs no CUDA requirement is added."""
+    sub = htcondor.render_sub(
+        "ma_cap", "/w/ma_cap.sh", "/w/logs/ma_cap",
+        {"gpus": 0, "exclude_machines": ["badnode.example.org"]},
+    )
+    assert 'requirements = (TARGET.Machine =!= "badnode.example.org")' in sub
+    assert "request_gpus" not in sub and "CUDA" not in sub
+    plain = htcondor.render_sub("ma_cap", "/w/ma_cap.sh", "/w/logs/ma_cap", {"gpus": 0})
+    assert "requirements" not in plain
+
+
 def test_sub_requests_disk_with_explicit_mb_unit():
     # request_disk's bare-number unit is KiB (unlike request_memory's MB), so
     # the MB suffix is load-bearing; the scratch this sizes is where the node
-    # wrapper points TMPDIR (task 152: ma_masks spill filled the node /tmp).
+    # wrapper points TMPDIR (the ma_masks spill can fill the node's /tmp).
     sub = htcondor.render_sub(
         "ma_masks", "/w/ma_masks.sh", "/w/logs/ma_masks",
         {"gpus": 1, "disk": 20000},
@@ -490,11 +503,11 @@ def test_emit_dag_camera_fanout(tmp_path, monkeypatch):
     assert "JOB ma_masks_finalize_0" in dag
     assert "MAXJOBS ma_masks 10" in dag
     # per-cell flags: init runs its camera only; cam cells run init + cam;
-    # neither runs the consensus (the finalize cell does, once, full-rig)
+    # none runs the rig vote or the collage (the finalize cell does, once)
     assert ('cell_flags="--cam_names IOI_01 --cam_init IOI_01 '
-            '--cross_camera_consensus false"') in dag
+            '--rig_vote false --skip_collage"') in dag
     assert ('cell_flags="--cam_names IOI_01 IOI_09 --cam_init IOI_01 '
-            '--cross_camera_consensus false"') in dag
+            '--rig_vote false --skip_collage"') in dag
     assert 'cell_id="finalize" cell_flags="--cam_init IOI_01"' in dag
     # wiring: ma_cap -> init -> cams -> finalize -> ma_2d
     assert "PARENT ma_cap_0 CHILD ma_masks_init_0" in dag

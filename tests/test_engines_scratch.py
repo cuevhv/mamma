@@ -1,7 +1,7 @@
 """Apptainer scratch routing: TMPDIR (HTCondor's request_disk-sized job
 scratch) must be bound into the container and pinned, or in-container
-tempfile silently falls back to the node's small shared /tmp (task 152:
-ENOSPC from the ma_masks mask spill)."""
+tempfile silently falls back to the node's small shared /tmp, which the
+ma_masks mask spill can fill (ENOSPC)."""
 import os
 import sys
 

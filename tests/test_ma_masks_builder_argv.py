@@ -51,7 +51,7 @@ def test_ma_2d_flags_cam_names_override_global_injection():
 
 def test_cell_log_paths_are_namespaced_per_cell():
     """Concurrent fan-out cells sharing one <seq>.err clobber each other's
-    tracebacks (run 163); each cell gets its own pair."""
+    tracebacks; each cell gets its own pair."""
     from inference.runner import _log_paths
     g = {"jobs_log_dir": "/logs", "username": "u"}
     out, err = _log_paths(g, "163", "ma_masks", "seqA", cell="IOI_02")

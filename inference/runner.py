@@ -4,8 +4,8 @@ Topo-sorts the steps enabled in a ``task.json`` by their ``dependencies``
 list, walks them in order, runs each ``(step, sequence)`` pair via the
 configured engine, and streams status updates to a :class:`StatusSink`.
 
-This is the headless counterpart to the cluster runner in
-``mamma_apptainer/submit_dag.py``.
+Cluster runs (:mod:`inference.cluster.htcondor`) reuse the same step graph
+and sequence resolution.
 """
 from __future__ import annotations
 
@@ -45,6 +45,9 @@ class _CancelFlag:
 
 
 CANCEL = _CancelFlag()
+
+# run_dag result for a run stopped by SIGINT/SIGTERM (shell convention 128 + SIGINT).
+EXIT_CANCELLED = 130
 
 
 # Seconds to wait for an engine subprocess to honour SIGTERM before
@@ -151,6 +154,7 @@ def run_step(
     force: bool = False,
 ) -> int:
     """Run one step across all configured sequences. Returns 0 on success."""
+    CANCEL.set = False
     task_cfg = load_task_config(task_path)
     if not task_cfg.get(step_name, {}).get("enabled"):
         log.warning("step %r is not enabled in task config; running anyway", step_name)
@@ -215,10 +219,11 @@ def run_cell(
 
     out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq,
                                     cell=cell_id)
+    _clear_done(done)
     sink.update(step_name, seq, "Running", pid=os.getpid())
     try:
         rc = engines.dispatch(builder, seq, out_path, err_path)
-    except BaseException as e:  # noqa: BLE001 — a SystemExit or KeyboardInterrupt
+    except BaseException as e:  # noqa: BLE001 - a SystemExit or KeyboardInterrupt
         # raised below dispatch must still reach the status stream, or the
         # board shows the cell Running forever and the DAG node dies mute.
         print(f"run-cell: dispatch raised {type(e).__name__}: {e}",
@@ -256,7 +261,7 @@ def _ma_cap_counts(seq_dir: str) -> Tuple[Optional[int], Optional[int]]:
 
     ma_cap writes ``<seq_dir>/gt/<cam>.npz`` (one per camera) plus a
     ``global.npz``; each camera NPZ carries ``frame_start``/``frame_end``.
-    Returns ``(None, None)`` on any problem — this is best-effort metadata."""
+    Returns ``(None, None)`` on any problem; this is best-effort metadata."""
     import glob
     npzs = glob.glob(os.path.join(seq_dir, "gt", "*.npz"))
     if not npzs:
@@ -268,7 +273,7 @@ def _ma_cap_counts(seq_dir: str) -> Tuple[Optional[int], Optional[int]]:
         try:
             import numpy as np
             # allow_pickle=False: we only read the plain int frame_start/end
-            # members, never the object arrays in the archive — keep it safe.
+            # members, never the object arrays in the archive, to keep it safe.
             d = np.load(cams[0], allow_pickle=False)
             if "frame_start" in d and "frame_end" in d:
                 num_frames = max(0, int(d["frame_end"]) - int(d["frame_start"]))
@@ -279,7 +284,7 @@ def _ma_cap_counts(seq_dir: str) -> Tuple[Optional[int], Optional[int]]:
             end = _read_npz_int(cams[0], "frame_end")
             if start is not None and end is not None:
                 num_frames = max(0, end - start)
-        except Exception as e:  # noqa: BLE001 — metadata must never break a run
+        except Exception as e:  # noqa: BLE001 - metadata must never break a run
             log.warning("could not read frame range from %s: %s", cams[0], e)
     return num_frames, num_cameras
 
@@ -319,7 +324,7 @@ def _record_ma_cap_counts(builder, step_name: str, seq: str, sink: StatusSink) -
     if step_name != "ma_cap":
         return
     # Skip the output scan entirely for sinks that don't persist counts
-    # (the CLI PrintSink) — no point reading NPZs to no-op. JsonlSink does
+    # (the CLI PrintSink): no point reading NPZs to no-op. JsonlSink does
     # persist them (a counts event the ClusterMonitor replays into the DB).
     if type(sink).record_counts is StatusSink.record_counts:
         return
@@ -340,7 +345,12 @@ def run_dag(
     sink: Optional[StatusSink] = None,
     force: bool = False,
 ) -> int:
-    """Run the full DAG of enabled steps in dependency order."""
+    """Run the full DAG of enabled steps in dependency order.
+
+    Returns 0 on success, 1 if any (step, sequence) failed, and
+    :data:`EXIT_CANCELLED` if the run was stopped by a signal.
+    """
+    CANCEL.set = False  # a cancel belongs to one run, not to the process
     _install_sigterm_handler()
     task_cfg = load_task_config(task_path)
     steps = enabled_steps(task_cfg)
@@ -375,7 +385,7 @@ def run_dag(
     # into Cancelled. The cascade is per-(step, sequence): one sequence's
     # ma_masks failure blocks only THAT sequence's ma_2d/ma_3d/ma_vis; the
     # other sequences keep running. Cancelled counts as blocked for
-    # downstream-dep purposes — otherwise a 3-deep DAG like
+    # downstream-dep purposes; otherwise a 3-deep DAG like
     # ma_masks->ma_2d->ma_3d would have ma_3d try to run for a sequence
     # whose ma_masks failed and whose ma_2d got cascaded into Cancelled.
     failed_seqs: dict = {}
@@ -399,6 +409,9 @@ def run_dag(
         if step_failed:
             failed_seqs[step_name] = step_failed
 
+    if CANCEL:
+        log.warning("DAG cancelled")
+        return EXIT_CANCELLED
     if failed_seqs:
         log.error("DAG completed with failures: %s",
                   {k: sorted(v) for k, v in failed_seqs.items()})
@@ -422,7 +435,7 @@ def _run_dag_seq_major(
     Failure cascade is **per-sequence** (as in step-major): if seq A's
     ma_masks fails, the rest of seq A's downstream steps are Cancelled,
     but seq B is unaffected. This matches the natural user mental
-    model — 'this sequence broke; the others may still finish.'
+    model: 'this sequence broke; the others may still finish.'
     """
     overall_failed_steps: set[str] = set()
     tag = out_tag or "local"
@@ -463,6 +476,7 @@ def _run_dag_seq_major(
                 continue
 
             out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq)
+            _clear_done(done)
             sink.update(step_name, seq, "Running", pid=os.getpid())
             try:
                 rc = engines.dispatch(builder, seq, out_path, err_path)
@@ -491,6 +505,9 @@ def _run_dag_seq_major(
                 overall_failed_steps.add(step_name)
                 log.error("%s[%s] exit=%s -- check %s", step_name, seq, rc, err_path)
 
+    if CANCEL:
+        log.warning("DAG (seq-major) cancelled")
+        return EXIT_CANCELLED
     if overall_failed_steps:
         log.error("DAG (seq-major) completed with failures: %s", sorted(overall_failed_steps))
         return 1
@@ -533,6 +550,7 @@ def _run_step_inner(
             continue
 
         out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq)
+        _clear_done(done)
         sink.update(step_name, seq, "Running", pid=os.getpid())
         try:
             rc = engines.dispatch(builder, seq, out_path, err_path)
@@ -565,6 +583,15 @@ def _run_step_inner(
             log.error("%s[%s] exit=%s -- check %s", step_name, seq, rc, err_path)
 
     return failed_seqs
+
+
+def _clear_done(done: str) -> None:
+    """Drop the DONE sentinel before an attempt, so a failed forced re-run
+    does not leave the previous success marked as done."""
+    try:
+        Path(done).unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("could not remove DONE sentinel at %s: %s", done, e)
 
 
 def _log_paths(

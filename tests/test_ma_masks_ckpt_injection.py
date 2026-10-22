@@ -4,7 +4,7 @@ run_ma_masks.py's argparse defaults --sam_version to sam2, so a config with
 NO version flag runs sam2 and needs the checkpoint injected. The old
 fallback assumed sam3_prompt and skipped injection: fine locally where the
 cwd-relative default path exists, a guaranteed FileNotFoundError on cluster
-nodes (gs_off study post-mortem, 2026-08-15)."""
+nodes."""
 import os
 import sys
 
