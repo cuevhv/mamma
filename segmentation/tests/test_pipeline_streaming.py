@@ -1,7 +1,7 @@
-"""Integration tests for the issue-#14 streaming mask pipeline.
+"""Integration tests for the streaming mask pipeline.
 
 These exercise the real pipeline methods against a disk-backed MaskStore without
-loading SAM/YOLO/CLIP (the segmenter is built via ``__new__`` with only the
+loading SAM/detector/CLIP (the segmenter is built via ``__new__`` with only the
 attributes the methods touch). They lock the externally-observable contract:
 
   * ``save_images_from_video`` writes per-frame mask PNGs with the exact names
@@ -12,7 +12,6 @@ attributes the methods touch). They lock the externally-observable contract:
 """
 import os
 
-import cv2
 import matplotlib
 matplotlib.use("Agg")  # headless render for the crop-summary test
 import numpy as np
@@ -43,7 +42,7 @@ def _crop_mask_data(h=20, w=30):
 
 def test_crop_summary_builds_img_bbx_regardless_of_viz(tmp_path):
     """img_bbx (feeds cross-camera matching) is built whether or not the debug
-    viz PNG is rendered — and is byte-identical between the two modes."""
+    viz PNG is rendered, and is byte-identical between the two modes."""
     seg = _make_segmenter({"exports": {}})
 
     d_off = _crop_mask_data(); out_off = tmp_path / "off"; out_off.mkdir()
@@ -162,13 +161,17 @@ def test_save_images_writes_expected_mask_pngs(tmp_path):
     out = tmp_path / "cam"
     seg.save_images_from_video(inference_state, store, [0, 1], str(out), vis_frame_stride=2)
 
-    # Every mask PNG exists with the exact name + content landmarks expects.
-    for (f, oid), m in expected.items():
-        p = out / "masks" / f"mask_{f:04d}_{oid + 1:02d}.png"
-        assert p.exists(), f"missing {p}"
-        got = cv2.imread(str(p), cv2.IMREAD_GRAYSCALE)
-        assert got.shape == (h_orig, w_orig)
-        assert np.array_equal(got > 0, m)
+    # Every mask entry exists with the exact name + content landmarks expects,
+    # in the packed masks.zip written by default (the reader handles either layout).
+    from core.mask_archive import MaskArchiveReader
+    assert (out / "masks" / "masks.zip").is_file()
+    with MaskArchiveReader(str(out / "masks")) as reader:
+        for (f, oid), m in expected.items():
+            name = f"mask_{f:04d}_{oid + 1:02d}.png"
+            got = reader.read(name)
+            assert got is not None, f"missing {name}"
+            assert got.shape == (h_orig, w_orig)
+            assert np.array_equal(got > 0, m)
 
     # The store is closed/cleaned up by save_images_from_video.
     assert not os.path.isdir(store._dir)
@@ -200,3 +203,24 @@ def test_postprocess_merges_duplicates_and_discards_tiny():
     for f in range(4):
         assert np.array_equal(store_out.frame(f)[0], big)
     store_out.close()
+
+
+def test_lazy_frame_loading_defaults_to_auto_when_key_missing():
+    """A config without ``sam.lazy_frame_loading`` gets the documented "auto":
+    eager below ``lazy_min_frames``, lazy from there up."""
+    import core.predictor_factory as pf
+
+    class _Predictor:
+        def init_state(self, video_path, **kwargs):
+            return "state"
+
+    seg = _make_segmenter({"sam": {"propagate_reverse": True}})
+    seg.predictor = _Predictor()
+    try:
+        for n_frames, expected in ((100, False), (1500, True)):
+            names = [f"{i:05d}.jpg" for i in range(n_frames)]
+            state, _ = seg._init_state_with_fallback("frames_dir", names, "out", "cam")
+            assert state == "state"
+            assert pf._lazy_frame_loading is expected
+    finally:
+        pf.set_lazy_frame_loading(False)

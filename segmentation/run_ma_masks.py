@@ -6,7 +6,7 @@ Supports three input modes:
   2. Video mode (--videos_dir): reads MP4 files directly
   3. Image mode (--images_root_dir): reads image frames from camera subdirectories
 
-Both modes support SAM2 (default) and SAM3 backends via --sam_version.
+All modes support SAM2 (default) and the SAM3 backends via --sam_version.
 
 Examples:
     # NPZ mode (standard pipeline)
@@ -64,8 +64,11 @@ Input modes:
   Use --videos_dir to read MP4 video files instead (frames are extracted automatically).
 
 SAM backends:
-  --sam_version sam2   SAM2 (default, faster propagation)
-  --sam_version sam3   SAM3 (better tracking quality, auto-downloads from HuggingFace)
+  --sam_version sam2                SAM2 (default, faster propagation)
+  --sam_version sam3                SAM3 tracker with the person box detector
+  --sam_version sam3_prompt         SAM3 text prompt "person", full video predictor (most VRAM)
+  --sam_version sam3_prompt_light   SAM3 text prompt "person", lean tracker (no box detector)
+  The SAM3 backends download the gated SAM 3 weights from Hugging Face.
 """,
     )
 
@@ -104,28 +107,40 @@ SAM backends:
                              'falls back to the per-camera distortion in the ma_cap NPZ. Existing '
                              'NPZ calibration is not overwritten.')
     parser.add_argument('--undistort', action='store_true',
-                        help='Undistort frames (any supported lens model) before SAM / YOLO. '
-                             'Coefficients come from --calibration when given, else from the '
-                             'per-camera NPZ (chained --ma_cap_dir mode). No-op for cameras with '
-                             'no distortion data. Default off.')
+                        help='Undistort the frames the person detector and identity matching see '
+                             '(any supported lens model). SAM still segments the raw frames, so masks '
+                             'keep raw-image geometry, which ma_2d expects by default. Coefficients '
+                             'come from --calibration when given, else from the per-camera NPZ '
+                             '(chained --ma_cap_dir mode). No-op for cameras with no distortion data. '
+                             'Default off.')
 
     # --- SAM backend ---
     parser.add_argument('--sam_version', default='sam2',
                         choices=['sam2', 'sam3', 'sam3_prompt', 'sam3_prompt_light'],
-                        help='SAM backend: sam2 (default), sam3 (tracker API + YOLO), '
+                        help='SAM backend: sam2 (default), sam3 (tracker API + person detector), '
                              'sam3_prompt (text prompt "person" via the full video '
-                             'predictor — heaviest VRAM), or sam3_prompt_light (text prompt '
-                             '"person" via SAM3 detector + lean tracker — no YOLO, lower VRAM '
+                             'predictor, heaviest VRAM), or sam3_prompt_light (text prompt '
+                             '"person" via SAM3 detector + lean tracker: no person detector, lower VRAM '
                              'than sam3_prompt and no long-clip OOM)')
     parser.add_argument('--sam_checkpoint', default=None,
-                        help='Override SAM checkpoint path or HuggingFace model ID')
+                        help='SAM weights file for sam2 (default: data/weights/sam2/'
+                             'sam2.1_hiera_large.pt; the filename picks the model size). '
+                             'sam3_prompt uses it only when it points to an existing local '
+                             'file; sam3 and sam3_prompt_light always load their own SAM3 '
+                             'checkpoint.')
+    parser.add_argument('--detector', default=None,
+                        help='Person box detector for sam2/sam3: dfine (default, D-FINE-X, '
+                             'Apache-2.0), yolo (Ultralytics, AGPL-3.0, needs `pip install '
+                             'ultralytics`), or package.module:Class for your own '
+                             '(see segmentation/core/person_detector.py).')
+    parser.add_argument('--detector-checkpoint', '--detector_checkpoint',
+                        dest='detector_checkpoint', default=None,
+                        help='Detector weights: a Hugging Face model id or local directory for '
+                             'dfine (default ustc-community/dfine-xlarge-coco, downloaded on first '
+                             'use), a .pt file for yolo.')
     parser.add_argument('--yolo-checkpoint', '--yolo_checkpoint',
                         dest='yolo_checkpoint', default=None,
-                        help='Path to the YOLOv12-X person-detection weights '
-                             '(.pt file). Required for all backends except '
-                             'sam3_prompt_light (which detects via SAM3 text). '
-                             'The MAMMA inference runner injects this from '
-                             'MAMMA_YOLO_CHECKPOINT / .env.local.')
+                        help=argparse.SUPPRESS)  # deprecated: --detector yolo --detector-checkpoint PATH
 
     # --- Frame range ---
     parser.add_argument('--start', type=int, default=None,
@@ -150,31 +165,37 @@ SAM backends:
     parser.add_argument('--expected_subjects', type=int, default=None,
                         help='Number of people N in the scene (auto-detected if not set)')
     parser.add_argument('--interactive', action='store_true',
-                        help='Use interactive GUI to click on people instead of YOLO auto-detection. '
+                        help='Use interactive GUI to click on people instead of automatic person detection. '
                              'Opens a tkinter window on the init camera. Requires a display.')
     parser.add_argument('--cross-camera-strategy', '--cross_camera_strategy',
                         dest='cross_camera_strategy', default=None,
                         choices=['auto', 'track_then_match', 'match_then_track'],
                         help='Cross-camera identity for non-init cameras. '
-                             'auto (default): calibration- and backend-aware — '
+                             'auto (default): calibration- and backend-aware: '
                              'track_then_match for SAM3-text detection '
-                             '(sam3_prompt_light), and for YOLO backends (sam2/sam3) '
+                             '(sam3_prompt_light), and for the detector backends (sam2/sam3) '
                              'when epipolar calibration (cam_int/cam_ext) is available; '
                              'otherwise match_then_track (the CLIP-only appearance remap '
-                             'is unreliable for YOLO crops). track_then_match: force '
+                             'is unreliable for detector crops). track_then_match: force '
                              'per-camera track then whole-tracklet remap. '
-                             'match_then_track: legacy — commit identity at seed time. '
+                             'match_then_track: legacy, commit identity at seed time. '
                              '(sam3_prompt is always track-then-match regardless.)')
     # --- Configuration ---
     parser.add_argument('--cfg', '--assignment_cfg', default=None,
                         dest='cfg',
                         help='YAML config file. Default: auto-selected based on --sam_version '
-                             '(sam2 -> configs/sam2.yaml, sam3/sam3_prompt -> configs/sam3.yaml)')
-    parser.add_argument('--cross_camera_consensus', default=None,
+                             '(sam2 -> configs/sam2.yaml, sam3/sam3_prompt/sam3_prompt_light -> '
+                             'configs/sam3.yaml)')
+    # Removed identity repairs, still accepted (and ignored) so camera fan-out
+    # DAGs emitted by earlier builds keep running after a code update.
+    for removed in ('--cross_camera_consensus', '--cross_check'):
+        parser.add_argument(removed, default=None, help=argparse.SUPPRESS)
+    parser.add_argument('--rig_vote', default=None,
                         choices=['auto', 'true', 'false'],
-                        help='Override masks.cross_camera_consensus from the YAML config. '
-                             'Camera fan-out cells pass "false" so the consensus runs '
-                             'exactly once, in the finalize cell, over the full rig.')
+                        help='Override masks.rig_vote from the YAML config (identity '
+                             'repair by full-rig voxel voting, 2 to 6 subjects; auto = on '
+                             'with >= masks.rig_vote_min_cameras calibrated cameras). Camera '
+                             'fan-out cells pass "false"; it runs in the finalize cell.')
     parser.add_argument('--png', action='store_true',
                         help='Write per-frame masks as legacy loose PNG files instead of '
                              'the packed one-file-per-camera masks.zip (the default). '
@@ -195,12 +216,9 @@ SAM backends:
 
     args = parser.parse_args()
 
-    # YOLO is required only for the YOLO-based backends; sam3_prompt and
-    # sam3_prompt_light detect via SAM3 text.
-    if args.sam_version not in ("sam3_prompt", "sam3_prompt_light") and not args.yolo_checkpoint:
-        # parser.error exits 2, matching the old argparse required=True behavior —
-        # automation must not see a "successful" run that produced nothing.
-        parser.error(f"--yolo_checkpoint is required for --sam_version {args.sam_version}.")
+    if args.yolo_checkpoint:
+        args.detector = args.detector or "yolo"
+        args.detector_checkpoint = args.detector_checkpoint or args.yolo_checkpoint
 
     # Auto-select config based on sam_version if not specified
     if args.cfg is None:
@@ -288,12 +306,14 @@ SAM backends:
         logger.info(f"Loaded assignment config: {args.cfg}")
 
     # Inject CLI flag into assignment config so the pipeline can read it
-    if args.cross_camera_consensus is not None:
+    for removed in ('cross_camera_consensus', 'cross_check'):
+        if getattr(args, removed) is not None:
+            logger.warning(f"--{removed} was removed (the rig vote is the identity repair); ignored.")
+    if args.rig_vote is not None:
         if assignment_config is None:
             assignment_config = {}
-        assignment_config.setdefault("masks", {})["cross_camera_consensus"] = \
-            args.cross_camera_consensus
-        logger.info(f"Cross-camera consensus override: {args.cross_camera_consensus}")
+        assignment_config.setdefault("masks", {})["rig_vote"] = args.rig_vote
+        logger.info(f"Rig vote override: {args.rig_vote}")
 
     if args.png:
         if assignment_config is None:
@@ -340,7 +360,8 @@ SAM backends:
         expected_subjects_override=args.expected_subjects,
         sam_version=args.sam_version,
         sam_checkpoint=args.sam_checkpoint,
-        yolo_checkpoint=args.yolo_checkpoint,
+        detector=args.detector,
+        detector_checkpoint=args.detector_checkpoint,
         start_frame=args.start,
         end_frame=args.end,
         videos_dir=videos_dir,

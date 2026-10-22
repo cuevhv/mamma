@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # NOTE: this is process-wide module state read by the
 # patched SAM loaders. They assume a single active pipeline per process (the runner's
-# model — set once per run, before loading). Two pipelines with different settings in
+# model, set once per run, before loading). Two pipelines with different settings in
 # one process would race; revisit if the GUI ever loads pipelines concurrently.
 #
 # Frame filter: when set, the patched SAM frame loaders only load filenames
@@ -47,15 +47,15 @@ def clear_frame_filter():
 
 # Lazy frame loading: load frames on demand (a small window in RAM) instead of
 # materializing all N decoded frames at once, so host RAM is O(window) not
-# O(num_frames) — the way to bound host RAM on long clips (offload bounds VRAM,
+# O(num_frames): the way to bound host RAM on long clips (offload bounds VRAM,
 # not host). SAM accesses frames in monotonic sweeps (one per propagation step;
 # memory-attention uses cached encoded features, not raw images), so a small
 # window never thrashes. Two backends, both keyed off ``sam.lazy_frame_loading``:
 #   - image / JPG-folder input -> _LazyEvictingFrameLoader (LRU window).
 #     Byte-identical; cost is re-reading each frame from disk once per pass.
 #   - native mp4 input -> _VideoStreamFrameLoader (cv2 chunk streaming). No disk
-#     extraction; near-identical to the stock decord decode (edge-pixel rounding,
-#     ~0.99 IoU) and ~+24% wall from re-decoding on revisit. Opt-in.
+#     extraction; near-identical to the stock decord decode (edge-pixel rounding)
+#     and slower from re-decoding on revisit.
 _lazy_frame_loading = False
 _lazy_window = 8
 _lazy_video_chunk = 64        # frames decoded per cv2 seek on the native-mp4 path
@@ -77,8 +77,8 @@ def set_lazy_frame_loading(enabled: bool, window: int = 8, video_chunk: int = 64
 class _LazyEvictingFrameLoader:
     """List-like view over decoded frames that keeps only an LRU window in RAM.
 
-    Matches the eager path's per-frame processing exactly — cast to ``store_dtype``,
-    move to ``compute_device`` when not offloading, then ``(img - mean) / std`` —
+    Matches the eager path's per-frame processing exactly: cast to ``store_dtype``,
+    move to ``compute_device`` when not offloading, then ``(img - mean) / std``,
     so ``self[i]`` equals the eager ``images[i]`` bit-for-bit. Exposes the same
     interface SAM uses: ``len()``, ``[idx]`` -> (3,H,W) tensor, ``video_height``/
     ``video_width``.
@@ -169,7 +169,7 @@ class _VideoStreamFrameLoader:
     """Bounded-RAM frame view that streams directly from the mp4 (no disk extraction).
 
     SAM2's stock ``load_video_frames_from_video_file`` decodes *every* frame into one
-    tensor (O(num_frames) host RAM — ~47 GB on a 3.7k-frame 1024px clip). This keeps
+    tensor (O(num_frames) host RAM, tens of GB on long clips). This keeps
     only a ``chunk``-sized buffer, decoded on demand with ``cv2.VideoCapture``:
     sequential reads are cheap and chunk-start seeks are frame-accurate (verified).
     SAM walks frames in monotonic sweeps (forward anchor->end, then reverse
@@ -300,8 +300,8 @@ def _install_video_lazy_patch(misc_module):
 
     Stock loaders (identical in sam2.utils.misc and sam3.model.utils.sam2_utils)
     materialize *all* decoded frames at once, so full-clip mp4 input blows up host
-    RAM (~47 GB on a 3.7k-frame clip). ``_VideoStreamFrameLoader`` streams a chunk
-    at a time — same O(window) host RAM as the JPG path, no disk extraction. The
+    RAM (tens of GB on long clips). ``_VideoStreamFrameLoader`` streams a chunk
+    at a time: same O(window) host RAM as the JPG path, no disk extraction. The
     caller (``load_video_frames``) passes the model's own img_mean/img_std, so the
     same patch works for both sam2 and sam3 despite their different normalizations.
     """
@@ -461,7 +461,7 @@ def _patch_sam2_png_support():
 def _patch_sam3_png_support():
     """
     Monkey-patch sam3.model.utils.sam2_utils to support PNG images and robust
-    frame sorting — same logic as _patch_sam2_png_support but targeting SAM3's
+    frame sorting, same logic as _patch_sam2_png_support but targeting SAM3's
     copy of the loader.
     """
     try:
@@ -649,8 +649,8 @@ class _Sam3TextDetectMixin:
     Both SAM3 video adapters already hold a ``Sam3ImageOnVideoMultiGPU`` detector
     (the tracker shares its backbone; the session predictor exposes it at
     ``model.detector``). Pointing ``self._detector`` at it lets us text-detect
-    "person" on a frame with **no extra model load** — a drop-in replacement for
-    YOLO that returns the same ``(bbox_xyxy, score)`` the pipeline expects, so
+    "person" on a frame with **no extra model load**, a drop-in replacement for
+    the person detector that returns the same ``(bbox_xyxy, score)`` the pipeline expects, so
     anchors / bootstrap / cross-camera matching are reused unchanged.
     """
 
@@ -665,7 +665,7 @@ class _Sam3TextDetectMixin:
         if self._text_proc is None:
             from sam3.model.sam3_image_processor import Sam3Processor
             # Build on the detector's OWN device, not Sam3Processor's hardcoded
-            # "cuda" default — so text detection works on CPU/MPS hosts too.
+            # "cuda" default, so text detection works on CPU/MPS hosts too.
             try:
                 dev = next(self._detector.parameters()).device
             except StopIteration:
@@ -673,7 +673,7 @@ class _Sam3TextDetectMixin:
             self._text_proc = Sam3Processor(self._detector, device=dev)
         # Honor the caller's threshold per call. Sam3Processor hard-filters boxes
         # at self.confidence_threshold *inside* grounding (default 0.5), and we
-        # cache the processor — so without this, the pipeline's lower-threshold
+        # cache the processor, so without this, the pipeline's lower-threshold
         # fallback (0.4/0.25/0.15 on hard frames) would be a silent no-op for SAM3.
         # Set it before set_text_prompt (which runs grounding).
         self._text_proc.confidence_threshold = float(conf_thresh)
@@ -714,7 +714,7 @@ class _Sam3VideoAdapter(_Sam3TextDetectMixin):
         self._tracker.backbone = sam3_model.detector.backbone
         self._video_width = None
         self._video_height = None
-        # sam3_prompt_light: keep the detector for text_detect (mixin) — the lean
+        # sam3_prompt_light: keep the detector for text_detect (mixin), the lean
         # alternative to the 16x multiplex session predictor.
         self._detector = sam3_model.detector if keep_detector else None
         self._text_proc = None
@@ -804,7 +804,7 @@ class _HostImageBatchView:
     _PIN_MAX_BYTES = 2 << 30
 
     def __init__(self, images, device):
-        import torch  # noqa: F401 — module avoids a top-level torch import
+        import torch  # noqa: F401 - module avoids a top-level torch import
         if images.nbytes <= self._PIN_MAX_BYTES:
             try:
                 images = images.pin_memory()
@@ -893,7 +893,7 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
         self._video_width = None
         self._video_height = None
         # Reuse the predictor's own (already-loaded) image detector for text_detect
-        # (mixin) — replaces the redundant YOLO call in the multi-view bootstrap,
+        # (mixin); replaces the redundant person-detector call in the multi-view bootstrap,
         # with no extra model load.
         self._detector = getattr(getattr(self._predictor, "model", None), "detector", None)
         self._text_proc = None
@@ -965,37 +965,6 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
         )
         return self._parse_outputs(response.get("outputs"))
 
-    def add_box_prompt(self, frame_idx, obj_id, box_xyxy):
-        """Add a box prompt for a specific object on a frame.
-
-        Args:
-            box_xyxy: [x1, y1, x2, y2] in absolute pixel coordinates.
-        """
-        import numpy as np
-        box = np.asarray(box_xyxy, dtype=np.float32)
-        # Convert xyxy to xywh normalized [0-1]
-        w_video = self._video_width or 1
-        h_video = self._video_height or 1
-        cx = (box[0] + box[2]) / 2.0 / w_video
-        cy = (box[1] + box[3]) / 2.0 / h_video
-        w = (box[2] - box[0]) / w_video
-        h = (box[3] - box[1]) / h_video
-        import torch
-        boxes_xywh = torch.tensor([[cx, cy, w, h]], dtype=torch.float32)
-        box_labels = torch.tensor([True])
-
-        response = self._predictor.handle_request(
-            request=dict(
-                type="add_prompt",
-                session_id=self._session_id,
-                frame_index=frame_idx,
-                bounding_boxes=boxes_xywh,
-                bounding_box_labels=box_labels,
-                obj_id=obj_id,
-            )
-        )
-        return self._parse_outputs(response.get("outputs"))
-
     def _cached_frame_outputs(self):
         """Return the session's cached_frame_outputs dict, or None."""
         try:
@@ -1008,7 +977,7 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
         """Propagate all prompts bidirectionally.
 
         If ``sink`` is provided it is called as ``sink(frame_idx, {obj_id: mask})``
-        for each frame and nothing is accumulated — bounded memory, used by the
+        for each frame and nothing is accumulated: bounded memory, used by the
         pipeline to stream masks straight to a disk-backed store.
         Otherwise the full ``{frame_idx: {obj_id: mask}}`` dict is returned
         (back-compatible).
@@ -1018,9 +987,9 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
         never prunes them during propagation, so VRAM grows ~5x faster than the
         sam3 tracker path and OOMs on long clips. When set to an int W, entries
         whose frame index is farther than W from the frame just emitted are
-        dropped (keep_frames — e.g. the prompt frame — are always retained), so
+        dropped (keep_frames, e.g. the prompt frame, are always retained), so
         peak cache is bounded to ~2W frames. We already stream each frame's masks
-        out via ``sink`` and never re-query, so this is dead weight here — but the
+        out via ``sink`` and never re-query, so this is dead weight here, but the
         prune is gated and parity-checked because the bidirectional pass can
         re-read cached frames.
         """
@@ -1108,16 +1077,10 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
             if i < n_masks:
                 result["masks"][oid] = masks[i]  # bool array or tensor [H, W]
             if i < n_boxes:
-                # Convert normalized xywh to absolute xyxy
-                bx = boxes_xywh[i]
-                cx = float(bx[0])
-                cy = float(bx[1])
-                bw = float(bx[2])
-                bh = float(bx[3])
-                x1 = (cx - bw / 2) * w_video
-                y1 = (cy - bh / 2) * h_video
-                x2 = (cx + bw / 2) * w_video
-                y2 = (cy + bh / 2) * h_video
+                # SAM3 boxes are normalized top-left xywh (box_ops.box_xyxy_to_xywh)
+                x, y, bw, bh = (float(v) for v in boxes_xywh[i][:4])
+                x1, y1 = x * w_video, y * h_video
+                x2, y2 = (x + bw) * w_video, (y + bh) * h_video
                 result["boxes"][oid] = np.array([x1, y1, x2, y2], dtype=np.float32)
         return result
 
@@ -1155,8 +1118,8 @@ def build_video_predictor(sam_version: str, config: str | None, checkpoint: str 
 
     elif sam_version in ("sam3", "sam3_prompt_light"):
         # Both use the lean SAM3 tracker (build_sam3_video_model). sam3 detects
-        # with YOLO; sam3_prompt_light text-detects "person" via the model's own
-        # detector (keep_detector=True) — no YOLO, no 16x multiplex predictor.
+        # with the person detector; sam3_prompt_light text-detects "person" via the model's own
+        # detector (keep_detector=True): no person detector, no 16x multiplex predictor.
         _patch_sam3_png_support()
         _patch_sam3_video_lazy()
         from sam3.model_builder import build_sam3_video_model  # type: ignore

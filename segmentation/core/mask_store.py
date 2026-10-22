@@ -90,12 +90,10 @@ class MaskStore:
             payload[f"s{int(oid)}"] = shape
             ids.append(int(oid))
         payload["ids"] = np.asarray(sorted(ids), dtype=np.int64)
-        # Compressed: packed binary person masks deflate extremely well
-        # (measured 756 KB -> 4 KB/frame on a salsa-resolution blob at
-        # +1.7 ms/frame, <1% of the propagation budget), which keeps the
-        # per-camera store in the tens-of-MB range instead of several GB
-        # (a single ~4900-frame camera can fill the node's /tmp with ~3 GB uncompressed).
-        # Reads are transparently decompressed by np.load.
+        # Compressed: packed binary person masks deflate very well at a
+        # negligible CPU cost, which keeps the per-camera store small (long
+        # uncompressed clips can fill a small /tmp). Reads are transparently
+        # decompressed by np.load.
         np.savez_compressed(self._path(fidx), **payload)
         self._index[fidx] = self._path(fidx)
 

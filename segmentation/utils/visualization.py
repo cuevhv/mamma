@@ -1,6 +1,72 @@
 """Visualization utilities for ma_masks pipeline outputs."""
 
+import os
 from pathlib import Path
+
+import cv2
+import numpy as np
+
+OVERLAY_DIR = "masked_outputs"
+
+
+def stale_overlay_cameras(seq_out_path):
+    """Cameras whose ``rig_vote_report.json`` is newer than their overlays.
+
+    The tracker draws ``masked_outputs`` while it writes the masks; the rig vote
+    renames mask entries afterwards. A report newer than every overlay file
+    marks overlays that still show the pre-vote identities, also when an
+    earlier finalize stopped between the vote and the re-render.
+    """
+    stale = []
+    for report in sorted(Path(seq_out_path).glob("*/rig_vote_report.json")):
+        overlays = [p.stat().st_mtime_ns for p in (report.parent / OVERLAY_DIR).glob("*")
+                    if p.suffix.lower() in (".jpg", ".mp4")]
+        if overlays and report.stat().st_mtime_ns > max(overlays):
+            stale.append(report.parent.name)
+    return stale
+
+
+def render_overlays(frames, mask_dir, out_dir, workers=4):
+    """Write ``frame_FFFF.jpg`` overlays of the masks in ``mask_dir``.
+
+    Same convention as the tracker's overlays: every mask adds half of the
+    tab10 colour of its id - 1 to the frame, saved at quarter resolution.
+    Frames are decoded in order and drawn by ``workers`` threads, with a few
+    frames in flight. Returns the number of frames written.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from core.mask_archive import MaskArchiveReader
+    from utils.drawing import show_mask_cv2
+
+    os.makedirs(out_dir, exist_ok=True)
+    with MaskArchiveReader(mask_dir) as reader, ThreadPoolExecutor(workers) as pool:
+        by_frame = {}
+        for name in reader.names():
+            f, pid = (int(x) for x in name[len("mask_"):-len(".png")].split("_"))
+            by_frame.setdefault(f, []).append((pid, name))
+        half_colors = {pid: show_mask_cv2(np.ones((2, 2), bool), obj_id=pid - 1)[0, 0, :3]
+                       .astype(np.float32) * 0.5
+                       for entries in by_frame.values() for pid, _ in entries}
+
+        def draw(f, rgb):
+            img = rgb.astype(np.float32)
+            for pid, name in by_frame[f]:
+                img[reader.read(name) > 127] += half_colors[pid]
+            h, w = img.shape[:2]
+            # Channels are resized independently: resizing before the RGB to BGR
+            # flip writes the same pixels as the tracker's flip-then-resize.
+            small = cv2.resize(np.clip(img, 0, 255).astype(np.uint8), (max(1, w // 4), max(1, h // 4)))
+            cv2.imwrite(os.path.join(out_dir, f"frame_{f:04d}.jpg"), small[:, :, ::-1])
+
+        todo = [f for f in sorted(by_frame) if f < len(frames)]
+        pending = []
+        for f in todo:
+            pending.append(pool.submit(draw, f, frames.read_rgb(f)))
+            if len(pending) > 2 * workers:
+                pending.pop(0).result()
+        for p in pending:
+            p.result()
+    return len(todo)
 
 
 def generate_cross_camera_summary(seq_out_path, log_fn=None):

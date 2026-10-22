@@ -1,5 +1,4 @@
-"""Camera geometry helpers shared by the tracking pipeline and the
-cross-camera consensus post-process.
+"""Camera geometry helpers for the tracking pipeline's cross-camera matching.
 
 Torch-free, numpy-only: importable without loading any model stack. The
 fundamental-matrix chain and the point-to-epipolar-line distance follow the

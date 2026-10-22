@@ -1,5 +1,6 @@
 import os
 import copy
+import glob
 import json
 import shutil
 import subprocess
@@ -11,15 +12,15 @@ import matplotlib.pyplot as plt
 import tqdm
 
 import cv2
-from ultralytics import YOLO
 import open_clip
 
 from core.logging import logger
 from core.exceptions import CameraProcessingError
 from core import geometry
-from core.mask_archive import MaskArchiveWriter
+from core.mask_archive import MaskArchiveReader, MaskArchiveWriter
 from core.mask_store import MaskStore
 from core.predictor_factory import build_video_predictor
+from core.person_detector import build_person_detector
 from core.frame_source import ImageFileSource, VideoSource, frame_source_from_cam_data
 from utils.drawing import show_box, show_mask_cv2
 from PIL import Image
@@ -57,7 +58,7 @@ FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def _sam_log(level: str, message: str):
-    """Legacy wrapper — delegates to loguru.
+    """Legacy wrapper: delegates to loguru.
 
     Maps level aliases to loguru's actual method names. Notably loguru exposes
     ``warning`` (not ``warn``); without this mapping ``_log_warn`` silently fell
@@ -106,21 +107,19 @@ DEFAULT_ASSIGNMENT_CONFIG = {
     "masks": {
         "merge_duplicate_tracklets": True,
         "merge_iou_threshold": 0.95,
-        # Identity-continuity cleanup (validated production defaults):
-        # the gate drops transient teleports/duplicate stretches; recovery
-        # re-acquires a person lost to a takeover collapse (abstains without
-        # takeover-scale jump evidence; SAM2 backends only, no-op elsewhere).
+        # Identity-continuity cleanup, both on by default: the gate drops
+        # transient teleports/duplicate stretches; recovery re-acquires a person
+        # lost to a takeover collapse (abstains without takeover-scale jump
+        # evidence). Recovery runs on sam2, sam3 and sam3_prompt_light, not on
+        # sam3_prompt.
         "mask_continuity_gate": True,
         "recover_collapsed_tracklets": True,
         # Track-then-match seed prescreen: bound the seeded tracklets to the
         # top-M candidates per init subject (epipolar+CLIP shortlist) before
         # any tracking runs. "auto" (default) = engage only when detections >
-        # N*M AND epipolar calibration is available — clean scenes are
-        # untouched by construction; "off" = seed every detection (pre-v1.1.0
-        # behaviour). Identity is still decided after tracking by the remap.
-        # Validated on 444 archived ttm camera events (0 subject drops) +
-        # GT-silhouette no-op check; see experimental_scripts/
-        # seed_prescreen_validation.html (private).
+        # N*M AND epipolar calibration is available (clean scenes are
+        # untouched by construction); "off" = seed every detection. Identity is
+        # still decided after tracking by the remap.
         "seed_prescreen": "auto",
         "seed_candidates_per_subject": 3,
         "truncate_relatched_tracklets": True,
@@ -133,16 +132,15 @@ DEFAULT_ASSIGNMENT_CONFIG = {
         "tiny_tracklet_min_frame_ratio": 0.2,
         # Cross-camera identity for non-init cameras. "auto" (default) is
         # calibration- and backend-aware: track_then_match for SAM3-text detection
-        # (sam3_prompt_light) always, and for YOLO backends (sam2/sam3) when epipolar
-        # calibration (cam_int/cam_ext) is available — with geometry, track-then-match
-        # takes every backend to ~100% cross-camera id-accuracy. Falls back to
-        # match_then_track (legacy) for YOLO backends only when matching is CLIP-only
-        # (no calibration). See _cross_camera_strategy(). Override with an explicit
-        # strategy if desired.
+        # (sam3_prompt_light) always, and for the box-detector backends (sam2/sam3) when epipolar
+        # calibration (cam_int/cam_ext) is available, where the geometry term dominates
+        # identity. Without calibration the remap is CLIP-only, so the box-detector
+        # backends fall back to match_then_track. See _cross_camera_strategy(). Override
+        # with an explicit strategy if desired.
         "cross_camera_strategy": "auto",
         # Seed selection for track-then-match seeds every detected person on the seed frame
         # and lets the cross-camera remap prune surplus by identity (CLIP + epipolar), rather
-        # than pre-trimming to the expected subject count by raw detection confidence — which
+        # than pre-trimming to the expected subject count by raw detection confidence, which
         # would drop a partner-occluded real subject in favour of a cleaner-looking outsider.
         # max_seed_tracklets is a generous safety ceiling for pathological bystander-heavy
         # scenes (logged when hit).
@@ -171,6 +169,13 @@ def get_device():
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:
+        # An NVIDIA device node without a working CUDA means a broken driver or
+        # GPU: running SAM on the CPU instead takes hours, so fail fast.
+        if glob.glob("/dev/nvidia[0-9]*"):
+            raise RuntimeError(
+                "An NVIDIA GPU is present but CUDA failed to initialize (broken driver or "
+                "GPU). Refusing to run ma_masks on the CPU, which takes hours instead of "
+                "minutes; fix the GPU or run on another machine.")
         device = torch.device("cpu")
     _sam_log("INFO", f"Using compute device: {device}")
     if device.type == "cuda":
@@ -294,6 +299,24 @@ def _mask2d(m):
     frames carry a leading singleton axis (1, H, W)."""
     m = np.asarray(m)
     return m.reshape(m.shape[-2], m.shape[-1])
+
+
+_OVERLAY_ADDEND = {}
+
+
+def _overlay_half_color(obj_id):
+    """Per-pixel addend of ``show_mask_cv2(mask, obj_id) * 0.5`` on a boolean mask.
+
+    show_mask_cv2 paints a constant ``(cmap_color * 255).astype(uint8)`` where
+    the mask is set; uint8 values plus exact halves are representable in
+    float32, so adding this over each mask's bounding box is bit-identical to
+    adding the full-frame colored mask.
+    """
+    key = 0 if obj_id is None else int(obj_id)
+    if key not in _OVERLAY_ADDEND:
+        c = (np.array(plt.get_cmap("tab10")(key)[:3]) * 255).astype(np.uint8)
+        _OVERLAY_ADDEND[key] = c.astype(np.float32) * 0.5
+    return _OVERLAY_ADDEND[key]
 
 
 def _collapse_flags(video_segments, sorted_frames, anchors, run_s, run_e,
@@ -635,7 +658,7 @@ class SegmentMultipleFrames:
         self,
         sam_model_cfg,
         sam_checkpoint,
-        yolo_checkpoint,
+        detector_checkpoint,
         output_path,
         labels_path=None,
         init_with_gt=False,
@@ -643,6 +666,7 @@ class SegmentMultipleFrames:
         sam_version="sam2",
         start_frame=None,
         end_frame=None,
+        detector=None,
         # Legacy aliases
         sam2_model_cfg=None,
         sam2_checkpoint=None,
@@ -680,21 +704,16 @@ class SegmentMultipleFrames:
         )
 
         # sam3_prompt / sam3_prompt_light detect people with SAM3's own text
-        # detector, so YOLO is never used — skip loading it (saves ~0.2 GB + the
-        # checkpoint need). For sam3_prompt this also drops the redundant YOLO that
-        # the multi-view bootstrap used to call.
+        # detector, so no person detector is loaded for them.
         if sam_version in ("sam3_prompt", "sam3_prompt_light"):
-            self.yolo_model = None
-            if yolo_checkpoint:
-                self._log_info(f"{sam_version}: YOLO not loaded (SAM3 text detection is used).")
+            self.person_detector = None
         else:
-            if not yolo_checkpoint or not os.path.isfile(yolo_checkpoint):
-                raise FileNotFoundError(f"YOLO checkpoint file not found: {yolo_checkpoint}")
-            self.yolo_model = YOLO(yolo_checkpoint, verbose=False)
-            if platform.system() == "Windows":
-                self.yolo_model.to('cpu')
-            else:
-                self.yolo_model.to(self.device)
+            mcfg = self.assignment_config.get("matching", {})
+            self.person_detector = build_person_detector(
+                detector or mcfg.get("detector"),
+                detector_checkpoint or mcfg.get("detector_checkpoint"),
+                self.device,
+            )
 
         self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms('ViT-B-32', pretrained='laion2b_s34b_b79k')
         self.clip_model.eval()  # model in train mode by default, impacts some models with BatchNorm or stochastic depth active
@@ -710,12 +729,6 @@ class SegmentMultipleFrames:
     @property
     def _is_sam3(self):
         return self.sam_version in ("sam3", "sam3_prompt", "sam3_prompt_light")
-
-    @property
-    def _frame_offset(self):
-        """Offset to convert relative frame indices to absolute (global) indices."""
-        return self.start_frame if self.start_frame is not None else 0
-
 
     def _log_info(self, message: str):
         _sam_log("INFO", message)
@@ -782,12 +795,12 @@ class SegmentMultipleFrames:
         """Drop per-object non-conditioning memory outside a window of the frame
         being tracked, bounding stored state to O(window) instead of O(num_frames).
 
-        SAM2 attends only to conditioning/anchor frames (kept here — we never touch
+        SAM2 attends only to conditioning/anchor frames (kept here: we never touch
         ``cond_frame_outputs``) plus a bounded recent window (num_maskmem /
         max_obj_ptrs_in_encoder). Older non-conditioning memory is no longer read,
-        so dropping it leaves results GT-equivalent (validated: identical GT, masks
-        within ~0.995 IoU — only fp-level edge-pixel jitter from freeing memory
-        mid-run). Opt-in via sam.prune_memory_state for very long clips.
+        so dropping it leaves results GT-equivalent (not byte-identical: freeing
+        memory mid-run adds floating-point jitter on edge pixels). Opt-in via
+        sam.prune_memory_state for very long clips.
         """
         per_obj = inference_state.get("output_dict_per_obj") if isinstance(inference_state, dict) else None
         for obj in (per_obj or {}).values():
@@ -839,19 +852,19 @@ class SegmentMultipleFrames:
         if image_size is None:
             image_size = video_segments.image_size()
 
-        # Opt-in collapse RECOVERY before the subtractive cleanup: when two
+        # Collapse RECOVERY (on by default) before the subtractive cleanup: when two
         # tracklets sat near-identical on one person for a sustained run, the
         # lost person is re-detected inside the run, the intruder tracklet is
         # re-seeded there with a box prompt, and only the run's sub-range is
         # re-propagated. Runs that survive recovery fall through to the
         # re-latch truncation / duplicate suppression below.
         if bool(self.assignment_config.get("masks", {}).get(
-                "recover_collapsed_tracklets", False)):
+                "recover_collapsed_tracklets", True)):
             try:
                 video_segments = self._recover_collapsed_runs(
                     inference_state, video_segments,
                     cam_name=cam_name or "SAM", image_size=image_size)
-            except Exception as e:  # noqa: BLE001 — recovery must never kill the run
+            except Exception as e:  # noqa: BLE001 - recovery must never kill the run
                 import traceback
                 self._log_warn(
                     f"[{cam_name or 'SAM'}] collapse recovery skipped "
@@ -901,21 +914,6 @@ class SegmentMultipleFrames:
         """
         self._current_frames = frames
         self._current_sam_video_source = self._resolve_sam_video_source(frames, cam_data)
-
-    def _read_frame_pil(self, frame_idx=None, file_path=None):
-        """
-        Read a frame as a PIL Image.
-
-        Prefers the current FrameSource when available.
-        Falls back to file_path for backward compatibility.
-        """
-        frames = getattr(self, '_current_frames', None)
-        if frames is not None and frame_idx is not None:
-            return frames.read_pil(frame_idx)
-        if file_path is not None:
-            return Image.open(file_path).convert("RGB")
-        raise ValueError("Either frame_idx (with FrameSource) or file_path must be provided.")
-
 
     def _load_rgb_image_safe(self, img_path):
         try:
@@ -1026,8 +1024,8 @@ class SegmentMultipleFrames:
 
         The sanitized-frames recovery re-reads and rewrites individual frame
         files, so it only applies to a directory of images. For an MP4 file
-        (video input) there are no per-frame files on disk — joining the mp4
-        path with frame names would treat the file as a directory (ENOTDIR) —
+        (video input) there are no per-frame files on disk: joining the mp4
+        path with frame names would treat the file as a directory (ENOTDIR),
         so the original init error is re-raised instead of attempting it.
         """
         from core.predictor_factory import set_lazy_frame_loading
@@ -1043,14 +1041,14 @@ class SegmentMultipleFrames:
         # to a small window instead of holding all decoded frames. "auto"
         # enables it from lazy_min_frames up; short clips keep the eager path.
         set_lazy_frame_loading(
-            _resolve_auto_flag(_sam_cfg.get("lazy_frame_loading", False),
+            _resolve_auto_flag(_sam_cfg.get("lazy_frame_loading", "auto"),
                                n_frames, _sam_cfg.get("lazy_min_frames", 1500)),
             int(_sam_cfg.get("lazy_frame_window", 8)),
             int(_sam_cfg.get("lazy_video_chunk", 64)))
 
         # Proactive CPU offload: SAM loads the whole decoded video
         # into VRAM at init_state, so VRAM grows with frame count. We pass the
-        # offload flags up front (offload_video_to_cpu defaults ON — it only
+        # offload flags up front (offload_video_to_cpu defaults ON; it only
         # relocates tensors to the host, masks are identical) so long / many-
         # camera clips don't OOM in the first place. The reactive retry below is
         # the backstop if even that is not enough or offload was disabled.
@@ -1059,13 +1057,13 @@ class SegmentMultipleFrames:
             try:
                 state = self.predictor.init_state(video_path=video_dir, **offload)
             except TypeError:
-                # Backend's init_state doesn't accept offload kwargs — plain call.
+                # Backend's init_state doesn't accept offload kwargs: plain call.
                 state = self.predictor.init_state(video_path=video_dir)
             return state, video_dir
         except torch.cuda.OutOfMemoryError as oom:
             # Proactive offload was not enough (or was disabled): force full CPU
             # offload and retry. Frames and per-frame state live on the host and
-            # stream to the GPU as needed — bounded GPU memory, identical masks,
+            # stream to the GPU as needed: bounded GPU memory, identical masks,
             # somewhat slower. Only triggered on an actual OOM.
             self._log_warn(
                 f"[{context_name}] SAM init_state hit CUDA OOM; retrying with full CPU "
@@ -1080,7 +1078,7 @@ class SegmentMultipleFrames:
                         offload_state_to_cpu=True,
                     )
                 except TypeError:
-                    # Backend's init_state doesn't accept offload kwargs — plain call.
+                    # Backend's init_state doesn't accept offload kwargs: plain call.
                     state = self.predictor.init_state(video_path=video_dir)
                 return state, video_dir
             except Exception as exc:
@@ -1182,7 +1180,7 @@ class SegmentMultipleFrames:
                 sliced[key] = val
 
         # Set frame filter so SAM only loads the sliced frames from the
-        # original directory. No file copying needed — works for all backends
+        # original directory. No file copying needed; works for all backends
         # (SAM2, SAM3 tracker, and SAM3 prompt) via monkey-patched loaders.
         from core.predictor_factory import set_frame_filter
         sliced_paths = sliced['img_abs_path']
@@ -1233,20 +1231,14 @@ class SegmentMultipleFrames:
                     # concat demuxer needs single-quoted paths with internal quotes escaped
                     escaped = os.path.abspath(p).replace("'", r"'\''")
                     f.write(f"file '{escaped}'\n")
-                    f.write(f"duration {1.0 / fps}\n")
-                # The concat demuxer requires the last file to be repeated without a duration
-                # so its final frame is actually shown.
-                last_escaped = os.path.abspath(image_paths[-1]).replace("'", r"'\''")
-                f.write(f"file '{last_escaped}'\n")
 
             # libx264 + yuv420p + faststart = broadly browser-compatible H.264 in MP4.
             # -vf pad ensures even dimensions (libx264 with yuv420p requires even W/H).
-            # Per-frame `duration 1/fps` lines in the concat list set pacing,
-            # so we don't pass -vsync/-r explicitly (modern ffmpeg rejects their
-            # combination). Default -fps_mode=auto produces a CFR output because
-            # all source durations are identical.
+            # The input -r stamps image k at k/fps, so video frame k is image k at
+            # exactly fps; without it the output falls back to 25 fps and drops frames.
             cmd = [
                 FFMPEG_EXE, "-y", "-loglevel", "error",
+                "-r", f"{fps:g}",
                 "-f", "concat", "-safe", "0", "-i", concat_list_path,
                 "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
                 "-c:v", "libx264",
@@ -1359,7 +1351,7 @@ class SegmentMultipleFrames:
 
         # Not in the feature bank: fall back to per-frame mask_data. Callers may
         # pass {} (bank-only lookup), so a missing oid means "no gallery", not a
-        # crash — the caller treats None as "skip this id".
+        # crash: the caller treats None as "skip this id".
         rec = mask_data.get(oid)
         gal = rec.get("features") if rec is not None else None
         if gal is None:
@@ -1395,11 +1387,9 @@ class SegmentMultipleFrames:
             if len(feats) == 0:
                 continue
             payload[int(oid)] = np.stack([f.detach().cpu().numpy() for f in feats], axis=0)
-        # Atomic: parallel per-camera jobs may save concurrently; a torn read
-        # by a starting sibling must be impossible.
-        tmp = str(cache_path) + ".tmp.npy"
-        np.save(tmp, payload, allow_pickle=True)
-        os.replace(tmp, cache_path)
+        # Atomic with a per-process temp name: camera fan-out cells save
+        # concurrently, and a shared temp path lets one cell rename another's.
+        _atomic_np_save(str(cache_path), payload)
         self._log_info(f"Saved subject feature bank cache: {cache_path} (IDs={sorted(payload.keys())})")
 
     def load_subject_feature_bank(self, cache_path):
@@ -1553,12 +1543,6 @@ class SegmentMultipleFrames:
                 f"Trimming initialized IDs to expected_subjects={expected_subjects}. Dropped IDs: {dropped}"
             )
         return selected
-
-    def _as_intrinsics(self, cam_int):
-        return geometry.as_intrinsics(cam_int)
-
-    def _as_extrinsics(self, cam_ext):
-        return geometry.as_extrinsics(cam_ext)
 
     def _compute_fundamental_matrix(self, source_cam_data, target_cam_data):
         return geometry.compute_fundamental_matrix(source_cam_data, target_cam_data)
@@ -1761,7 +1745,7 @@ class SegmentMultipleFrames:
         same conditioning frame. If anchors are spread across different frames,
         un-prompted objects get poisoned tracking memory.
 
-        Strategy: scan sampled frames, pick the one where YOLO detects enough
+        Strategy: scan sampled frames, pick the one where the person detector finds enough
         people to cover all IDs, and reassign all anchors there.
         """
         obj_ids = sorted(oid for oid, m in anchor_matches.items() if m)
@@ -1805,12 +1789,12 @@ class SegmentMultipleFrames:
                 frame_img, yolo_conf, include_clip_features=True
             )
             # A candidate frame with no detections can't anchor anything; skip it
-            # (avoids torch.stack on an empty list — hit more often with SAM3
-            # text detection than YOLO, but a latent crash for both).
+            # (avoids torch.stack on an empty list, hit more often with SAM3
+            # text detection than box detection, but a latent crash for both).
             if len(detections) == 0:
                 continue
             if len(detections) < n_total:
-                # Not enough detections to cover all people — skip unless
+                # Not enough detections to cover all people: skip unless
                 # it's better than what we have
                 if len(detections) <= best_matched:
                     continue
@@ -1990,7 +1974,7 @@ class SegmentMultipleFrames:
     def get_frames_from_far_bbx(self, obj_ids, save_masks, frame_idx):
         """Collect bbox metadata for visualization samples.
 
-        No pruning is done here — tracklet-level pruning (merge duplicates,
+        No pruning is done here: tracklet-level pruning (merge duplicates,
         discard tiny) is handled by _postprocess_tracklets() after propagation,
         before masks are exported.
         """
@@ -2010,7 +1994,7 @@ class SegmentMultipleFrames:
         # SAM keeps the decoded frames here as a (N, 3, H, W) tensor (already on
         # the host when CPU offload is active). Index ONE frame at a time below
         # instead of unnormalizing+copying the whole video into an (N, H, W, 3)
-        # uint8 array — that materialized ~3 redundant full-video copies per
+        # uint8 array, which materialized ~3 redundant full-video copies per
         # camera on top of the mask RAM.
         images = inference_state['images']
         w_original = inference_state['video_width']
@@ -2049,24 +2033,13 @@ class SegmentMultipleFrames:
         import threading
         save_masks_lock = threading.Lock()
 
-        def _overlay_half_color(obj_id):
-            # Reproduces show_mask_cv2's per-pixel addend exactly: the colored
-            # mask it built is (bool_mask * cmap_color * 255).astype(uint8)
-            # * 0.5 — i.e. a CONSTANT half-valued vector wherever the mask is
-            # set. uint8 integers + exact halves are exactly representable in
-            # float32, so accumulating in float32 over the mask ROI is
-            # bit-identical to the old full-frame float64 path at a fraction
-            # of the cost (no per-object full-frame temporaries).
-            import matplotlib.pyplot as plt
-            cmap = plt.get_cmap("tab10")
-            c = (np.array(cmap(0 if obj_id is None else obj_id)[:3]) * 255).astype(np.uint8)
-            return c.astype(np.float32) * 0.5
-
         def _process_frame(frame_idx):
             if frame_idx not in video_segments:
                 return
-            image = _frame_uint8(frame_idx)
-            image = cv2.resize(image, (w_original, h_original))
+            # The frame is only needed for overlays and the sampled crops.
+            image = None
+            if not skip_overlays or frame_idx % vis_frame_stride == 0:
+                image = cv2.resize(_frame_uint8(frame_idx), (w_original, h_original))
             masked_img = image.astype(np.float32) if not skip_overlays else None
             frame_samples = []
 
@@ -2112,7 +2085,7 @@ class SegmentMultipleFrames:
             raise
         finally:
             # Drop the spilled store and release cached CUDA blocks before the next
-            # camera — in a finally so the temp dir is removed even if frame
+            # camera, in a finally so the temp dir is removed even if frame
             # processing raises (close() is idempotent).
             if hasattr(video_segments, "close"):
                 video_segments.close()
@@ -2123,7 +2096,6 @@ class SegmentMultipleFrames:
         for frame_idx in range(0, n_frames, vis_frame_stride):
             save_masks = self.get_frames_from_far_bbx(obj_ids, save_masks, frame_idx)
 
-        # save_masks = self.remove_masks_by_area(save_masks)
         saved_counts = {int(oid): len(data["frame"]) for oid, data in save_masks.items()}
         self._log_info(f"Completed mask export. Saved sampled frames per ID: {saved_counts}")
 
@@ -2134,36 +2106,6 @@ class SegmentMultipleFrames:
                 video_filename="masked_outputs.mp4",
                 remove_images=bool(export_cfg.get("remove_masked_outputs_images", True)),
             )
-        return save_masks
-
-
-    def remove_masks_by_area(self, save_masks):
-        total_area = []
-        for obj_id, data in save_masks.items():
-            masks = np.array(data["mask"])
-            area = masks.sum(axis=(-1,-2))
-            total_area += area.tolist()
-
-        # remove masks that do not feet a std deviation
-        std_area = np.std(total_area)
-        mean_area = np.mean(total_area)
-        self._log_info(f"Mask-area pruning stats: mean={mean_area:.2f}, std={std_area:.2f}")
-        for obj_id, data in save_masks.items():
-            masks = np.array(data["mask"])
-            area = masks.sum(axis=(-1,-2))
-            self._log_info(f"Object {obj_id}: sampled area count={len(area)}, frames={len(data['frame'])}")
-            del_idx = []
-            for i, a in enumerate(area):
-                if a < (mean_area - std_area) or a > (mean_area + std_area):
-                    del_idx.append(i)
-            # remove the mask
-            if del_idx:
-                data["mask"] = np.delete(masks, del_idx, axis=0)
-                data["img"] = np.delete(data["img"], del_idx, axis=0)
-                data["frame"] = np.delete(data["frame"], del_idx, axis=0)
-                data["iou"] = np.delete(data["iou"], del_idx, axis=0)
-                data["bbox"] = np.delete(data["bbox"], del_idx, axis=0)
-                self._log_warn(f"Removed outlier masks for object {obj_id}: idx={del_idx}")
         return save_masks
 
 
@@ -2191,7 +2133,7 @@ class SegmentMultipleFrames:
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             cap.release()
             if len(frames) < total:
-                # Frame subset — extract JPEG frames for SAM only
+                # Frame subset: extract JPEG frames for SAM only
                 range_start = int(reader.start)
                 range_end = int(reader.end) if reader.end is not None else (range_start + len(frames))
                 sam_frame_dir = os.path.join(
@@ -2245,6 +2187,21 @@ class SegmentMultipleFrames:
         raise ValueError("Cannot resolve SAM video source from the provided frame source.")
 
     def process_multi_video_auto(self, cam_data, frame_id, masks=None, reference_cam_data=None, expected_subjects=None, interactive=False):
+        # A non-init camera with a finished cache needs neither its frame range
+        # nor its frame source: return before building them (on resume and in
+        # the fan-out finalize cell this saves a frame listing per camera).
+        cached_name = ""
+        if masks is not None and cam_data.get("cam_name") is not None:
+            cached_name = str(cam_data.get("cam_name"))
+        if cached_name and os.path.exists(os.path.join(self.output_path, cached_name, "masks.npy")):
+            first_key = sorted(masks.keys())[0] if len(masks) > 0 else None
+            if first_key is not None and 'features' not in masks[first_key]:
+                self._log_info(f"[{cached_name}] Input masks do not contain CLIP features. Computing features first.")
+                self.compute_clip_features(masks)
+            self._log_info(f"[{cached_name}] Reusing existing masks cache: "
+                           f"{os.path.join(self.output_path, cached_name, 'masks.npy')}")
+            return masks
+
         # Apply frame range if configured
         _temp_dir = None
         if self.start_frame is not None or self.end_frame is not None:
@@ -2427,7 +2384,7 @@ class SegmentMultipleFrames:
 
 
     def process_first_video_auto(self, frames, frame_id, output_path, expected_subjects=None):
-        """Process the init camera using automatic YOLO person detection.
+        """Process the init camera using automatic person detection.
 
         Args:
             frames: FrameSource providing access to video/image frames.
@@ -2443,7 +2400,7 @@ class SegmentMultipleFrames:
             )
             try:
                 return np.load(cache_path, allow_pickle=True)[()]
-            except Exception as exc:  # noqa: BLE001 — a corrupt cache must
+            except Exception as exc:  # noqa: BLE001 - a corrupt cache must
                 # re-track, not brick resume forever
                 self._log_warn(
                     f"Masks cache at {cache_path} is unreadable ({exc}); "
@@ -2493,7 +2450,7 @@ class SegmentMultipleFrames:
                 # propagation distance.
                 score *= _seed_centrality_weight(
                     int(cand_frame), n_frames,
-                    float(cfg.get("seed_center_bias", 0.0)))
+                    float(cfg.get("seed_center_bias", 0.5)))
                 # Prefer frames with expected_subjects detections
                 if expected_subjects and n_det == expected_subjects:
                     score *= 1.5  # bonus for exact match
@@ -2534,7 +2491,7 @@ class SegmentMultipleFrames:
                         frame_id = int(cand_frame)
                         self._log_info(
                             f"Selected init frame {frame_id}: detected {len(dets)} person boxes "
-                            f"(YOLO conf threshold={conf:.2f})."
+                            f"(detector conf threshold={conf:.2f})."
                         )
                         break
                 if detections:
@@ -2603,8 +2560,7 @@ class SegmentMultipleFrames:
         # A single init-frame prompt per ID. Multi-frame init anchors were
         # removed: anchor association is unreliable on similar-looking people
         # and each anchor conditions only its own frame, so they poison the
-        # tracker's identity memory instead of stabilizing it (measured: raw
-        # tracking on identical costumes was ~2x cleaner without them).
+        # tracker's identity memory instead of stabilizing it.
         self._log_info("Using a single init-frame prompt per ID.")
 
         # Initialize the SAM predictor with the detected bboxes
@@ -2676,7 +2632,7 @@ class SegmentMultipleFrames:
         )
         self.predictor.reset_state(inference_state)
 
-        # Show GUI — user clicks on people
+        # Show GUI: user clicks on people
         self._log_info(
             f"[{cam_name}] Opening interactive GUI. "
             "Left-click to mark people (red = person 1, blue = person 2). "
@@ -2733,7 +2689,7 @@ class SegmentMultipleFrames:
         for obj_id, (points, labels, click_frame) in prompts.items():
             color = person_colors[obj_id % len(person_colors)]
             plt.figure(figsize=(9, 6))
-            plt.title(f"Person {obj_id} — frame {click_frame}")
+            plt.title(f"Person {obj_id}, frame {click_frame}")
             plt.imshow(frames.read_pil(click_frame))
             for x, y in points:
                 plt.scatter(x, y, c=color, s=50, zorder=5, edgecolors="white", linewidths=1)
@@ -2784,7 +2740,7 @@ class SegmentMultipleFrames:
         if n_frames <= 0:
             return []
         cfg = self._get_matching_cfg()
-        start_idx = min(int(cfg.get("start_frame", 0)), n_frames - 1)
+        start_idx = min(int(cfg.get("start_frame", 10)), n_frames - 1)
         max_candidates = int(cfg.get("sam3_redetect_samples", 30))
 
         candidates = [start_idx]
@@ -2891,7 +2847,7 @@ class SegmentMultipleFrames:
             # frames only win when clearly better.
             _w = _seed_centrality_weight(
                 int(cand), n_frames,
-                float(self.assignment_config.get("matching", {}).get("seed_center_bias", 0.0)))
+                float(self.assignment_config.get("matching", {}).get("seed_center_bias", 0.5)))
             score_info["score"] = (score_info["score"][0] * _w,) + tuple(score_info["score"][1:])
             self._log_info(
                 f"[{cam_name}]   frame {cand}: {len(result.get('obj_ids', []))} ids, "
@@ -2934,8 +2890,8 @@ class SegmentMultipleFrames:
                 pre_frames=int(mask_cfg.get("relatch_pre_frames", 5)),
                 pre_area_px=int(mask_cfg.get("relatch_pre_area_px", 100)),
                 # The mask-continuity gate also resolves sustained ambiguous
-                # duplicates here (run-boundary jump); off by default.
-                resolve_by_jump=bool(mask_cfg.get("mask_continuity_gate", False)),
+                # duplicates here (run-boundary jump).
+                resolve_by_jump=bool(mask_cfg.get("mask_continuity_gate", True)),
                 min_jump_ratio=float(mask_cfg.get("relatch_min_jump_ratio", 0.025)),
                 image_size=image_size,
             )
@@ -2970,11 +2926,11 @@ class SegmentMultipleFrames:
                     detected_ids = [d for d in detected_ids if d != obj_id]
                     video_segments.discard_obj(obj_id)
 
-        # Step 4: mask-continuity gate (opt-in). Drop per-frame masks where a
+        # Step 4: mask-continuity gate (on by default). Drop per-frame masks where a
         # tracklet's centroid teleports for one or two frames and returns (SAM2
-        # transiently re-locking onto a neighbour) — a transient the whole-clip
+        # transiently re-locking onto a neighbour), a transient the whole-clip
         # merge and the >=5-frame re-latch truncation above cannot see.
-        if bool(mask_cfg.get("mask_continuity_gate", False)):
+        if bool(mask_cfg.get("mask_continuity_gate", True)):
             video_segments = self._gate_mask_continuity(
                 cam_name, video_segments, detected_ids, image_size=image_size,
                 k=float(mask_cfg.get("mask_gate_k", 8.0)),
@@ -2990,7 +2946,7 @@ class SegmentMultipleFrames:
     def _gate_mask_continuity(self, cam_name, video_segments, detected_ids,
                               image_size=None, k=8.0, floor_ratio=0.12,
                               half_window=7, max_gap=4, dup_iou=0.8, spike_ratio=3.0):
-        """Drop per-frame masks that transiently teleport or duplicate (opt-in Step 4).
+        """Drop per-frame masks that transiently teleport or duplicate (Step 4).
 
         Two complementary per-tracklet detectors, per camera:
           A. Centroid teleport: the mask centroid jumps far from its local median
@@ -2999,10 +2955,10 @@ class SegmentMultipleFrames:
              centroid jump).
           B. Transient IoU-duplicate: the mask area spikes for a frame or two and
              the spiked mask nearly coincides (IoU > ``dup_iou``) with another
-             tracklet — SAM2 briefly grabbing that neighbour. Catches the
+             tracklet (SAM2 briefly grabbing that neighbour). Catches the
              near-neighbour case independent of distance.
         Flagged frames are zeroed, so the person is left un-segmented there and
-        ma_3d triangulates from the clean cameras only — strictly better than a
+        ma_3d triangulates from the clean cameras only, strictly better than a
         teleported/duplicate mask. No-op when off; best-effort (never fatal).
         """
         # Resolution-agnostic threshold: the floor is a fraction of THIS camera's
@@ -3097,7 +3053,7 @@ class SegmentMultipleFrames:
                 frs = ", ".join(str(f) for f in sorted(drop[oid]))
                 self._log_info(
                     f"[{cam_name}] mask-continuity gate: tracklet {oid} teleport/duplicate "
-                    f"on frames [{frs}] (floor={abs_floor:.0f}px) — zeroed {n_zeroed} "
+                    f"on frames [{frs}] (floor={abs_floor:.0f}px); zeroed {n_zeroed} "
                     f"frame(s); the person is left un-segmented there."
                 )
         except Exception as e:
@@ -3206,7 +3162,7 @@ class SegmentMultipleFrames:
         """Pick the intruder of a SUSTAINED near-identical run when neither
         tracklet was absent just before it (so the area/absence test is
         ambiguous). At the run start the intruder's centroid jumps onto the
-        other tracklet — a discontinuity from its OWN pre-run trajectory — while
+        other tracklet (a discontinuity from its OWN pre-run trajectory) while
         the real person's centroid moves continuously. Returns the tracklet that
         jumped, or None when neither jump is clearly larger (both continuous,
         both jumped, or missing data), keeping the caller's abstain behaviour.
@@ -3332,7 +3288,7 @@ class SegmentMultipleFrames:
 
     def _recover_collapsed_runs(self, inference_state, video_segments,
                                 cam_name="SAM", image_size=None):
-        """Re-acquire a person lost to a tracklet collapse (opt-in Step 0 of
+        """Re-acquire a person lost to a tracklet collapse (Step 0 of
         post-processing; ``masks.recover_collapsed_tracklets``).
 
         For each sustained near-identical run: re-detect people inside the
@@ -3352,8 +3308,8 @@ class SegmentMultipleFrames:
         det_stride = int(mask_cfg.get("recover_detect_stride", 30))
         covered_iou = float(mask_cfg.get("recover_covered_iou", 0.30))
         anchor_gap = int(mask_cfg.get("recover_anchor_gap", 120))
-        # Per-run anchor cap: measured on salsa round 3, saturating one run
-        # with anchors both starved the other runs (a region a single prompt
+        # Per-run anchor cap: saturating one run with anchors both starved
+        # the other runs (a region a single prompt
         # had rescued got nothing and was zeroed) and did not hold anyway
         # (drift-back between anchors bridges the near-identical scan across
         # the 1-frame anchor dips, so suppression deletes the whole run,
@@ -3619,7 +3575,7 @@ class SegmentMultipleFrames:
                         runs.append((start, pos - 1))
                     start = None
             # Bridge brief dips: runs separated by fewer than pre_frames
-            # positions are one takeover event — such a gap is too short to be
+            # positions are one takeover event: such a gap is too short to be
             # a genuine recovery, and too short to re-establish pre-run
             # evidence for the follow-up run (which would otherwise be skipped
             # as ambiguous, leaving its frames poisoned).
@@ -3694,19 +3650,19 @@ class SegmentMultipleFrames:
         near-perfect duplicate (IoU ~1) of another tracklet from the takeover
         frame onward. _merge_duplicate_tracklets cannot catch this: its
         whole-clip mean IoU is diluted by the legitimate early segment
-        (measured 0.74 on a real re-latch vs the 0.95 merge threshold).
+        (typically well below the 0.95 merge threshold).
 
         Runs come from _scan_near_identical_runs. The culprit is the tracklet
         that was empty/tiny (area <= pre_area_px) on every one of the
         pre_frames frames just before the run while the other stayed
-        substantial; with ``resolve_by_jump`` (the mask-continuity-gate
-        family, off by default) an ambiguous run is next resolved by the
-        run-boundary centroid jump, and failing that the run is
-        duplicate-SUPPRESSED (_pick_duplicate_suppression): the weaker-
+        substantial; with ``resolve_by_jump`` (set by
+        ``masks.mask_continuity_gate``, on by default) an ambiguous run is
+        next resolved by the run-boundary centroid jump, and failing that the
+        run is duplicate-SUPPRESSED (_pick_duplicate_suppression): the weaker-
         continuity tracklet, or both when symmetric, is zeroed so two
-        identical masks are never exported. With everything off (the
-        committed default) ambiguous runs are logged and left untouched:
-        a logged miss is recoverable, a wrong truncation is not.
+        identical masks are never exported. With the gate off, ambiguous runs
+        are logged and left untouched: a logged miss is recoverable, a wrong
+        truncation is not.
         """
         scan = self._scan_near_identical_runs(
             video_segments, detected_ids, iou_thresh=iou_thresh,
@@ -3718,10 +3674,9 @@ class SegmentMultipleFrames:
         area_series = scan["area_series"]
         centroid_series = scan["centroid_series"]
 
-        # Resolution-agnostic floor for the opt-in run-boundary jump resolver:
-        # a fraction of the image diagonal, the same convention as the mask-
-        # continuity gate (0.025 * diag is ~64 px at 2056x1504, matching the
-        # previously fixed 60 px at that scale).
+        # Resolution-agnostic floor for the run-boundary jump resolver: a
+        # fraction of the image diagonal, the same convention as the mask-
+        # continuity gate.
         min_jump_px = 60.0
         if resolve_by_jump:
             size = image_size or video_segments.image_size()
@@ -3731,17 +3686,16 @@ class SegmentMultipleFrames:
         for oid_a, oid_b, run_s, run_e in scan["runs"]:
             f_s, f_e = sorted_frames[run_s], sorted_frames[run_e]
             if run_s < pre_frames:
-                # No pre-run evidence exists at the clip start. Historically
-                # left to the duplicate merge, but a partial-duration run
-                # never reaches the merge's whole-clip mean-IoU bar (observed:
-                # frames 0-464 shipped as duplicates). With
-                # the gate on, suppress using END-boundary evidence only
+                # No pre-run evidence exists at the clip start, and a
+                # partial-duration run never reaches the duplicate merge's
+                # whole-clip mean-IoU bar. With the gate on, suppress using
+                # END-boundary evidence only
                 # (_pick_duplicate_suppression handles a missing start jump).
                 if not resolve_by_jump:
                     self._log_warn(
                         f"[{cam_name}] Tracklets {oid_a}/{oid_b} are near-identical "
                         f"(IoU>={iou_thresh}) from frame {f_s} to {f_e} but the run starts "
-                        f"at the clip start — leaving it to the duplicate merge, not truncating."
+                        f"at the clip start; leaving it to the duplicate merge, not truncating."
                     )
                     continue
                 culprits, keeper, detail = self._pick_duplicate_suppression(
@@ -3751,7 +3705,7 @@ class SegmentMultipleFrames:
                 self._log_info(
                     f"[{cam_name}] Duplicate suppression (clip-start run): tracklets "
                     f"{oid_a}/{oid_b} are near-identical (IoU>={iou_thresh}) on frames "
-                    f"{f_s}-{f_e} ({detail}) — zeroing "
+                    f"{f_s}-{f_e} ({detail}); zeroing "
                     f"{'tracklet ' + str(culprits[0]) if len(culprits) == 1 else 'BOTH tracklets'} "
                     f"there so identical duplicate masks are never exported."
                 )
@@ -3785,10 +3739,10 @@ class SegmentMultipleFrames:
                 culprits, keeper, reason = [oid_b], oid_a, "absent-then-reacquired"
             else:
                 # Neither was clearly absent (both present as distinct people
-                # before the run). Opt-in (with the mask-continuity gate):
-                # first the strict run-boundary jump resolver; if it abstains,
+                # before the run). With the mask-continuity gate on: first
+                # the strict run-boundary jump resolver; if it abstains,
                 # duplicate suppression (never export two identical masks).
-                # Off by default -> unchanged / warn only.
+                # With the gate off -> unchanged / warn only.
                 culprit = (self._resolve_relatch_culprit_by_jump(
                                centroid_series, oid_a, oid_b, run_s, pre_frames,
                                min_jump_px=min_jump_px)
@@ -3809,7 +3763,7 @@ class SegmentMultipleFrames:
                     self._log_info(
                         f"[{cam_name}] Duplicate suppression: tracklets {oid_a}/{oid_b} are "
                         f"near-identical (IoU>={iou_thresh}) on frames {f_s}-{f_e} with no "
-                        f"clear intruder ({detail}) — zeroing "
+                        f"clear intruder ({detail}); zeroing "
                         f"{'tracklet ' + str(culprits[0]) if len(culprits) == 1 else 'BOTH tracklets'} "
                         f"there so identical duplicate masks are never exported."
                     )
@@ -3818,7 +3772,7 @@ class SegmentMultipleFrames:
                         f"[{cam_name}] Tracklets {oid_a}/{oid_b} are near-identical "
                         f"(IoU>={iou_thresh}) from frame {f_s} to {f_e}, but neither was "
                         f"clearly absent nor clearly jumped at the run start (pre-run areas "
-                        f"{oid_a}: {pre_a}, {oid_b}: {pre_b}) — not truncating."
+                        f"{oid_a}: {pre_a}, {oid_b}: {pre_b}); not truncating."
                     )
                     continue
             for culprit in culprits:
@@ -3895,7 +3849,7 @@ class SegmentMultipleFrames:
             f"(IDs: {detected_ids})."
         )
 
-        # Propagate — stream each frame's masks straight into the disk-backed
+        # Propagate: stream each frame's masks straight into the disk-backed
         # store instead of returning one big in-RAM dict.
         # Optionally bound SAM3's per-frame output cache (cached_frame_outputs),
         # which otherwise grows ~5x faster than the sam3 tracker path and OOMs on
@@ -3982,13 +3936,17 @@ class SegmentMultipleFrames:
                 )
                 return
 
-            try:
-                frame_rgb = frames.read_rgb(frame_idx)
-            except Exception as exc:
-                self._log_warn(f"Failed to read frame {frame_idx} while building masks: {exc}")
-                return
+            # The frame is only needed for overlays and the sampled crops; the
+            # masks themselves come from the tracker.
+            frame_rgb = None
+            if not skip_overlays or frame_idx % vis_frame_stride == 0:
+                try:
+                    frame_rgb = frames.read_rgb(frame_idx)
+                except Exception as exc:
+                    self._log_warn(f"Failed to read frame {frame_idx} while building masks: {exc}")
+                    return
 
-            masked_img = frame_rgb.copy().astype(np.float32) if not skip_overlays else None
+            masked_img = frame_rgb.astype(np.float32) if not skip_overlays else None
             frame_samples = []  # collect samples for save_masks
 
             for sam3_id, mask in video_segments[frame_idx].items():
@@ -4001,10 +3959,12 @@ class SegmentMultipleFrames:
                 mask_bool = mask > 0
                 mask_uint8 = mask_bool.astype(np.uint8) * 255
 
-                # Colored overlay
+                # Colored overlay, accumulated over the mask's bounding box only
                 if not skip_overlays:
-                    colored = show_mask_cv2(mask_bool[np.newaxis], obj_id=out_id)[:, :, :3]
-                    masked_img = masked_img + colored * 0.5
+                    x, y, bw, bh = cv2.boundingRect(mask_uint8)
+                    if bw and bh:
+                        roi = masked_img[y:y + bh, x:x + bw]
+                        roi[mask_bool[y:y + bh, x:x + bw]] += _overlay_half_color(out_id)
 
                 # Per-frame mask (primary output; the archive raises on a bad write)
                 mask_archive.write(f"mask_{frame_idx:04d}_{(out_id + 1):02d}.png", mask_uint8)
@@ -4094,7 +4054,7 @@ class SegmentMultipleFrames:
                                 bbox=dict(boxstyle='round,pad=0.2', facecolor=self._id_color(out_id), alpha=0.8))
 
             axes[0].imshow(np.clip(overlay, 0, 255).astype(np.uint8))
-            axes[0].set_title(f"[{cam_name}] frame {best_frame} — {n_people} people")
+            axes[0].set_title(f"[{cam_name}] frame {best_frame}: {n_people} people")
             axes[0].axis("off")
 
             # Per-person crops
@@ -4130,7 +4090,7 @@ class SegmentMultipleFrames:
     def process_first_video_sam3_prompt(self, frames, frame_id, output_path, expected_subjects=None):
         """Process the init camera using SAM3 text prompt 'person'.
 
-        No YOLO needed. SAM3 auto-detects all person instances and tracks them.
+        No box detector needed. SAM3 auto-detects all person instances and tracks them.
         IDs are remapped to 0-based consecutive integers.
         """
         if os.path.exists(os.path.join(output_path, "masks.npy")):
@@ -4174,7 +4134,7 @@ class SegmentMultipleFrames:
                                       expected_subjects=None):
         """Process a non-init camera using SAM3 text prompt 'person'.
 
-        Uses text="person" to auto-detect and track all people (no YOLO, no
+        Uses text="person" to auto-detect and track all people (no box detector, no
         anchors). Then remaps SAM3's auto-assigned IDs to the init camera's IDs
         using CLIP feature matching + Hungarian assignment.
         """
@@ -4250,10 +4210,10 @@ class SegmentMultipleFrames:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Note: we intentionally do NOT update the feature bank after non-init
-        # cameras in sam3_prompt mode. The remap can be wrong (especially for
-        # similar-looking people), and adding wrong features poisons the bank
-        # for subsequent cameras. The init camera's features are sufficient.
+        # The remap above enriches the feature bank only with tracklets it
+        # matched confidently (matching.online_bank_update_min_score): a wrong
+        # remap of a similar-looking person would poison the bank for later
+        # cameras.
 
         return save_masks
 
@@ -4473,13 +4433,13 @@ class SegmentMultipleFrames:
         else:
             if not getattr(self, "_clip_only_warned", False):
                 self._log_warn(
-                    f"[{cam_name}] No camera calibration (cam_int/cam_ext) — cross-camera ID "
+                    f"[{cam_name}] No camera calibration (cam_int/cam_ext); cross-camera ID "
                     "remap is CLIP-only (appearance), which is markedly less accurate. Provide "
                     "calibration to enable epipolar geometry."
                 )
                 self._clip_only_warned = True
             else:
-                self._log_info(f"[{cam_name}] No camera calibration — using CLIP only for ID remapping.")
+                self._log_info(f"[{cam_name}] No camera calibration; using CLIP only for ID remapping.")
 
         # ── Combined score + Hungarian assignment ──────────────────────────
         if has_any_epi:
@@ -4526,7 +4486,7 @@ class SegmentMultipleFrames:
             id_remap[local_id] = init_id
             remap_scores[local_id] = comb_s
 
-        # Drop unmatched SAM3 IDs — only track people from the init camera.
+        # Drop unmatched SAM3 IDs: only track people from the init camera.
         # Extra people detected in this camera but not in the init camera are ignored.
         n_dropped = sum(1 for sid in local_valid_ids if sid not in id_remap)
         if n_dropped > 0:
@@ -4699,24 +4659,20 @@ class SegmentMultipleFrames:
     def _cross_camera_strategy(self, calibration_available=None):
         """Resolve the cross-camera identity strategy for non-init cameras.
 
-        'auto' (default) is calibration- and backend-aware, per the validation
-        campaign (verified with epipolar geometry active):
+        'auto' (default) is calibration- and backend-aware:
           * SAM3-text detection (sam3_prompt_light) -> always 'track_then_match'.
-          * YOLO detection (sam2, sam3) -> 'track_then_match' WHEN epipolar
+          * Box detection (sam2, sam3) -> 'track_then_match' WHEN epipolar
             calibration (cam_int/cam_ext) is available: the remap's dominant,
-            backend-INDEPENDENT geometry term then drives every backend to ~100%
-            cross-camera id-accuracy (e.g. sam3 legacy 82.5% -> ttm 99.9% on
-            pass_clap; sam2 ~100% either way). Without calibration the remap falls
-            back to CLIP-only, where YOLO appearance crops are unreliable and
-            track-then-match regresses sam2 / is flat for sam3 -> keep the legacy
-            'match_then_track' path for the YOLO backends in that case only.
+            backend-INDEPENDENT geometry term then decides identity. Without
+            calibration the remap is CLIP-only, where detector crops are
+            unreliable, so the box-detector backends keep 'match_then_track'.
         Explicit 'track_then_match' / 'match_then_track' override 'auto'.
         (sam3_prompt uses its own track-then-match path and never consults this.)
 
         Args:
             calibration_available: True if epipolar geometry can be computed for
                 this camera pair (cam_int/cam_ext present). None/False steers the
-                YOLO 'auto' fallback to legacy match-then-track.
+                box-detector 'auto' fallback to legacy match-then-track.
         """
         val = str(self.assignment_config.get("masks", {})
                   .get("cross_camera_strategy", "auto")).strip().lower()
@@ -4724,11 +4680,11 @@ class SegmentMultipleFrames:
             if self.sam_version in ("sam3_prompt_light", "sam3_prompt"):
                 val = "track_then_match"
             elif calibration_available:
-                # YOLO backends reach sam3_prompt parity under track-then-match once
+                # Box-detector backends reach sam3_prompt parity under track-then-match once
                 # the epipolar geometry term is available (it is backend-independent).
                 val = "track_then_match"
             else:
-                # CLIP-only: appearance-only remap is unreliable for YOLO crops.
+                # CLIP-only: appearance-only remap is unreliable for detector crops.
                 val = "match_then_track"
         if val not in ("track_then_match", "match_then_track"):
             self._log_warn(f"Unknown cross_camera_strategy '{val}'; using 'match_then_track'.")
@@ -4738,7 +4694,7 @@ class SegmentMultipleFrames:
     def _select_seed_frame(self, frames, frame_id=None, expected_subjects=None):
         """Pick a clean seed frame for per-camera tracking and return its detections.
 
-        Backend-neutral (YOLO for sam2/sam3, SAM3-text for sam3_prompt_light via the
+        Backend-neutral (box detector for sam2/sam3, SAM3-text for sam3_prompt_light via the
         _collect_yolo_detections dispatch). Scores candidate frames by
         ``n_det * mean_conf * (1 - mean_pairwise_iou)`` (×1.5 when
         n_det == expected_subjects), mirroring the init-camera auto-selector, then
@@ -4773,11 +4729,11 @@ class SegmentMultipleFrames:
             score *= 1.0 - self._mean_pairwise_iou([d[2] for d in dets])
             # Down-weight clip-boundary candidates (mirrors the init selector).
             score *= _seed_centrality_weight(
-                int(cand), n_frames, float(cfg.get("seed_center_bias", 0.0)))
+                int(cand), n_frames, float(cfg.get("seed_center_bias", 0.5)))
             # Prefer frames with exactly the expected subject count: these are the
             # cleanest (all real subjects, no splits/spurious). Rewarding n_det > expected
-            # instead steers toward over-detecting frames (splits) and regresses tracking
-            # (measured); seeding all detections already handles genuine extra people
+            # instead steers toward over-detecting frames (splits) and degrades tracking;
+            # seeding all detections already handles genuine extra people
             # (outsiders) via the remap without needing to bias frame choice.
             if expected_subjects and n_det == expected_subjects:
                 score *= 1.5
@@ -4797,7 +4753,7 @@ class SegmentMultipleFrames:
         if best_frame is None or not best_dets:
             return None, []
 
-        # Seed EVERY detection and let _remap_tracklets_to_init prune surplus by identity —
+        # Seed EVERY detection and let _remap_tracklets_to_init prune surplus by identity:
         # a partner-occluded real subject must not be dropped for a cleaner outsider that
         # merely detects at higher confidence. A generous max_seed_tracklets ceiling only
         # bounds pathological many-bystander scenes, and is logged (never a silent truncation).
@@ -4823,18 +4779,19 @@ class SegmentMultipleFrames:
                 "obj_ids": [int(o) for o in obj_ids],
                 "mask_data": mask_data,
             })
-        except Exception as exc:  # noqa: BLE001 — a bad ref must not fail the camera
+        except Exception as exc:  # noqa: BLE001 - a bad ref must not fail the camera
             self._log_warn(f"Could not register prescreen reference: {exc}")
 
     def _prescreen_ref_point(self, ref, oid, frame_idx):
         """Subject ``oid``'s image position in a reference camera at
-        ``frame_idx``: exact-frame from the per-frame mask PNG when present,
-        else the nearest sampled centroid from the slim mask cache."""
-        png = os.path.join(ref["mask_dir"], f"mask_{int(frame_idx):04d}_{int(oid) + 1:02d}.png")
-        if os.path.isfile(png):
-            m = cv2.imread(png, cv2.IMREAD_GRAYSCALE)
-            if m is not None and m.max() > 0:
-                return self._mask_centroid_xy1(m > 0)
+        ``frame_idx``: exact-frame from the per-frame mask (packed archive or
+        loose PNG) when present, else the nearest sampled centroid from the
+        slim mask cache."""
+        if ref.get("reader") is None:
+            ref["reader"] = MaskArchiveReader(ref["mask_dir"])
+        m = ref["reader"].read(f"mask_{int(frame_idx):04d}_{int(oid) + 1:02d}.png")
+        if m is not None and m.max() > 0:
+            return self._mask_centroid_xy1(m > 0)
         md = ref.get("mask_data")
         if md is not None and oid in md:
             return self._reference_point_from_mask_data(md[oid], frame_idx)
@@ -4863,10 +4820,10 @@ class SegmentMultipleFrames:
         available; otherwise returns ``detections`` unchanged, so clean scenes
         stay byte-identical. Every dropped candidate is logged with its
         scores. Any internal error falls back to the unfiltered detections
-        (current validated behaviour), loudly.
+        (seed every detection), loudly.
         """
         mask_cfg = self.assignment_config.get("masks", {}) or {}
-        mode = str(mask_cfg.get("seed_prescreen", "off") or "off").strip().lower()
+        mode = str(mask_cfg.get("seed_prescreen", "auto") or "off").strip().lower()
         if mode in ("off", "false", "0", "no", "disabled", "none"):
             return detections
         explicit = mode in ("on", "true", "1", "yes", "enabled")
@@ -4899,7 +4856,7 @@ class SegmentMultipleFrames:
                     usable.append((ref, f_matrix))
             if not usable:
                 log = self._log_warn if explicit else self._log_info
-                log(f"[{cam_name}] Seed prescreen: no epipolar calibration available — "
+                log(f"[{cam_name}] Seed prescreen: no epipolar calibration available; "
                     f"appearance-only shortlisting is unreliable, keeping all {k} detections.")
                 return detections
 
@@ -4909,7 +4866,7 @@ class SegmentMultipleFrames:
             image_size = frames.image_size if len(frames) > 0 else None
             sigma_px, max_dist_px, _ = self._resolve_epipolar_px_params(cfg, image_size=image_size)
 
-            # Candidate centroids (bbox centers — well within the epipolar
+            # Candidate centroids (bbox centers, well within the epipolar
             # sigma of a mask centroid) and CLIP features (one batched forward).
             cand_pts = []
             for _crop, _feat, bbox, _score in detections:
@@ -4983,11 +4940,11 @@ class SegmentMultipleFrames:
                     f"[{cam_name}] Seed prescreen: dropping detection {col} "
                     f"(bbox center {cand_pts[col][0]:.0f},{cand_pts[col][1]:.0f}): best fused score "
                     f"{fused[row, col]:.3f} vs subject {subjects[row]} (epi {epi_part:.3f}, "
-                    f"clip {s_clip[row, col]:.3f}) — outside every subject's top-{m_per}.")
+                    f"clip {s_clip[row, col]:.3f}); outside every subject's top-{m_per}.")
             return [detections[i] for i in sorted(keep)]
-        except Exception as exc:  # noqa: BLE001 — fall back to validated behaviour, loudly
+        except Exception as exc:  # noqa: BLE001 - fall back to seeding every detection, loudly
             self._log_warn(
-                f"[{cam_name}] Seed prescreen failed ({type(exc).__name__}: {exc}) — "
+                f"[{cam_name}] Seed prescreen failed ({type(exc).__name__}: {exc}); "
                 f"keeping all {k} detections (pre-prescreen behaviour).")
             return detections
 
@@ -4995,7 +4952,7 @@ class SegmentMultipleFrames:
                                 mask_data=None, source_cam_data=None, target_cam_data=None):
         """Detect people on one seed frame, seed each as an arbitrary LOCAL obj id,
         propagate forward+reverse, and post-process. Backend-neutral track step for
-        the track-then-match path (sam2 / sam3 / sam3_prompt_light) — no cross-camera
+        the track-then-match path (sam2 / sam3 / sam3_prompt_light); no cross-camera
         identity is committed here.
 
         Returns (local_ids, video_segments, best_frame) or (None, None, None).
@@ -5075,8 +5032,8 @@ class SegmentMultipleFrames:
                                             expected_subjects=None):
         """Track-then-match cross-camera identity. Propagate this camera
         independently into clean local tracklets, then remap WHOLE tracklets to the
-        init-camera ids (multi-frame, occlusion-weighted CLIP + epipolar). Never
-        updates the feature bank — gallery stays init + multiview-bootstrap."""
+        init-camera ids (multi-frame, occlusion-weighted CLIP + epipolar).
+        Confident remaps enrich the feature bank (see _remap_tracklets_to_init)."""
         cam_name = frames.cam_name
         local_ids, video_segments, best_frame = self._detect_and_track_local(
             frames, output_path, expected_subjects=expected_subjects,
@@ -5084,7 +5041,7 @@ class SegmentMultipleFrames:
             target_cam_data=target_cam_data)
         if local_ids is None:
             # No tracklets in this camera (nothing detected/tracked). Return a
-            # truthful empty result — never the init camera's mask_data, which
+            # truthful empty result, never the init camera's mask_data, which
             # the caller would cache as this camera's masks.npy and resume
             # would then trust forever.
             self._log_warn(f"[{cam_name}] no tracklets; writing empty masks for this camera.")
@@ -5095,7 +5052,7 @@ class SegmentMultipleFrames:
             source_cam_data=source_cam_data, target_cam_data=target_cam_data,
         )
         save_masks = self._build_masks_from_remap(frames, video_segments, id_remap, output_path)
-        # This camera's per-frame masks are now on disk — register it as a
+        # This camera's per-frame masks are now on disk; register it as a
         # geometric reference for later cameras' seed prescreen.
         self._register_prescreen_reference(
             target_cam_data if isinstance(target_cam_data, dict) else {},
@@ -5135,16 +5092,15 @@ class SegmentMultipleFrames:
             )
 
         # Epipolar geometry is the remap's dominant, backend-independent signal and
-        # it decides the 'auto' strategy for YOLO backends. Check availability cheaply
-        # (key presence — the remap builds the actual matrix where it's used) and warn
-        # loudly on the CLIP-only fallback: a silent INFO-level fallback here previously
-        # masked a large cross-camera accuracy loss.
+        # it decides the 'auto' strategy for the box-detector backends. Check availability cheaply
+        # (key presence; the remap builds the actual matrix where it's used) and warn
+        # loudly on the CLIP-only fallback, which costs cross-camera accuracy.
         calib_ok = self._has_epipolar_calibration(source_cam_data, target_cam_data)
         if not calib_ok and not getattr(self, "_clip_only_warned", False):
             self._log_warn(
                 "No camera calibration (cam_int/cam_ext) available for cross-camera ID "
-                "matching — falling back to CLIP-only (appearance) matching. This is "
-                "markedly less accurate for cross-camera identity, especially for the YOLO "
+                "matching; falling back to CLIP-only (appearance) matching. This is "
+                "markedly less accurate for cross-camera identity, especially for the box-detector "
                 "backends (sam2/sam3). Provide calibration (e.g. run with --ma_cap_dir so "
                 "raw/IOI_*.npz is discovered) to enable epipolar geometry."
             )
@@ -5154,7 +5110,7 @@ class SegmentMultipleFrames:
         cam_label = frames.cam_name  # frames is always a FrameSource here (str converted above)
         self._log_info(
             f"[{cam_label}] cross-camera strategy: {strategy} "
-            f"(epipolar geometry {'available' if calib_ok else 'UNAVAILABLE — CLIP-only'})."
+            f"(epipolar geometry {'available' if calib_ok else 'UNAVAILABLE, CLIP-only'})."
         )
         if strategy == "track_then_match":
             return self._process_new_video_track_then_match(
@@ -5197,7 +5153,7 @@ class SegmentMultipleFrames:
             # value as THIS camera's masks.npy and resume would trust it forever.
             return {}
 
-        # SAM3 requires all object prompts on the same frame — its joint
+        # SAM3 requires all object prompts on the same frame: its joint
         # consolidation poisons tracking memory for objects without prompts
         # on a given conditioning frame.
         if self._is_sam3:
@@ -5408,12 +5364,12 @@ class SegmentMultipleFrames:
         combined_min_score = float(cfg.get("combined_min_score", 0.2))
         allow_missing_ids = bool(cfg.get("allow_missing_ids", False))
         online_bank_update_min_score = float(cfg.get("online_bank_update_min_score", 0.35))
-        max_anchors_per_id = int(cfg.get("max_anchors_per_id", 3))
-        min_anchor_frame_gap = int(cfg.get("min_anchor_frame_gap", 25))
+        max_anchors_per_id = int(cfg.get("max_anchors_per_id", 0))
+        min_anchor_frame_gap = int(cfg.get("min_anchor_frame_gap", 15))
         anchor_score_threshold = float(cfg.get("anchor_score_threshold", combined_min_score))
         anchor_fallback_to_best_any = bool(cfg.get("anchor_fallback_to_best_any", True))
-        anchor_auto_max_cap = int(cfg.get("anchor_auto_max_cap", 20))
-        anchor_samples_per_anchor = int(cfg.get("anchor_samples_per_anchor", 4))
+        anchor_auto_max_cap = int(cfg.get("anchor_auto_max_cap", 32))
+        anchor_samples_per_anchor = int(cfg.get("anchor_samples_per_anchor", 6))
         anchor_enforce_cross_id_uniqueness = bool(cfg.get("anchor_enforce_cross_id_uniqueness", True))
         anchor_conflict_iou = float(cfg.get("anchor_conflict_iou", 0.65))
 
@@ -5978,7 +5934,7 @@ class SegmentMultipleFrames:
         """Drop the full-res frames + masks from an in-memory mask dict.
 
         After img_bbx + features + centroids are computed, the full ``img`` and
-        ``mask`` arrays are never read again — yet the init camera's dict is held
+        ``mask`` arrays are never read again, yet the init camera's dict is held
         resident for the whole multi-camera run and is the bulk of masks.npy.
         Drop them; matching keeps using img_bbx / features / centroid_xy. The
         full-res masks remain on disk as the per-frame mask PNGs.
@@ -6081,14 +6037,14 @@ class SegmentMultipleFrames:
                     return None
             return x1, y1, x2, y2
 
-        # Build per-person crops (img_bbx) — ALWAYS, because img_bbx feeds the
+        # Build per-person crops (img_bbx) ALWAYS, because img_bbx feeds the
         # cross-camera CLIP gallery (matching). The matplotlib crop-summary PNG
         # is pure debugging viz and is only rendered when render_viz is set
         # (exports.debug_crop_summary); the img_bbx output is identical either
         # way, so cross-camera matching is unaffected by the flag.
         for obj_id, data in mask_data.items():
             # Slim cache (resume): full frames were dropped but img_bbx is already
-            # present — nothing to rebuild or render for this person.
+            # present: nothing to rebuild or render for this person.
             if "img" not in data:
                 data.setdefault("img_bbx", [])
                 data.setdefault("img_bbx_frame", [])
@@ -6145,8 +6101,8 @@ class SegmentMultipleFrames:
                 )
 
     def _collect_sam3_text_detections(self, img, conf_thresh, include_clip_features=True):
-        """SAM3 open-vocabulary 'person' detection — the sam3_prompt_light drop-in
-        for YOLO. Returns (PIL image, [(crop, feature, bbox_xyxy, score)]), the
+        """SAM3 open-vocabulary 'person' detection, the sam3_prompt_light drop-in
+        for the box detector. Returns (PIL image, [(crop, feature, bbox_xyxy, score)]), the
         same contract as _collect_yolo_detections, so anchors/matching/tracking
         are reused unchanged.
         """
@@ -6181,11 +6137,11 @@ class SegmentMultipleFrames:
         return img, detections
 
     def _collect_yolo_detections(self, img_or_path, conf_thresh: float, include_clip_features: bool = True):
-        """Run YOLO person detection on a frame.
+        """Run person detection on a frame.
 
         Args:
             img_or_path: PIL Image or file path string.
-            conf_thresh: Minimum YOLO confidence for person class.
+            conf_thresh: Minimum person confidence, on the YOLO12x scale (see core.person_detector).
             include_clip_features: If True, compute CLIP features for each detection.
 
         Returns:
@@ -6198,36 +6154,33 @@ class SegmentMultipleFrames:
             img = img_or_path.convert("RGB")
         else:
             with Image.open(img_or_path) as pil_img:
-                img = pil_img.copy()
+                img = pil_img.convert("RGB")
         # sam3_prompt / sam3_prompt_light: detect people with SAM3's own
-        # open-vocabulary text detector ("person") instead of YOLO — same
+        # open-vocabulary text detector ("person") instead of the box detector, same
         # (img, [(crop,feat,bbox,score)]) contract, so all downstream
         # anchor/bootstrap/matching code is unchanged. For sam3_prompt this
-        # removes the redundant YOLO detection in the multi-view bootstrap (the
-        # only place sam3_prompt called YOLO); the detector is already loaded.
+        # removes the redundant box detection in the multi-view bootstrap (the
+        # only place sam3_prompt called the box detector); the detector is already loaded.
         if self.sam_version in ("sam3_prompt", "sam3_prompt_light"):
             return self._collect_sam3_text_detections(img, conf_thresh, include_clip_features)
-        out = self.yolo_model(img, verbose=False)
         detections = []
         np_img = np.asarray(img)
         crops = []
         boxes_xyxy = []
         scores = []
-        for box in out[0].boxes:
-            if int(box.cls) == 0 and float(box.conf) > conf_thresh:
-                bbx = box.xyxy.cpu().numpy()[0]
-                crop = np_img[int(bbx[1]):int(bbx[3]), int(bbx[0]):int(bbx[2])]
-                if crop.size == 0:
-                    continue
-                crops.append(crop)
-                boxes_xyxy.append(np.array([bbx[0], bbx[1], bbx[2], bbx[3]], dtype=np.float32))
-                scores.append(float(box.conf))
+        for bbx, score in self.person_detector.detect(img, conf_thresh):
+            crop = np_img[int(bbx[1]):int(bbx[3]), int(bbx[0]):int(bbx[2])]
+            if crop.size == 0:
+                continue
+            crops.append(crop)
+            boxes_xyxy.append(np.array([bbx[0], bbx[1], bbx[2], bbx[3]], dtype=np.float32))
+            scores.append(score)
         if len(crops) > 1 and yolo_dedup_enable:
             raw = [(c, None, b, s) for c, b, s in zip(crops, boxes_xyxy, scores)]
             deduped = self._deduplicate_detections(raw, iou_threshold=yolo_dedup_iou)
             if len(deduped) < len(raw):
                 self._log_info(
-                    f"YOLO person-box dedup removed {len(raw) - len(deduped)} overlapping detections "
+                    f"Person-box dedup removed {len(raw) - len(deduped)} overlapping detections "
                     f"(iou_thr={yolo_dedup_iou:.2f})."
                 )
             crops = [d[0] for d in deduped]

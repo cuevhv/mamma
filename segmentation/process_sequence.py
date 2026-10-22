@@ -1,15 +1,13 @@
-#!/usr/bin/env python
-"""Sequence processing entry point.
+"""Sequence driver for ma_masks.
 
-For local/container use, prefer ``run_ma_masks.py`` instead.
-
-Usage:
-    python process_sequence.py --ma_cap_dir /path --seq_name my_seq --out output
+``process_seq`` runs one sequence end to end: camera discovery (ma_cap NPZs,
+videos or image folders), calibration, per-camera segmentation, the rig-vote
+identity repair, and the collage. The command-line entry
+point is ``run_ma_masks.py``, which parses arguments and calls ``process_seq``.
 """
 import os
 import sys
 import glob
-import argparse
 import platform
 from typing import Any, Dict, Optional
 from pathlib import Path
@@ -19,16 +17,13 @@ import numpy as np
 from core.logging import logger
 from utils.paths import string_path_to_windows
 from core.video_reader import cam_data_from_video
+from capture.discovery import sort_frame_files  # noqa: E402  (repo root added by core.video_reader)
 
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-# Note: the YOLO checkpoint path is no longer a module-level constant; it
-# flows through `process_seq(yolo_checkpoint=...)` so the MAMMA inference
-# runner can inject `MAMMA_YOLO_CHECKPOINT` from .env via argparse. The
-# previous `YOLO_CKPT = "weights/yolo12x.pt"` was a relative path that
-# only resolved when this script was invoked with cwd=segmentation/, which
-# was fragile and undocumented.
+# The person detector and its weights come from `process_seq(detector=...,
+# detector_checkpoint=...)`; the default (core.person_detector) needs neither.
 # Default sam2 checkpoint: the repo's staged weights, resolved relative to
 # THIS file so it works from any cwd (local checkout and the synced cluster
 # repo share the layout). Explicit --sam_checkpoint always wins; the MAMMA
@@ -212,7 +207,7 @@ def cam_data_from_image_dir(cam_dir: str, start: int = None, end: int = None) ->
     Returns:
         Dict compatible with process_multi_video_auto / FrameSource factory.
     """
-    image_files = sorted(
+    image_files = sort_frame_files(
         f for f in os.listdir(cam_dir)
         if os.path.splitext(f)[1] in IMAGE_EXTENSIONS
     )
@@ -277,7 +272,8 @@ def process_seq(
     expected_subjects_override=None,
     sam_version="sam2",
     sam_checkpoint=None,
-    yolo_checkpoint=None,
+    detector=None,
+    detector_checkpoint=None,
     start_frame=None,
     end_frame=None,
     videos_dir=None,
@@ -286,13 +282,6 @@ def process_seq(
     undistort=False,
     calibration_path=None,
 ):
-    if not yolo_checkpoint and sam_version not in ("sam3_prompt", "sam3_prompt_light"):
-        raise ValueError(
-            "process_seq requires yolo_checkpoint (except for sam3_prompt / "
-            "sam3_prompt_light, which detect via SAM3 text). Callers must supply a "
-            "path to the YOLOv12-X weights — see --yolo-checkpoint on run_ma_masks.py. "
-            "The MAMMA inference runner injects this from MAMMA_YOLO_CHECKPOINT / .env.local."
-        )
     from core.exceptions import CameraProcessingError
     from core.pipeline import SegmentMultipleFrames
     from core.logging import enable_file_logging
@@ -452,6 +441,11 @@ def process_seq(
                     cd.setdefault('cam_img_w', int(cam.width))
                 if getattr(cam, 'height', None) is not None:
                     cd.setdefault('cam_img_h', int(cam.height))
+                # Lens model of the raw frames, for consumers that project into
+                # them (rig vote); undistortion itself stays opt-in (--undistort).
+                if getattr(cam, 'distortion_model', None) and 'distortion_model' not in cd:
+                    cd['distortion_model'] = str(cam.distortion_model)
+                    cd['distortion_coeffs'] = np.asarray(cam.distortion_coeffs, dtype=np.float64)
                 n_inj += 1
             if n_inj:
                 _log("INFO", f"--calibration: injected epipolar calibration (cam_int/cam_ext) "
@@ -497,7 +491,8 @@ def process_seq(
     pipeline = SegmentMultipleFrames(
         sam_model_cfg=cfg,
         sam_checkpoint=ckpt,
-        yolo_checkpoint=yolo_checkpoint,
+        detector_checkpoint=detector_checkpoint,
+        detector=detector,
         output_path=seq_out_path,
         init_with_gt=init_with_gt,
         assignment_config=assignment_config,
@@ -573,7 +568,10 @@ def process_seq(
             _log("ERROR", f"[{idx}/{n_cameras}] Camera {cam_label} failed: {exc.reason}")
             failed_cameras.append(cam_label)
             continue
-        if not use_gt_bbox and masks is not None:
+        # The saved bank only serves cameras still to come (resume); skipping
+        # it after the last camera keeps camera fan-out cells, which process
+        # one camera each, from overwriting the bank their siblings load.
+        if not use_gt_bbox and masks is not None and idx < n_cameras:
             pipeline.save_subject_feature_bank(feature_bank_cache)
         _log("INFO", f"[{idx}/{n_cameras}] Done: {cam_label}")
 
@@ -583,32 +581,30 @@ def process_seq(
             f"{', '.join(failed_cameras)}. No outputs were written for them; "
             "re-run to retry (successful cameras' caches are reused).")
 
-    # --- Cross-camera identity consensus (optional post-process) ---
-    # Repairs mid-tracklet swaps a single camera cannot see, by letting the
-    # other cameras vote per time segment. Standalone module; reads slim
-    # caches, renames mask PNGs, touches nothing else. Off by default;
-    # "auto" enables it when >=2 cameras carry calibration.
-    _cons_cfg = (assignment_config or {}).get("masks", {}) \
+    # --- Identity repair: rig vote (post-process) ---
+    # Every calibrated camera votes per voxel; per-camera identity errors
+    # (whole-camera mislabels, mid-sequence swaps, takeovers) are relabeled
+    # against the rest of the rig. Reads and renames mask files only.
+    # "auto" (default) enables it with masks.rig_vote_min_cameras calibrated
+    # cameras; 2 to 6 subjects.
+    _rv_cfg = (assignment_config or {}).get("masks", {}) \
         if isinstance(assignment_config, dict) else {}
-    _cons_mode = _cons_cfg.get("cross_camera_consensus", False)
-    from core.consensus import resolve_mode as _cons_resolve, \
-        run_cross_camera_consensus as _cons_run
-    _all_cams = [init_cam_data] + list(remaining)
-    _calibrated = [c for c in _all_cams
+    _calibrated = [c for c in [init_cam_data] + list(remaining)
                    if isinstance(c, dict) and "cam_int" in c and "cam_ext" in c]
-    if _cons_resolve(_cons_mode, len(_calibrated)):
-        _by_name = {str(c.get("cam_name")): c for c in _calibrated
-                    if c.get("cam_name")}
-        _cons_cfg = dict(_cons_cfg)
-        _cons_cfg.setdefault("consensus_anchor_cam",
-                             str(init_cam_data.get("cam_name") or ""))
-        if init_frame is not None:
-            _cons_cfg.setdefault("consensus_anchor_frame", int(init_frame))
-        _reports = _cons_run(seq_out_path, _by_name, cfg=_cons_cfg,
-                             log=lambda m: _log("INFO", m))
-        _n = sum(len(r.relabeled) for r in _reports)
-        _log("INFO", f"Cross-camera consensus: {_n} segment(s) relabeled "
-                     f"across {len(_reports)} camera(s).")
+    from core.rig_vote import DEFAULTS as _rv_defaults, \
+        resolve_mode as _rv_resolve, run_rig_vote as _rv_run
+    if _rv_resolve(_rv_cfg.get("rig_vote", "auto"), len(_calibrated),
+                   _rv_cfg.get("rig_vote_min_cameras",
+                               _rv_defaults["rig_vote_min_cameras"])):
+        _rv_run(seq_out_path,
+                {str(c.get("cam_name")): c for c in _calibrated if c.get("cam_name")},
+                cfg=_rv_cfg, log=lambda m: _log("INFO", m))
+
+    # --- Overlays of relabeled cameras ---
+    # Redrawn from the repaired masks so the overlays and the collage show the
+    # identities ma_2d and ma_3d read. No-op unless a camera holds a
+    # rig_vote_report.json newer than its overlays.
+    _rerender_relabeled_overlays(pipeline, seq_out_path, [init_cam_data] + list(remaining))
 
     # --- Cross-camera consistency check (debug viz) ---
     # Stacks the per-person crop-summary PNGs across cameras; those PNGs are only
@@ -653,6 +649,52 @@ def _resolve_expected_subjects(assignment_config, override, loaded_cache, pipeli
     return None
 
 
+def _rerender_relabeled_overlays(pipeline, seq_out_path, cam_data_list):
+    """Redraw ``masked_outputs`` of the cameras the rig vote relabeled.
+
+    Uses the tracker's frame range, frame source and overlay export settings.
+    The camera's previous overlays are replaced only after a complete render.
+    """
+    import shutil
+    from core.frame_source import frame_source_from_cam_data
+    from utils.visualization import OVERLAY_DIR, render_overlays, stale_overlay_cameras
+
+    export_cfg = pipeline.assignment_config.get("exports", {})
+    if export_cfg.get("skip_masked_outputs", False):
+        return
+    by_name = {str(cd.get("cam_name")): cd for cd in cam_data_list}
+    trimmed = pipeline.start_frame is not None or pipeline.end_frame is not None
+    for cam in stale_overlay_cameras(seq_out_path):
+        if cam not in by_name:
+            continue
+        out_dir = os.path.join(seq_out_path, cam, OVERLAY_DIR)
+        tmp_dir = f"{out_dir}.rigvote_tmp"
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        try:
+            cam_data = by_name[cam]
+            if trimmed:
+                cam_data, _, _ = pipeline._apply_frame_range(cam_data, None)
+            n = render_overlays(frame_source_from_cam_data(cam_data),
+                                os.path.join(seq_out_path, cam, "masks"), tmp_dir)
+            if export_cfg.get("export_masked_outputs_mp4", True):
+                pipeline._export_image_dir_to_mp4(
+                    tmp_dir,
+                    fps=float(export_cfg.get("masked_outputs_fps", 30.0)),
+                    video_filename="masked_outputs.mp4",
+                    remove_images=bool(export_cfg.get("remove_masked_outputs_images", True)),
+                )
+            shutil.rmtree(out_dir)
+            os.replace(tmp_dir, out_dir)
+            _log("INFO", f"[{cam}] Redrew {n} overlay frame(s) with the rig-vote identities.")
+        except Exception as exc:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            _log("WARN", f"[{cam}] Overlay redraw after the rig vote failed; "
+                         f"keeping the tracker's overlays: {exc}")
+        finally:
+            if trimmed:
+                pipeline._cleanup_frame_range_dir()
+
+
 def _generate_collage(seq_out_path):
     """Generate collage video from mask outputs."""
     try:
@@ -665,74 +707,3 @@ def _generate_collage(seq_out_path):
             _log("WARN", f"No camera folders found for collage in '{seq_dir.name}'.")
     except Exception as exc:
         _log("WARN", f"Collage generation failed: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-def main(args):
-    _log("INFO", "CLI arguments:")
-    for k, v in vars(args).items():
-        _log("INFO", f"  {k}: {v}")
-
-    if not os.path.isdir(args.dataset_dir):
-        _log("ERROR", f"Dataset directory does not exist: {args.dataset_dir}")
-        sys.exit(1)
-
-    dataset_name = os.path.basename(args.dataset_dir)
-    out_dir = os.path.join(args.out, dataset_name)
-    cam_names = normalize_cam_names(args.cam_names)
-
-    if not args.seq_name:
-        _log("ERROR", "--seq_name is required.")
-        sys.exit(1)
-    data_folder = os.path.join(args.dataset_dir, args.seq_name)
-    if not os.path.isdir(data_folder):
-        _log("ERROR", f"Sequence folder does not exist: {data_folder}")
-        sys.exit(1)
-
-    assignment_config = load_assignment_config(args.cfg)
-    if assignment_config:
-        _log("INFO", f"Loaded config: {args.cfg}")
-
-    process_seq(
-        data_folder=data_folder,
-        init_frame=args.init_frame,
-        out_path=out_dir,
-        cam_init=args.cam_init,
-        use_gt_bbox=args.use_gt_bbox,
-        init_with_gt=args.init_with_gt,
-        cam_names=cam_names,
-        assignment_config=assignment_config,
-        expected_subjects_override=args.expected_subjects,
-        sam_version=args.sam_version,
-        sam_checkpoint=args.sam_checkpoint,
-        yolo_checkpoint=args.yolo_checkpoint,
-        start_frame=args.start,
-        end_frame=args.end,
-    )
-
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Process a single sequence")
-    parser.add_argument('--ma_cap_dir', '--dataset_dir', type=str, required=True, dest='dataset_dir')
-    parser.add_argument('--seq_name', type=str, required=True)
-    parser.add_argument('--out', type=str, required=True)
-    parser.add_argument('--init_frame', type=int, default=INIT_FRAME_ID,
-                        help='Init frame for detection. Default: auto-select best frame.')
-    parser.add_argument('--cam_init', type=str, default=None)
-    parser.add_argument('--cam_names', nargs='*', default=None)
-    parser.add_argument('--use_gt_bbox', action='store_true')
-    parser.add_argument('--init_with_gt', action='store_true')
-    parser.add_argument('--expected_subjects', type=int, default=None)
-    parser.add_argument('--cfg', '--assignment_cfg', type=str, default=DEFAULT_ASSIGNMENT_CFG, dest='cfg')
-    parser.add_argument('--sam_version', default='sam3_prompt', choices=['sam2', 'sam3', 'sam3_prompt'])
-    parser.add_argument('--sam_checkpoint', default=None)
-    parser.add_argument('--yolo-checkpoint', '--yolo_checkpoint',
-                        dest='yolo_checkpoint', required=True,
-                        help='Path to the YOLOv12-X person-detection weights '
-                             '(.pt file). Required.')
-    parser.add_argument('--start', type=int, default=None)
-    parser.add_argument('--end', type=int, default=None)
-    main(parser.parse_args())

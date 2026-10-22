@@ -100,26 +100,6 @@ def _label_tile(tile: np.ndarray, text: str) -> np.ndarray:
     return tile
 
 
-def _overlay_frame_label(image_bgr: np.ndarray, frame_id: int) -> np.ndarray:
-    """Add a header with frame ID to an image."""
-    if image_bgr is None or image_bgr.size == 0:
-        return image_bgr
-    header_h = max(48, image_bgr.shape[0] // 18)
-    header = np.full((header_h, image_bgr.shape[1], 3), 10, dtype=np.uint8)
-    label = f"Frame {frame_id:06d}"
-    cv2.putText(
-        header,
-        label,
-        (12, header_h - 12),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.9,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
-    return np.concatenate([header, image_bgr], axis=0)
-
-
 def find_cameras(seq_dir: Path) -> List[Path]:
     """Find all camera directories that contain masked_outputs subdirectory."""
     cameras = []

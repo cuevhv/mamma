@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 
-from core.consensus import Segment, relabel_masks
+from core.rig_vote import permute_mask_ids
 from core.mask_archive import ARCHIVE_NAME, MaskArchiveReader, MaskArchiveWriter
 
 
@@ -98,11 +98,10 @@ def test_packed_wins_over_loose(tmp_path):
     r.close()
 
 
-def test_consensus_relabel_packed(tmp_path):
+def test_rig_vote_relabel_packed(tmp_path):
     d = str(tmp_path / "masks")
     masks = _write_archive(d, frames=range(4), pids=(1, 2))
-    seg = Segment(start_frame=1, end_frame=2, permutation=(1, 0), margin_px=50.0)
-    renamed = relabel_masks(d, [0, 1], seg)
+    renamed = permute_mask_ids(d, {1: (1, 0), 2: (1, 0)})
     assert renamed == 4                      # 2 frames x 2 ids swapped
     r = MaskArchiveReader(d)
     for f in (1, 2):                         # swapped inside the segment

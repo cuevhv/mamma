@@ -65,9 +65,8 @@ def test_centrality_weight_shape_long_clip():
 
 
 def test_centrality_weight_inert_on_short_clips():
-    # <= 1000 frames: fully inert (GT study: unscaled bias cost 17 recall
-    # points on a 740-frame crowded clip by overriding a better-separated
-    # endpoint seed); 2000 frames: half strength.
+    # <= 1000 frames: fully inert (an unscaled bias can override a
+    # better-separated endpoint seed on short clips); 2000 frames: half strength.
     assert _seed_centrality_weight(0, 740, bias=0.5) == 1.0
     assert _seed_centrality_weight(0, 1000, bias=0.5) == 1.0
     # n=2000: strength = 0.5 * (2000-1000)/2000 = 0.25 -> endpoint 0.75
@@ -157,7 +156,7 @@ def test_duplicate_suppression_compares_common_boundaries():
     # B jumps 100 px onto the run and has no post-run centroid; A moves 10 px
     # at the run start and a lot AFTER the run (unrelated motion). Only the
     # start boundary is measured for both, so B is the culprit; averaging A's
-    # end-boundary motion in used to force an abstain.
+    # end-boundary motion in would force an abstain.
     seg = _seg()
     series = {
         "A": [(0.0, 0.0)] * 4 + [(10.0, 0.0)] * 3 + [(210.0, 0.0)] * 3,
@@ -216,6 +215,24 @@ def test_epipolar_reference_set_uses_completed_cameras():
         assert score == pytest.approx(1.0)
     # missing subject resolves to None, not a crash
     assert refs[1][2](7, 5) is None
+
+
+@pytest.mark.parametrize("packed", [True, False])
+def test_prescreen_ref_point_reads_exact_frame_mask(tmp_path, packed):
+    # The exact-frame mask wins over the sparse slim-cache centroid in both
+    # output layouts (packed masks.zip is the default).
+    from core.mask_archive import MaskArchiveWriter
+    seg = _seg()
+    mask = np.zeros((H, W), np.uint8)
+    mask[20:40, 100:140] = 255
+    with MaskArchiveWriter(str(tmp_path), packed=packed) as w:
+        w.write("mask_0007_01.png", mask)
+    ref = {"mask_dir": str(tmp_path),
+           "mask_data": {0: {"frame": [0], "centroid_xy": [(5.0, 5.0)]}}}
+    p = seg._prescreen_ref_point(ref, 0, 7)
+    assert p[0] == pytest.approx(119.5) and p[1] == pytest.approx(29.5)
+    # frame without a mask entry falls back to the slim cache
+    assert seg._prescreen_ref_point(ref, 0, 3)[0] == pytest.approx(5.0)
 
 
 def test_default_config_matches_shipped_yaml():
@@ -443,7 +460,7 @@ def test_recover_collapsed_runs_reseeds_and_repropagates():
 
 def test_recover_abstains_on_gradual_convergence_three_people():
     # THREE tracked people; two of them stack with NO takeover-scale jump
-    # (conga-line style). A wrong re-seed could leak the third person's
+    # (people walking in a line). A wrong re-seed could leak the third person's
     # identity into the pair, so recovery must abstain.
     pos = {}
     for f in range(60):
@@ -529,8 +546,7 @@ def test_recover_skips_when_person_never_detected():
 
 def test_clip_start_run_suppressed_with_gate_on():
     # A run that starts at frame 0 has no pre-run evidence; with the gate on
-    # it must still be suppressed via END-boundary continuity (task 152
-    # Stage A validation: frames 0-464 shipped as duplicates), and left
+    # it must still be suppressed via END-boundary continuity, and left
     # untouched with the gate off.
     pos = {}
     for f in range(40):
@@ -736,3 +752,45 @@ def test_sweep_ignores_genuine_contact():
         seg.set_frame(f, {1: _blob(40, 40, 10), 2: _blob(62, 40, 10)})
     n_spans, zeroed, unified = _sweep_split_body_collapses(seg, min_span=20)
     assert n_spans == 0 and zeroed == 0
+
+
+def test_get_device_fails_fast_on_broken_gpu(monkeypatch):
+    # an NVIDIA device node without working CUDA must not silently fall back to the CPU
+    import core.pipeline as P
+    monkeypatch.setattr(P.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(P.torch.backends.mps, "is_available", lambda: False)
+    monkeypatch.setattr(P.glob, "glob", lambda pattern: ["/dev/nvidia0"])
+    with pytest.raises(RuntimeError, match="CUDA failed to initialize"):
+        P.get_device()
+    monkeypatch.setattr(P.glob, "glob", lambda pattern: [])       # CPU-only machine
+    assert P.get_device().type == "cpu"
+
+
+def test_feature_bank_saves_concurrently(tmp_path):
+    # camera fan-out cells save the shared bank at the same time: no shared temp file
+    import threading
+    import torch
+    seg = _seg()
+    seg.subject_feature_bank = {0: [torch.ones(4)], 1: [torch.zeros(4)]}
+    path = str(tmp_path / "subject_feature_bank.npy")
+    errors = []
+
+    def save():
+        try:
+            for _ in range(20):
+                seg.save_subject_feature_bank(path)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+    import os
+    from unittest import mock
+    # threads share a pid, so give each its own as separate cluster processes have
+    pids = iter(range(1000, 2000))
+    with mock.patch.object(os, "getpid", side_effect=lambda: next(pids)):
+        threads = [threading.Thread(target=save) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    assert not errors
+    loaded = np.load(path, allow_pickle=True)[()]
+    assert sorted(loaded) == [0, 1]

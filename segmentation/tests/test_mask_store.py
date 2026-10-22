@@ -1,4 +1,4 @@
-"""Unit tests for the disk-backed MaskStore (issue #14 memory fix).
+"""Unit tests for the disk-backed MaskStore.
 
 Verifies the store is a faithful, shape-preserving replacement for the old
 in-RAM ``{frame_idx: {obj_id: mask}}`` dict, including the merge/discard

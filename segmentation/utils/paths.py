@@ -27,29 +27,6 @@ CFG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 SERVER_MAPPING_U2W = create_paths_mapping_unix_to_windows()
 SERVER_MAPPING_W2U = {v: k for k, v in SERVER_MAPPING_U2W.items()}
 
-def load_json_file(json_file_path):
-    with open(json_file_path, 'r') as file:
-        return json.load(file)
-
-def convert_dict_of_paths_to_windows(args: dict):
-    print("Converting paths to Windows format...")
-
-    # Iterate through the arguments that are paths
-    for key, value in args.items():
-
-        if isinstance(value, str):
-            args[key] = string_path_to_windows(value)
-
-        elif isinstance(value, list):
-            # Iterate through the list of paths
-            for i, path in enumerate(value):
-                if isinstance(path, str):
-                    new_value = string_path_to_windows(path)
-                    args[key][i] = new_value
-
-    return args
-
-
 def string_path_to_windows(path: str):
     if not path:
         return path
@@ -76,14 +53,5 @@ def string_path_to_unix(path):
         path = path.replace(windows_path, unix_path)
     # Convert to unix path separators
     path = path.replace('\\', '/').replace("//", "/")
-    return path
-
-
-def convert_to_platform_path(path):
-    if path is not None:
-        if platform.system() == 'Windows':
-            return string_path_to_windows(path)
-        else:
-            return string_path_to_unix(path)
     return path
 

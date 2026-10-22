@@ -1,8 +1,9 @@
-# SAM3 configuration — tuned for reduced tracklet fragmentation.
+# SAM3 configuration: the default config for sam3, sam3_prompt and
+# sam3_prompt_light.
 #
-# This config includes recommended sam3_tracking overrides for 30fps
-# multi-person scenes (3-6 people). For SAM3's unmodified defaults,
-# use configs/sam3_default.yaml instead.
+# The sam3_tracking section holds tuned overrides for 30fps multi-person scenes
+# (3-6 people) that reduce tracklet fragmentation; they apply to sam3_prompt
+# only. For SAM3's unmodified tracking defaults, use configs/sam3_default.yaml.
 #
 # SAM3 uses joint object consolidation; single-frame prompting works well on
 # the init camera. Cross-camera tracking may degrade on dense scenes (6+ people).
@@ -13,7 +14,7 @@
 # ─── Scene ────────────────────────────────────────────────────────────────────
 
 scene:
-  # Fixed number of people in the scene. null = auto-detect from YOLO.
+  # Fixed number of people in the scene. null = auto-detect from the person detector.
   expected_subjects: null
 
   # Build per-person CLIP feature bank from other cameras before processing them.
@@ -22,22 +23,31 @@ scene:
 # ─── Matching ─────────────────────────────────────────────────────────────────
 
 matching:
-  # Skip the first N frames for all detection and matching operations.
-  # Early frames are often dark (lights off) or show people entering.
-  # Skipped frames still receive masks via backward propagation.
+  # First frame of two candidate searches, which skip the early frames (often
+  # dark, or people still entering): sam3_prompt prompt-frame candidates and
+  # legacy match_then_track matching samples start here. Init-frame
+  # auto-selection and the track_then_match seed search sample the whole clip.
+  # Every frame still gets masks (propagation runs forward and backward).
   start_frame: 10
 
-  # Sample every Nth frame for cross-camera matching. At 30fps, 50 = ~1.7s.
+  # Sample every Nth frame for cross-camera matching (legacy match_then_track
+  # only). At 30fps, 50 = ~1.7s.
   sample_interval: 50
 
   # Minimum sampled frames regardless of sequence length.
   min_samples: 5
 
-  # YOLO person detection confidence. Lower catches more people but may
+  # Person box detector (sam2 / sam3): null or dfine = D-FINE-X, yolo =
+  # Ultralytics (AGPL-3.0, opt-in), or package.module:Class. CLI flags override.
+  detector: null
+  detector_checkpoint: null
+
+  # Person detection confidence (YOLO12x scale; each detector maps it to its
+  # own scores). Lower catches more people but may
   # produce false positives (filtered by CLIP matching downstream).
   yolo_person_conf: 0.5
 
-  # Remove duplicate YOLO boxes overlapping by more than this IoU.
+  # Remove duplicate person boxes overlapping by more than this IoU.
   yolo_dedup_enable: true
   yolo_dedup_iou: 0.75
 
@@ -53,9 +63,10 @@ matching:
   # Minimum score for a detection to update the feature bank.
   online_bank_update_min_score: 0.35
 
-  # Minimum mask area as fraction of image area. Smaller masks are ignored
-  # during SAM3 prompt-frame selection and tracks that stay tiny on most frames
-  # are discarded as noise.
+  # Minimum mask area as a fraction of the image area. sam3_prompt ignores
+  # smaller masks when it picks its prompt frame, and the track_then_match remap
+  # gives appearance crops from masks near this size less weight. It does not
+  # discard tracks (that is tiny_tracklet_* under masks).
   min_mask_area_ratio: 0.01
 
   # Down-weight seed/prompt frames near the clip boundaries (length-scaled;
@@ -67,9 +78,10 @@ matching:
   # here to keep the search fast on long sequences.
   sam3_redetect_samples: 30
 
-  # Sample every Nth frame for CLIP feature averaging during cross-camera
-  # ID remapping (sam3_prompt mode). Lower = more frames sampled = more robust but slower.
-  # With 100 frames and interval 10, samples ~10 frames. Minimum 3 frames always sampled.
+  # Sample every Nth frame for CLIP feature averaging during the cross-camera
+  # track_then_match remap (every backend that uses it, sam3_prompt included).
+  # Lower = more frames sampled = more robust but slower. With 100 frames and
+  # interval 10, samples ~10 frames. Minimum 3 frames always sampled.
   remap_clip_interval: 10
 
   # ── Cross-camera scoring ─────────────────────────────────────────────────
@@ -102,14 +114,16 @@ masks:
   # Step 1: Merge near-identical tracklets (same person tracked twice by SAM).
   # Two tracklets are merged when their average mask IoU exceeds the threshold.
   # The smaller tracklet is absorbed into the larger one.
-  # 0.95 is very conservative — only fires for genuine duplicate tracks.
+  # 0.95 is very conservative: only fires for genuine duplicate tracks.
   merge_duplicate_tracklets: true
   merge_iou_threshold: 0.95
 
   # Continuity gate: drops transient teleport/duplicate mask stretches.
   mask_continuity_gate: true
-  # Collapse recovery does SAM2-specific state surgery; it safely no-ops on
-  # the SAM3 backends, so it stays off here.
+  # Collapse recovery (re-seeds a person lost to a tracker takeover) is tuned
+  # for SAM2: on sam3 and sam3_prompt_light it still runs, but the SAM2 memory
+  # reset is skipped, so re-propagation is best-effort. sam3_prompt never runs
+  # it. Off here.
   recover_collapsed_tracklets: false
 
   # Step 2: Discard tracklets whose mask is too small on most frames.
@@ -120,38 +134,38 @@ masks:
   tiny_tracklet_min_area_ratio: 0.005
   tiny_tracklet_min_frame_ratio: 0.2
 
-  # Cross-camera identity for non-init cameras:
-  #   auto (default) — calibration- and backend-aware: track_then_match for SAM3-text
-  #     detection (sam3_prompt_light) always, and for the YOLO backend (sam3) WHEN
-  #     epipolar calibration (cam_int/cam_ext) is available. With geometry active the
-  #     remap drives every backend to ~100% cross-camera id-accuracy (sam3 legacy
-  #     82.5% -> ttm 99.9% on pass_clap). Without calibration the remap is CLIP-only,
-  #     where YOLO appearance crops are unreliable, so YOLO falls back to legacy.
-  #   track_then_match — propagate each camera independently into clean tracklets,
+  # Cross-camera identity for non-init cameras (CLI: --cross-camera-strategy):
+  #   auto (default): calibration- and backend-aware. track_then_match for
+  #     sam3_prompt_light always, and for the detector backend (sam3) when
+  #     epipolar calibration (cam_int/cam_ext) is available. Without calibration
+  #     the remap is CLIP-only, which is unreliable on detector crops, so sam3
+  #     falls back to match_then_track.
+  #   track_then_match: propagate each camera independently into clean tracklets,
   #     then remap WHOLE tracklets to the init-camera ids (multi-frame,
-  #     occlusion-weighted CLIP + epipolar). Requires camera calibration for the
-  #     epipolar term to engage (else CLIP-only).
-  #   match_then_track (legacy) — match init ids to anchor detections and seed the
+  #     occlusion-weighted CLIP + epipolar against the init camera and every
+  #     camera already completed). Needs calibration for the epipolar term
+  #     (else CLIP-only).
+  #   match_then_track (legacy): match init ids to anchor detections and seed the
   #     tracker before propagation (commits identity early).
   # (sam3_prompt always uses track-then-match by construction, regardless of this.)
   cross_camera_strategy: auto
 
-  # Cross-camera identity consensus (optional post-process, core/consensus.py):
-  # after all cameras finish, tracklet identities are voted per time segment
-  # against every other camera's tracklets (epipolar line-to-bbox), repairing
-  # mid-tracklet swaps a single camera cannot detect (two similar people
-  # crossing paths). Relabels mask PNGs only; abstains under ambiguity.
-  # false (default) | auto (on when >=2 calibrated cameras) | true.
-  cross_camera_consensus: false
-  consensus_min_margin_px: 40.0
-  consensus_min_segment_frames: 45
+  # Identity repair (post-process, core/rig_vote.py; CLI: --rig_vote): after all
+  # cameras finish, every calibrated camera labels a voxel grid with its masks
+  # and each camera is checked against the vote of the others; whole-camera
+  # mislabels, mid-sequence swaps and takeovers are relabeled in the mask
+  # entries (masks.zip or loose PNGs), and those cameras' overlays are redrawn.
+  # Runs for 2 to 6 subjects with at least 5 cameras with masks. auto (default: on with >= rig_vote_min_cameras
+  # calibrated cameras) | false | true.
+  rig_vote: auto
+  rig_vote_min_cameras: 12
 
   # Seed selection for track_then_match seeds EVERY detected person on the seed frame
   # and lets the cross-camera remap prune surplus by identity (CLIP + epipolar), instead
-  # of pre-trimming to the expected subject count by raw detection confidence — which
+  # of pre-trimming to the expected subject count by raw detection confidence, which
   # would drop a partner-occluded real subject in favour of a cleaner-looking outsider.
-  # max_seed_tracklets is a generous safety ceiling for pathological bystander-heavy
-  # scenes (logged when hit).
+  # max_seed_tracklets is a generous safety ceiling for bystander-heavy scenes
+  # (logged when hit).
   # (sam3_prompt already seeds all detections; this governs sam2/sam3/sam3_prompt_light.)
   max_seed_tracklets: 20
 
@@ -162,16 +176,11 @@ sam:
   propagate_reverse: true
 
   # ── Memory bounding for long / many-camera clips ──────────────────────────
-  # Applies to `--sam_version sam3` (the tracker, via init_state) AND to
-  # `sam3_prompt` INGESTION (forwarded into the session start
-  # request; validated: VRAM stays flat while all frames load to host).
-  # KNOWN GAP: the session then repacks the video into its tracking batch and
-  # copy_data_to_device()s it wholesale (_construct_initial_input_batch,
-  # ~28 GB at 4.9k frames), ignoring this flag: long sam3_prompt clips still
-  # need a big GPU until that second upload is patched (consumers are
-  # per-frame slices; upstream has an on-the-fly feature branch to target).
-  # The disk-backed mask store bounds host RAM in all modes regardless.
-  # Masks are identical (offload only moves tensors).
+  # Applies to the sam3 / sam3_prompt_light tracker (via init_state) and to
+  # sam3_prompt, where offload_video_to_cpu also keeps the session's tracking
+  # batch on the host and streams frames to the GPU per slice. The disk-backed
+  # mask store bounds host RAM in all modes regardless. Masks are identical
+  # (offload only moves tensors).
   offload_video_to_cpu: true       # keep decoded frames on host RAM, stream to GPU (≈free; bounds VRAM)
   offload_state_to_cpu: auto        # per-frame memory bank on host. auto = on past offload_state_min_frames; or true/false
   offload_state_min_frames: 1500    # frame count above which "auto" enables offload_state_to_cpu
@@ -180,7 +189,7 @@ sam:
   # all N, bounding host RAM on long clips (offload only bounds VRAM). Two backends:
   #   - image / frame-folder input: LRU window, byte-identical, re-reads from disk.
   #   - mp4 input: cv2 chunk streaming (no disk extraction); near-identical to
-  #     native decode (edge-pixel) and ~+24% wall from re-decoding.
+  #     native decode (edge pixels), with extra wall time from re-decoding.
   # "auto" (default) enables it from lazy_min_frames up. Applies to
   # sam3 (tracker) / sam3_prompt_light; sam3_prompt's session API manages its
   # own frames.
@@ -190,8 +199,8 @@ sam:
   lazy_video_chunk: 64
 
   # Memory-state pruning: drop per-frame mask-memory SAM no longer attends to, so
-  # stored state stays bounded on long clips. GT-equivalent (edge-pixel), off by
-  # default. NOTE: currently effective for the SAM2 predictor only — the sam3
+  # stored state stays bounded on long clips (masks may differ by edge pixels).
+  # Off by default. NOTE: effective for the SAM2 predictor only; the sam3
   # tracker backends (sam3 / sam3_prompt_light) keep their memory in a
   # consolidated output_dict that this prune does not touch, so their state
   # still grows on long clips (sam3_prompt has its own sam3_prune_cache_window
@@ -201,16 +210,13 @@ sam:
 
   # sam3_prompt ONLY: bound SAM3's session output cache (cached_frame_outputs).
   # That cache stores every frame's masks and is never pruned during propagation,
-  # so sam3_prompt VRAM grows ~5x faster than the sam3 tracker path and OOMs on
-  # long clips (measured: OOM at ~700 frames on a 24 GB GPU). Setting an int W
-  # keeps only frames within ±W of the one being emitted (the prompt frame is
-  # always kept), bounding peak cache to ~2W frames. We stream every frame's
-  # masks out and never re-query, so this is dead weight — validated byte-identical
-  # across 3-person, 6-person and 2-camera runs (890/890, 2351/2351 masks). At W=32
-  # it cuts VRAM ~18% and raises the frame ceiling (700f completes at 18.3 GB where
-  # no-prune OOMs), at ~+7% wall. Default ON at 32. Note: the full 743-frame
-  # 6-person clip still needs >24 GB even pruned (intrinsic SAM3 cost) — window very
-  # long clips with --start/--end, or use a bigger GPU. Set to null to disable.
+  # so sam3_prompt VRAM grows with clip length much faster than on the sam3
+  # tracker path. An int W keeps only frames within ±W of the one being emitted
+  # (the prompt frame is always kept), bounding the cache to ~2W frames. Every
+  # frame's masks are streamed out as they are produced and never re-queried, so
+  # the output is unchanged; the cost is a little wall time. Default on at 32;
+  # null disables. Very long clips can still exceed GPU memory: window them with
+  # --start/--end, or use sam3_prompt_light.
   sam3_prune_cache_window: 32
 
 # ─── SAM3 tracking overrides (sam3_prompt mode) ─────────────────────────────
@@ -250,13 +256,14 @@ sam3_tracking:
 
 exports:
   # Render per-person crop-summary + t-SNE + cross-camera debug PNGs (pure viz;
-  # off by default, costs wall time). Mask PNGs / masks.npy / matching crops are
+  # off by default, costs wall time). Masks / masks.npy / matching crops are
   # produced either way. Also settable via --debug_crop_summary.
   debug_crop_summary: false
 
   # Keep full-res frames + masks in masks.npy (~10x larger). Off by default:
   # masks.npy is slimmed to centroids + crops + features; full masks remain as
-  # the per-frame PNGs. Also settable via --debug_full_masks_npy.
+  # the per-frame masks (masks.zip, or loose PNGs with --png). Also settable via
+  # --debug_full_masks_npy.
   debug_full_masks_npy: false
 
   export_masked_outputs_mp4: true

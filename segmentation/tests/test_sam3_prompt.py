@@ -35,11 +35,6 @@ def _temporary_module_stubs():
         _set_module("open_clip", types.SimpleNamespace())
 
     try:
-        import ultralytics  # noqa: F401
-    except Exception:
-        _set_module("ultralytics", types.SimpleNamespace(YOLO=object))
-
-    try:
         from utils import gui as _gui  # noqa: F401
     except Exception:
         _set_module(
