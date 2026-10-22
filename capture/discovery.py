@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"}
 
 
+def sort_frame_files(names: Iterable[str]) -> List[str]:
+    """Frame order shared with the SAM frame loader: numeric when every file
+    stem is an integer (1, 2, 10), lexicographic otherwise."""
+    out = sorted(names)
+    try:
+        out.sort(key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
+    except ValueError:
+        pass
+    return out
+
+
 def normalize_cam_name(name: str) -> str:
     """Strip ``.npz`` / ``.mp4`` extensions and surrounding whitespace."""
     name = name.strip()
@@ -129,7 +140,7 @@ def cam_data_from_image_dir(
         Dict compatible with
         :func:`capture.frame_source.frame_source_from_cam_data`.
     """
-    image_files = sorted(
+    image_files = sort_frame_files(
         f for f in os.listdir(cam_dir)
         if os.path.splitext(f)[1] in IMAGE_EXTENSIONS
     )

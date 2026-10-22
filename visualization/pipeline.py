@@ -174,9 +174,7 @@ def run_visualization(
         g_size, g_center = 10.0, (0.0, 0.0)
         if motions:
             plane = [a for a in (0, 1, 2) if a != int(np.argmax(np.abs(up_vec)))]
-            allv = np.concatenate(
-                [np.asarray(m.vertices, dtype=np.float64).reshape(-1, 3) for m in motions], axis=0)
-            lo, hi = allv.min(0), allv.max(0)
+            lo, hi = _vertex_bounds(motions)
             ext = float(max(hi[plane[0]] - lo[plane[0]], hi[plane[1]] - lo[plane[1]]))
             g_size = 0.5 * ext + max(0.75, 0.3 * ext)      # subjects span + margin
             g_center = (float((lo[plane[0]] + hi[plane[0]]) * 0.5),
@@ -268,6 +266,19 @@ def run_visualization(
 
     log.info("visualization pipeline finished in %.2fs", time.perf_counter() - t_total)
     return rrd_path
+
+
+def _vertex_bounds(motions) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-axis (min, max) over every motion's vertices, as float64.
+
+    Reduces each motion in its own dtype and casts only the bounds, which is
+    exact and avoids a float64 copy of every vertex.
+    """
+    verts = [np.asarray(m.vertices).reshape(-1, 3) for m in motions]
+    verts = [v for v in verts if v.size]
+    lo = np.min([v.min(0) for v in verts], axis=0).astype(np.float64)
+    hi = np.max([v.max(0) for v in verts], axis=0).astype(np.float64)
+    return lo, hi
 
 
 # Sentinel tokens that mean "render an overlay for every available camera".

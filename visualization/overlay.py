@@ -72,11 +72,6 @@ def _fix_pyopengl_egl_querier() -> None:
     is not reachable by dependency resolution alone -- hence this patch. It is
     a no-op on 3.1.7+, where the attribute is already bytes. Runs at import, so
     it also applies inside spawned workers (they re-import this module).
-
-    Verified on the cluster (2026-08-14, node g196): with the stock
-    ``mamma_v1.1.0.sif`` every overlay worker fails and one camera's mp4 is
-    truncated at 34 frames; with this patch all cameras render in the worker
-    pool (task 151: 4x300 frames, zero failures).
     """
     try:
         import OpenGL.EGL  # noqa: F401  (importing is what registers _EGLQuerier)
@@ -304,7 +299,7 @@ def _ffmpeg_candidates() -> list:
     try:
         import imageio_ffmpeg
         cands.append(imageio_ffmpeg.get_ffmpeg_exe())
-    except Exception:  # noqa: BLE001 — optional dependency
+    except Exception:  # noqa: BLE001 - optional dependency
         pass
     sys_ffmpeg = shutil.which("ffmpeg")
     if sys_ffmpeg:
@@ -462,7 +457,7 @@ def _render_one_camera(
         log.info("camera %s: no motions, skipping", cam.name)
         return CameraOverlayResult(cam.name, None, 0, 0.0)
 
-    # Build a single frame source — handles all three input modes:
+    # Build a single frame source - handles all three input modes:
     # video (cam.video_path), image dir / NPZ (cam.image_paths), or
     # neither (None → render on black canvas).
     source = _make_frame_source(cam, image_prefix)
@@ -602,8 +597,8 @@ def render_overlay_videos(
         resolution: Long-side target in pixels (preserves aspect ratio).
             ``None`` or ``<=0`` keeps the source camera resolution.
         max_frames: Optional cap on frames per camera.
-        num_workers: ``None`` (default) = auto, ``min(#cameras, 4)`` (~2x
-            measured on 6 cams). 1 = single process. >1 spawns a process pool
+        num_workers: ``None`` (default) = auto, ``min(#cameras, 4)``.
+            1 = single process. >1 spawns a process pool
             with one ``OverlayRenderer`` per worker (each has its own pyrender
             context); cameras whose worker fails (spawned EGL contexts don't
             work on every host) are retried serially in the main process, so
@@ -721,7 +716,7 @@ def _render_in_parallel(
             try:
                 ordered[idx] = fut.result()
             except Exception as e:  # pragma: no cover  (only raised on real GPU)
-                log.warning("camera %s failed in worker: %s — retrying serially",
+                log.warning("camera %s failed in worker: %s - retrying serially",
                             cameras[idx].name, e)
                 failed.append(idx)
 

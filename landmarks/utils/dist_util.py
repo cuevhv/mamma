@@ -58,7 +58,7 @@ def init_dist(launcher: str, backend: str = 'nccl', **kwargs) -> None:
 
 
 def _init_dist_pytorch(backend: str, **kwargs) -> None:
-    # TODO: use local_rank instead of rank % num_gpus
+    # Device = global rank modulo the local GPU count (ranks packed per node).
     rank = int(os.environ['RANK'])
     num_gpus = torch.cuda.device_count()
     torch.cuda.set_device(rank % num_gpus)

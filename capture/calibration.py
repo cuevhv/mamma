@@ -2,12 +2,12 @@
 
 Three calibration file formats are supported:
 
-* ``.yaml`` / ``.yml`` — pinhole + radtan, Hamilton ``[w,x,y,z]`` quaternion,
+* ``.yaml`` / ``.yml``: pinhole + radtan, Hamilton ``[w,x,y,z]`` quaternion,
   meters, single-rig per file. The format we recommend for new users.
-* ``.xcp`` — Vicon XML calibration export. Vicon 5-parameter radial
+* ``.xcp``: Vicon XML calibration export. Vicon 5-parameter radial
   distortion, JPL ``[x,y,z,w]`` quaternion, millimetre units (converted
   to metres at parse time).
-* ``.json`` — OpenCV-style 3x3 intrinsics + 3x4 extrinsics + 5-param
+* ``.json``: OpenCV-style 3x3 intrinsics + 3x4 extrinsics + 5-param
   Brown-Conrady distortion. Both nested ``{seq: {cam: ...}}`` and flat
   ``{cam: ...}`` layouts are accepted, plus a legacy flat layout that
   uses ``focal`` / ``princpt`` / ``rotation`` / ``position`` keys.
@@ -15,7 +15,7 @@ Three calibration file formats are supported:
 All loaders return the same in-memory representation (:class:`Calibration`
 holding a mapping of :class:`Camera`). Both ``T_cam_world`` (world->cam,
 the projection-ready transform) and ``T_world_cam`` (camera pose in
-the world) are stored verbatim — every downstream consumer wants one or
+the world) are stored verbatim; every downstream consumer wants one or
 the other and round-tripping needs both.
 """
 from __future__ import annotations
@@ -204,7 +204,7 @@ def detect_up_axis(calibration: "Calibration") -> Tuple[str, float]:
     :data:`VALID_UP_AXES` and ``confidence`` is in ``[0, 1]`` (how close the
     averaged up direction is to a cardinal axis).
 
-    Method (robust to roll/few cameras; validated empirically): each camera's
+    Method (robust to roll and few cameras): each camera's
     image-up in world is ``R_wc @ [0,-1,0]`` (OpenCV image-up = camera -Y).
     Averaging across the rig cancels the horizontal components (azimuthal
     symmetry) and reinforces the vertical -> the mean points along world up. The

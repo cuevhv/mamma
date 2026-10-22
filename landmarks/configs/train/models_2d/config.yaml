@@ -10,8 +10,8 @@ dataset_path: data/mammasyn
 
 debug_mode: false
 scale_image: 2
-image_height_original: 256 #259 #434 #259
-image_width_original: 192 #259 #434 #259 # 256
+image_height_original: 256
+image_width_original: 192
 image_height: ${mult:${scale_image},${image_height_original}}
 image_width: ${mult:${scale_image},${image_width_original}}
 

@@ -59,7 +59,7 @@ class OptimizeSMPLX:
         self.save_prediction_fn = save_prediction_fn
         os.makedirs(self.save_prediction_fn, exist_ok=True)
         self.skip_start = max(0, int(skip_start))
-        # Camera metadata file paths and image root dir — used for re-ID debug visualizations.
+        # Camera metadata file paths and image root dir - used for re-ID debug visualizations.
         self.cam_metadata_fns = world_params.get("cam_metadata_fns", None)
         self.imgs_pth = world_params.get("imgs_pth", "")
         self.downsampled_verts_mat = downsampled_verts_mat["downsampled_verts_mat"].to(device) if downsampled_verts_mat is not None else None
@@ -171,12 +171,12 @@ class OptimizeSMPLX:
         fail the abs-sum>0 validity mask), the reprojection loss (pred_in_img
         mask), the epipolar re-ID (zero trajectory -> zero affinity), and the
         contact aggregation alike. Zeroing the points is what removes the view
-        from the reprojection loss — zeroed visibility alone would be clipped
+        from the reprojection loss - zeroed visibility alone would be clipped
         back up to vis_clip_value there.
 
         Safeguard: if gating would leave a body with fewer than 2 supported
         views (possible only when no camera sees the person for the majority of
-        the clip — e.g. moving cameras or mid-sequence entrances, never observed
+        the clip - e.g. moving cameras or mid-sequence entrances, never observed
         on rig-style captures), the gate abstains for that body rather than
         deleting its remaining 2D evidence.
         """
@@ -187,7 +187,7 @@ class OptimizeSMPLX:
             gated = [i for i, s in enumerate(supports) if s < self._VIEW_SUPPORT_MIN_FRAME_FRAC]
             if gated and len(cams_pts) - len(gated) < 2:
                 print(f"ma_3d: view-support gate: body {body_id} would keep fewer than 2 supported "
-                      f"views — leaving all its views ungated instead of removing its remaining "
+                      f"views - leaving all its views ungated instead of removing its remaining "
                       f"2D evidence.")
                 continue
             for cam_i in gated:
@@ -202,7 +202,7 @@ class OptimizeSMPLX:
                 print(f"ma_3d: view-support gate: camera {cam_i} sees body {body_id} in only "
                       f"{supports[cam_i]:.0%} of frames (needs {self._VIEW_SUPPORT_MIN_FRAME_FRAC:.0%} with "
                       f">={self._VIEW_SUPPORT_MIN_LANDMARKS} in-bounds points at vis>"
-                      f"{self._VIEW_SUPPORT_VIS_THRESH}) — excluding this view from body "
+                      f"{self._VIEW_SUPPORT_VIS_THRESH}) - excluding this view from body "
                       f"{body_id}'s fit.")
 
     def init_learnable_params(self, smplx_params_size: dict, init_trans_w_extrinsics: bool = False, device: str = "cuda"):
@@ -522,9 +522,9 @@ class OptimizeSMPLX:
                 if total_loss.requires_grad:
                     total_loss.backward(retain_graph=True)
 
-                # FIXME: should be `total_loss` (the backpropped scalar). Returning
-                # `loss` makes LBFGS line search pick step sizes from a partial
-                # objective — direction stays correct, step sizes mildly suboptimal.
+                # Returns `loss` (the last summed term), not the backpropped
+                # `total_loss`: LBFGS line search then picks step sizes from a
+                # partial objective, while the descent direction is unaffected.
                 return loss
 
             optimizer.step(closure)
@@ -636,7 +636,7 @@ class OptimizeSMPLX:
             floor_contact_world_dict[body_id] = floor_contact_prob
             contact_world_dict[body_id] = contact_prob
 
-        # Legacy Plotly contact HTMLs — superseded by the Rerun (.rrd) view below
+        # Legacy Plotly contact HTMLs - superseded by the Rerun (.rrd) view below
         # (faster, smaller, clearer). Kept commented out for easy fallback; the
         # `animate_pointcloud_bodies_body_first` helper still exists in
         # utils/epipolar_association.py if these need to be re-enabled.
@@ -733,7 +733,7 @@ class OptimizeSMPLX:
             # upstream, so say it loudly.
             if canonical_id in canonical_ids:
                 print(f"ma_3d re-ID: WARNING: two cross-view groups elected the same canonical "
-                      f"body {canonical_id} — benign if one person's group split across "
+                      f"body {canonical_id} - benign if one person's group split across "
                       f"disjoint cameras, suspicious if two people share this label upstream. "
                       f"Groups: {[g['body_ids'] for g in groups_per_t]}")
             canonical_ids.add(canonical_id)
@@ -744,7 +744,7 @@ class OptimizeSMPLX:
                 # group, and each receiving slot written by at most one group.
                 # A violation means the association handed one detection set to
                 # two people, or feeds one identity from two conflicting
-                # sources — no bookkeeping can repair that, so quarantine the
+                # sources - no bookkeeping can repair that, so quarantine the
                 # bodies involved (they are excluded from the fit) and keep
                 # everyone else. Partial writes into a quarantined body's
                 # slots are moot: the body is popped before the fit. Never
@@ -755,7 +755,7 @@ class OptimizeSMPLX:
                                 claimed_sources[(orig_body_id, cam_id)]}
                     quarantined |= culprits
                     print(f"ma_3d re-ID: WARNING: detection slot (body {orig_body_id}, "
-                          f"camera {cam_id}) is claimed by two cross-view groups — the "
+                          f"camera {cam_id}) is claimed by two cross-view groups - the "
                           f"association handed one detection set to two people. Quarantining "
                           f"bodies {sorted(culprits)}; the remaining people are unaffected. "
                           f"Groups: {[g['body_ids'] for g in groups_per_t]}")
@@ -765,7 +765,7 @@ class OptimizeSMPLX:
                     culprits = {orig_body_id, canonical_id}
                     quarantined |= culprits
                     print(f"ma_3d re-ID: WARNING: receiving slot (body {canonical_id}, "
-                          f"camera {cam_id}) is written by two cross-view groups — the "
+                          f"camera {cam_id}) is written by two cross-view groups - the "
                           f"association feeds one identity from two conflicting sources. "
                           f"Quarantining bodies {sorted(culprits)}; the remaining people are "
                           f"unaffected. Groups: {[g['body_ids'] for g in groups_per_t]}")
@@ -802,7 +802,7 @@ class OptimizeSMPLX:
                 new_contacts[b][cam]       = torch.zeros_like(new_contacts[b][cam])
                 new_floor_contacts[b][cam] = torch.zeros_like(new_floor_contacts[b][cam])
             print(f"ma_3d re-ID: camera {cam}: body {b}'s detections here were re-assigned "
-                  f"to body {c['to_body_id']} and nothing was re-assigned back — clearing "
+                  f"to body {c['to_body_id']} and nothing was re-assigned back - clearing "
                   f"body {b}'s stale duplicate in this camera (a detection belongs to at "
                   f"most one body).")
 
@@ -824,7 +824,7 @@ class OptimizeSMPLX:
         OTHER bodies through the joint optimization. Exclusion requires two
         independent signals: (a) cross-view re-ID never adopted the body and
         (b) fewer than 2 cameras reach gate-level support. Quarantined bodies
-        (double-booked by the association) are excluded unconditionally —
+        (double-booked by the association) are excluded unconditionally:
         their data is ambiguous, and a body constrained by contradictory
         detections corrupts every other body through the shared solve.
         """
@@ -848,9 +848,9 @@ class OptimizeSMPLX:
             if quarantined:
                 raise RuntimeError(
                     "ma_3d: every body is either quarantined by a re-ID conflict or has "
-                    "fewer than 2 cameras of evidence — nothing is left to fit. Inspect the "
+                    "fewer than 2 cameras of evidence - nothing is left to fit. Inspect the "
                     "cross-view association (groups logged above) and this sequence's 2D inputs.")
-            print("ma_3d: every body has fewer than 2 cameras of evidence — keeping them all "
+            print("ma_3d: every body has fewer than 2 cameras of evidence - keeping them all "
                   "(refusing to empty the scene); check this sequence's 2D inputs.")
             return
         for body_id, reason in removable:
@@ -862,7 +862,7 @@ class OptimizeSMPLX:
                 d = getattr(self, attr)
                 if isinstance(d, dict):
                     d.pop(body_id, None)
-            print(f"ma_3d: excluding body {body_id} from the fit — {reason}; fitting it "
+            print(f"ma_3d: excluding body {body_id} from the fit: {reason}; fitting it "
                   f"would produce a wrongly-constrained body that also degrades the other "
                   f"bodies through the joint optimization.")
 
@@ -949,7 +949,7 @@ class OptimizeSMPLX:
         # Intentionally placed BEFORE the per-stage loop so that:
         #   (A) the redundant first triangulate_3d_from_2d_points that previously
         #       preceded the re-ID inside the loop is eliminated, and
-        #   (B) re-ID runs exactly once — running it on every optimization stage
+        #   (B) re-ID runs exactly once - running it on every optimization stage
         #       would be wasteful (it is idempotent once pts2d is corrected).
         from utils.epipolar_association import mvpose_style_associate_and_triangulate_temporal
         from utils.reid_viz import visualize_reid, plot_reid_stats

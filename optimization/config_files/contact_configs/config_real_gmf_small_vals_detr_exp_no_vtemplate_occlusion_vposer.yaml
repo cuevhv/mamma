@@ -24,7 +24,7 @@ optim:
       trans: True
     losses:
       reproj_loss:
-        weight: 20. #0 # #10000 # 20
+        weight: 20.
       l2_loss_3d_points:
         weight: 100
 
@@ -49,7 +49,7 @@ optim:
       trans: True
     losses:
       reproj_loss:
-        weight: 100. #50. # 2.0
+        weight: 100.
       body_shape_prior_loss:
         weight: 1.
       vposer_recon_loss:
@@ -75,7 +75,7 @@ optim:
       trans: True
     losses:
       reproj_loss:
-        weight: 120. #50. # 2.0
+        weight: 120.
       angular_acc_loss:
         weight: 0.003
       pts3d_temp_loss:
@@ -103,7 +103,7 @@ optim:
       trans: False
     losses:
       reproj_loss:
-        weight: 300. #50. # 2.0
+        weight: 300.
       angular_acc_loss:
         weight: 0.005
       intersection_loss:
@@ -114,7 +114,7 @@ optim:
         weight: 0.25
 
 # Occlusion-aware gating. Replaces the per-landmark visibility clamp
-# (vis_clip_value) with a "gate" — a per-(camera, frame, landmark) weight in [0,1]
+# (vis_clip_value) with a "gate", a per-(camera, frame, landmark) weight in [0,1]
 # that down-weights landmarks the 2D network reports as occluded, so the few views
 # that actually see a body part aren't out-voted by the many that don't.
 # Gate (soft/hybrid):  weight = visibility * sigmoid((visibility - tau) / beta)

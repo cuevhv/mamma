@@ -229,6 +229,9 @@ def process_data(frame_source, detector, device, model, cfg, out_folder, save_ca
                     body_floor_contact.append(np.zeros((1, cfg.num_joints)))
                     continue
 
+                # Masks are 0/255, so this ratio skips only near-empty masks (below
+                # 1%/255 of the frame, about 120 px at 2056x1504). A true 1% cut would
+                # drop valid people who are small in frame or occluded.
                 total_pixels = mask.shape[0] * mask.shape[1]
                 mask_sum_ratio = np.sum(mask) / total_pixels
                 threshold_ratio = 0.01

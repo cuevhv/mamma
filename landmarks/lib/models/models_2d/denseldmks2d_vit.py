@@ -1,3 +1,4 @@
+import contextlib
 import numpy as np
 import torch
 import torchvision
@@ -161,8 +162,9 @@ class DenseLdmks2DViT(pl.LightningModule):
         return [optimizer], [scheduler]
 
     def forward(self, x, masks):
-        # Extract features from ViT
-        with torch.no_grad() if self.freeze_backbone else torch.enable_grad():
+        # Extract features from ViT. An unfrozen backbone follows the caller's
+        # grad mode, so inference under no_grad() does not build a graph.
+        with torch.no_grad() if self.freeze_backbone else contextlib.nullcontext():
             features = self.backbone(x)
 
         if self.use_mask:

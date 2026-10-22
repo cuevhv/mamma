@@ -12,7 +12,7 @@ def triangulate_batch(pts2d_list, Ks_list, extrs_list,
     extrs_list: list of [T,4,4]
     vis_list: list of [T,N] or None
     weights_list: optional list of [T,N] per-point multipliers
-        folded into each observation's weight — a near-zero weight makes
+        folded into each observation's weight; a near-zero weight makes
         that view's point count ~nothing in the SVD without changing the
         validity mask (so the >=2-views rule still sees it as an observation).
     Returns:
@@ -84,10 +84,10 @@ def triangulate_batch_irls(pts2d_list, Ks_list, extrs_list, vis_list=None,
     derive from CROSS-VIEW AGREEMENT only: a view that barely sees a person
     disagrees with the consensus by hundreds of px and self-suppresses.
 
-    ``r0_px`` is defined at the image diagonal of the rig the default was
-    validated on (2056x1504). When ``img_whs`` — a list of per-camera
-    (width, height) — is given, r0 is rescaled per camera by its actual
-    diagonal, making the weighting resolution-independent. Without it,
+    ``r0_px`` is defined at a reference image diagonal (2056x1504). When
+    ``img_whs`` (a list of per-camera (width, height)) is given, r0 is rescaled
+    per camera by its actual diagonal, making the weighting
+    resolution-independent. Without it,
     ``r0_px`` is used as-is.
     """
     ref_diag = (2056.0 ** 2 + 1504.0 ** 2) ** 0.5

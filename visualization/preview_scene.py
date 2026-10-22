@@ -11,8 +11,8 @@ Server-side we bake everything the client shouldn't know about:
 ``flat_hand_mean`` convention (hand means are added here when the run
 used ``flat_hand_mean=False``). The client's job reduces to standard
 skeletal animation: axis-angle -> quaternion, FK over ``parents``, LBS
-with 4 influences. Validated against ``pred_vertices``: mean error
-~2-3 mm (no pose correctives), max ~3 cm at bent joints.
+with 4 influences. Without pose correctives the preview deviates from
+``pred_vertices`` by a few millimetres, more at strongly bent joints.
 
 Usage:
     python -m visualization.preview_scene --ma-3d-dir output/ma_3d/<tag>/<capture> \
@@ -78,7 +78,7 @@ def _expand_pose(pose: np.ndarray, flat_hand: bool,
 
 def _recorded_fps(ma_cap_dir, seq_name: str) -> int | None:
     """The capture's recorded frame rate from ``<ma_cap_dir>/<seq>/gt/global.npz``
-    (same source ma_vis' CLI uses), or None when absent — older ma_cap runs
+    (same source ma_vis' CLI uses), or None when absent; older ma_cap runs
     predate the ``fps`` key."""
     if not ma_cap_dir:
         return None
@@ -122,8 +122,7 @@ def build_scene(ma_3d_dir, seq_name: str, *, model_npz=None, fps: int = 30,
     # uses. An explicit up_axis (the task config's global.up_axis, passed by
     # the exporter API) is authoritative; "auto" pose-based detection is the
     # fallback only, since it misreads floor-work sequences where the
-    # dancers actually lie on the ground (task 139 post-mortem: detected -y
-    # in a z-up scene and the viewer showed everyone flat).
+    # dancers actually lie on the ground.
     from optimization.export_blender import _scene_orient_and_floor
     (up_vec, up_idx, src, conf), floor = _scene_orient_and_floor(
         str(seq_dir), params, up_axis or "auto", fps)
@@ -168,7 +167,7 @@ def build_scene(ma_3d_dir, seq_name: str, *, model_npz=None, fps: int = 30,
         "seq": seq_name,
         "fps": int(fps),
         # "recorded" = the capture's own rate (gt/global.npz) is baked in;
-        # "fallback" = no recorded rate — the viewer may apply a client-side
+        # "fallback" = no recorded rate; the viewer may apply a client-side
         # hint (e.g. the capture.json FPS) instead of this default.
         "fpsSource": fps_source,
         "upAxis": up_axis,
@@ -195,7 +194,7 @@ def main(argv=None) -> int:
     p.add_argument("--fps", type=int, default=30,
                    help="fallback frame rate; the ma_cap recorded rate wins when available")
     p.add_argument("--ma-cap-dir", default=None,
-                   help="ma_cap output dir (parent of <seq>/) — source of the recorded fps")
+                   help="ma_cap output dir (parent of <seq>/): source of the recorded fps")
     p.add_argument("--up-axis", default="auto",
                    help="World up axis ('z', 'y', '-y', ...). Pass the task "
                         "config's global.up_axis; 'auto' pose-detection is "

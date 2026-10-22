@@ -23,7 +23,7 @@ optim:
       trans: True
     losses:
       reproj_loss:
-        weight: 20. #0 # #10000 # 20
+        weight: 20.
       l2_loss_3d_points:
         weight: 100
 
@@ -48,7 +48,7 @@ optim:
       trans: True
     losses:
       reproj_loss:
-        weight: 100. #50. # 2.0
+        weight: 100.
       # rotation_prior_loss:
       #   weight: 0.01
       body_shape_prior_loss:
@@ -84,7 +84,7 @@ optim:
       trans: True
     losses:
       reproj_loss:
-        weight: 120. #50. # 2.0
+        weight: 120.
       # rotation_prior_loss:
       #   weight: 0.01
       # body_shape_prior_loss:
@@ -122,7 +122,7 @@ optim:
       trans: False
     losses:
       reproj_loss:
-        weight: 300. #50. # 2.0
+        weight: 300.
       # rotation_prior_loss:
       #   weight: 0.01
       # body_shape_prior_loss:

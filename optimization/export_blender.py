@@ -3,9 +3,9 @@
 Per person, reads ``ma_3d``'s ``smplx_params_body_id-NN.npz`` and writes an
 AMASS-style npz (``poses`` / ``betas`` / ``trans`` / ``gender`` /
 ``mocap_frame_rate``) that the ``smplx_blender_addon`` imports. Pure-Python
-(numpy + the ``smplx`` model, for the relaxed-hand mean) — no Blender needed.
+(numpy + the ``smplx`` model, for the relaxed-hand mean) - no Blender needed.
 
-Conversions (see docs/smplx-export-plan.md):
+Conversions (see docs/EXPORT.md):
   * pose layout is already identical (165 axis-angle), so it copies straight over;
   * the relaxed-hand mean is BAKED into the hand angles so the result is absolute
     (import as the add-on's FLAT mode), which is convention-proof: the mean is
@@ -30,7 +30,7 @@ import numpy as np
 
 log = logging.getLogger("export_blender")
 
-# Pose-vector slices (SMPL-X, 165 axis-angle) — identical in MAMMA and the add-on.
+# Pose-vector slices (SMPL-X, 165 axis-angle) - identical in MAMMA and the add-on.
 _GLOBAL = slice(0, 3)
 _LHAND = slice(75, 120)
 _RHAND = slice(120, 165)
@@ -85,7 +85,7 @@ def _auto_orient(joints, fps=30.0):
         pass
 
     # (Free-fall gravity from COM acceleration was evaluated and dropped: on real
-    # captured motion — incl. breakdancing — clean ballistic flight is rare/short
+    # captured motion - incl. breakdancing - clean ballistic flight is rare/short
     # while push-off/impact frames also hit ~9.8 m/s^2 in scattered directions, so
     # it either abstains or degrades the foot-plane estimate. E1+E3 are robust.)
 
@@ -209,7 +209,7 @@ def export_person(params_path, model_dir, fps, out_path,
 
     ``scene_orient``/``scene_floor`` (from :func:`_scene_orient_and_floor`)
     override the per-person up-axis detection and floor: people belong to one
-    scene, so orientation and grounding must be a SINGLE shared transform —
+    scene, so orientation and grounding must be a SINGLE shared transform:
     per-person grounding breaks inter-person geometry, and per-person up
     detection can misread a seated person's posture as the up direction.
     Without them (direct single-file callers) the legacy per-person behavior
@@ -238,7 +238,7 @@ def export_person(params_path, model_dir, fps, out_path,
                 ref_joints = np.asarray(vd["pred_joints"], dtype=np.float64)
 
     # Determine flat_hand_mean. The fit's convention is whatever reconstructs the
-    # saved vertices — so when they're available we AUTO-DETECT it (the stamped
+    # saved vertices - so when they're available we AUTO-DETECT it (the stamped
     # metadata is only a first-try hint). This is bulletproof across datasets,
     # eval-vs-inference differences, and older files that predate the metadata.
     chosen_model, chosen_flat, chosen_mm = None, None, None
@@ -263,7 +263,7 @@ def export_person(params_path, model_dir, fps, out_path,
     if chosen_model is None:
         raise RuntimeError(
             f"{params_path}: neither flat_hand_mean reconstructs the saved vertices "
-            f"within {validate_tol_mm} mm (tried {tried}) — model config likely wrong; "
+            f"within {validate_tol_mm} mm (tried {tried}) - model config likely wrong; "
             "refusing to export")
     if chosen_mm is not None:
         log.info("  detected flat_hand_mean=%s (round-trip %.3f mm)", chosen_flat, chosen_mm)
@@ -302,7 +302,7 @@ def export_person(params_path, model_dir, fps, out_path,
     # correctly (floor is the low end of p·up, not of the raw coordinate).
     if ground:
         if scene_floor is not None:
-            floor_proj = float(scene_floor)  # shared scene floor — same shift for every body
+            floor_proj = float(scene_floor)  # shared scene floor - same shift for every body
         elif ref is not None:
             floor_proj = float(np.percentile(ref.reshape(-1, 3) @ up_vec, 1))  # soles
         elif ref_joints is not None:
@@ -340,7 +340,7 @@ def export_person(params_path, model_dir, fps, out_path,
         if out_mm > validate_tol_mm:
             raise RuntimeError(
                 f"{params_path}: exported npz does not reproduce the fit "
-                f"({out_mm:.3f} mm > {validate_tol_mm} mm) — bake/orient bug; refusing to export")
+                f"({out_mm:.3f} mm > {validate_tol_mm} mm) - bake/orient bug; refusing to export")
         log.info("  export round-trip OK: %.3f mm", out_mm)
 
     _write_addon_npz(out_path, poses_u, betas_row, trans_u, gender, fps)
@@ -397,7 +397,7 @@ def _blender_export(blender_bin, addon_dir, npz_path, out_prefix, formats, fps, 
                 if os.path.exists(f"{out_prefix}.{f}") and os.path.getsize(f"{out_prefix}.{f}") > 0]
     missing = [f for f in formats if f not in produced]
     # Hard-fail only when nothing came out; otherwise keep the formats that did
-    # (one format failing in Blender must not lose the rest — e.g. the add-on's
+    # (one format failing in Blender must not lose the rest - e.g. the add-on's
     # cm/UNREAL FBX path can throw on some Blender versions).
     if not produced:
         log.error("blender export failed (rc=%s):\n%s", r.returncode, (r.stderr or r.stdout)[-2000:])
@@ -417,7 +417,7 @@ def _scene_orient_and_floor(seq_dir, params, up_axis, fps):
     """Scene-level up-axis + shared floor for ALL bodies of a sequence.
 
     People are exported as a group: ONE up direction (detected from the pooled
-    joints of every body — a seated or lying person cannot flip the scene's up
+    joints of every body - a seated or lying person cannot flip the scene's up
     the way it can flip its own) and ONE floor (the scene's lowest support), so
     grounding is a single shared translation and inter-person geometry is
     preserved verbatim. ``up_axis`` may be signed ("-y") to force a negative
@@ -491,18 +491,18 @@ def export_sequence(ma_3d_dir, seq_name, model_dir, out_dir, up_axis="auto",
              f"{scene_floor:.4f}" if scene_floor is not None else "n/a")
 
     # Resolve Blender once (graceful: fall back to npz-only if it / the add-on
-    # is missing — the npz path never needs Blender).
+    # is missing - the npz path never needs Blender).
     blender_fmts = [f for f in formats if f in _BLENDER_FORMATS]
     bin_ = None
     if blender_fmts:
         addon_dir = addon_dir or os.path.join(_repo_root(), "data", "blender_addon")
         bin_ = _find_blender(blender_bin)
         if bin_ is None:
-            log.warning("Blender not found for %s — writing npz only. Run "
+            log.warning("Blender not found for %s - writing npz only. Run "
                         "data/download_blender.sh or set MAMMA_BLENDER_BIN.", blender_fmts)
             blender_fmts = []
         elif not os.path.isdir(os.path.join(addon_dir, "smplx_blender_addon")):
-            log.warning("SMPL-X add-on not found under %s — writing npz only. Run "
+            log.warning("SMPL-X add-on not found under %s - writing npz only. Run "
                         "data/download_smplx_blender_addon.sh.", addon_dir)
             blender_fmts = []
 
@@ -545,7 +545,7 @@ def main(argv=None):
                          "'smplx' orients it Y-up (import as SMPL-X). Both import upright.")
     ap.add_argument("--unit", default="m", choices=["m", "cm"],
                     help="Units for the rigged formats (FBX/ABC/USD/BVH): m (meters, "
-                         "default — Blender/Unity/Maya) or cm (centimeters — Unreal). "
+                         "default - Blender/Unity/Maya) or cm (centimeters - Unreal). "
                          "The npz is always meters (SMPL-X convention).")
     ap.add_argument("--ground", dest="ground", action="store_true", default=True,
                     help="Drop the feet to the floor (0 along the up-axis). Default on.")

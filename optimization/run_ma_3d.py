@@ -390,6 +390,12 @@ def _pair_files_with_cameras(files, cameras_metadata_fns, kind, required=False):
     return aligned, kept
 
 
+def _n_people_from_preds(pred_fns):
+    """Body count for the fit: each camera's 2D file only has slots up to the
+    highest body id that camera saw, so take the widest file."""
+    return max(np.load(f, allow_pickle=True)["landmarks"].shape[1] for f in pred_fns)
+
+
 def process_metadata(optim_cfg_fn, metadata_data_pth, pred_pth, downsampled_verts_mat_path, smplx_model_pth, cam_names,
                      hand_joints_pred_pth=None, use_gt=True, device="cuda", cam_name_prefix=None):
     with open(optim_cfg_fn, 'r') as f:
@@ -484,7 +490,7 @@ def process_metadata(optim_cfg_fn, metadata_data_pth, pred_pth, downsampled_vert
 
         metadata_world = None
         batch_size = pred_data["landmarks"].shape[0] # 400
-        n_people = pred_data["landmarks"].shape[1] # 1
+        n_people = _n_people_from_preds(pred_fns)
         use_gt = False
 
     else:
@@ -495,7 +501,7 @@ def process_metadata(optim_cfg_fn, metadata_data_pth, pred_pth, downsampled_vert
             n_people = metadata_world["people_len"].item()
         elif 'landmarks' in pred_data:
             batch_size = pred_data["landmarks"].shape[0]
-            n_people = pred_data["landmarks"].shape[1]
+            n_people = _n_people_from_preds(pred_fns)
         else:
             n_people = 1
 

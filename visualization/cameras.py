@@ -297,6 +297,7 @@ class MultiViewCameras:
 
         calib = load_calibration(calibration_path)
 
+        from capture.discovery import sort_frame_files
         _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG")
         cameras: List[Camera] = []
         for cam_name in cam_names:
@@ -317,7 +318,7 @@ class MultiViewCameras:
             elif images_root_dir:
                 cam_dir = _os.path.join(images_root_dir, cam_name)
                 if _os.path.isdir(cam_dir):
-                    paths = sorted(
+                    paths = sort_frame_files(
                         _os.path.join(cam_dir, f)
                         for f in _os.listdir(cam_dir)
                         if f.endswith(_IMAGE_EXTS)

@@ -50,7 +50,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from capture import Camera, load_calibration  # noqa: E402
-from capture.discovery import find_image_cam_dirs, find_video_files  # noqa: E402
+from capture.discovery import find_image_cam_dirs, find_video_files, sort_frame_files  # noqa: E402
 from capture.video_reader import VideoFrameReader  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -163,8 +163,7 @@ def _gather_images(cam_dir: Path) -> List[str]:
     out: List[str] = []
     for ext in IMG_EXTENSIONS:
         out.extend(glob.glob(str(cam_dir / f"*{ext}")))
-    out.sort()
-    return out
+    return sort_frame_files(out)
 
 
 def _discover_image_paths(ioi_seq_dir: Path, cam_names: List[str]) -> Dict[str, List[str]]:

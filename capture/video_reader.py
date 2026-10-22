@@ -1,7 +1,7 @@
 """In-memory video frame reader for MP4 files.
 
 No frames are written to disk. SAM receives the MP4 path directly;
-YOLO and CLIP receive PIL Images from this reader.
+The person detector and CLIP receive PIL Images from this reader.
 
 Usage::
 
