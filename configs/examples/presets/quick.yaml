@@ -1,9 +1,9 @@
-# quick — smoke test: a ~2 s frame slice (frames 60-120) with visualizations on.
-# Same pipeline as `full`, just a short window — use it to validate setup fast.
+# quick: smoke test, a ~2 s frame slice (frames 60-120) with visualizations on.
+# Same pipeline as `full`, just a short window: use it to validate setup fast.
 # For all frames, use `full`.
 global:
   version: 1.0
-  description: 'Smoke test — a ~2 s frame slice (frames 60-120) with visualizations on, for a quick pipeline sanity check.'
+  description: 'Smoke test: a ~2 s frame slice (frames 60-120) with visualizations on, for a quick pipeline sanity check.'
   username: ''
   out_dir: output
   jobs_log_dir: output/logs/jobs

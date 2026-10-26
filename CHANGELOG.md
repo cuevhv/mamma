@@ -96,6 +96,7 @@
 - Cluster camera fan-out: `ma_masks.fanout_cameras` and `ma_2d.fanout_cameras` run one job per camera.
 - Cluster runs resync their Tasks rows after a GUI backend restart (startup pass and a per-task re-sync button).
 - `resources.default.exclude_machines` in a cluster profile keeps jobs off listed hosts.
+- `resources.<step>.min_cuda_capability` keeps GPU jobs off GPUs older than the environment supports, next to the existing `max_cuda_capability` cap. The MAMMA image builds its CUDA extensions for compute capability 8.0 and newer, so set `min_cuda_capability: 8.0` for the GPU steps when using it.
 - Multi-sequence runs: a failed sequence cancels only its own downstream steps; the other sequences keep running (CLI and GUI).
 - A `--cam_names` subset in a step's `flags` now overrides the capture's camera list.
 - `--force` removes the step's DONE marker before re-running, so a failed forced run no longer leaves the previous run marked done.
