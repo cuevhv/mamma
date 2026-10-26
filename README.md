@@ -113,6 +113,8 @@ python -m inference run \
   --out-tag run01 -v
 ```
 
+**Optional: run on an HTCondor cluster.** If you have an account on a cluster that schedules with HTCondor and that you can reach by SSH, the runner and the GUI can submit the run there and track it from your machine. Requirements and setup: **[docs/CLUSTER.md](docs/CLUSTER.md)**.
+
 ### Export to animation formats
 
 Once `ma_3d` has run, export the SMPL-X fit to `.npz` (SMPL-X Blender add-on), `.fbx`, `.abc` (Alembic), `.bvh`, and `.usd`:

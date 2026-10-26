@@ -92,7 +92,7 @@
 
 ### Runner & remote cluster
 
-- Remote HTCondor submission (new) from the CLI (`python -m inference submit-remote`, `submit-cluster`; `python -m inference cluster` manages cluster profiles) and from the GUI (cluster profiles, live status on the Tasks board).
+- Remote HTCondor submission (new) from the CLI (`python -m inference submit-remote`, `submit-cluster`; `python -m inference cluster` manages cluster profiles) and from the GUI (cluster profiles, live status on the Tasks board). For clusters that schedule with HTCondor and are reachable over SSH; see `docs/CLUSTER.md`.
 - Cluster camera fan-out: `ma_masks.fanout_cameras` and `ma_2d.fanout_cameras` run one job per camera.
 - Cluster runs resync their Tasks rows after a GUI backend restart (startup pass and a per-task re-sync button).
 - `resources.default.exclude_machines` in a cluster profile keeps jobs off listed hosts.
