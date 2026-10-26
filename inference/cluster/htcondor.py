@@ -149,12 +149,16 @@ def render_sub(step: str, sh_path: str, log_dir: str, submit_cfg: dict) -> str:
         min_cuda = submit_cfg.get("min_cuda_memory")
         if min_cuda:
             reqs.append(f"TARGET.CUDAGlobalMemoryMb > {min_cuda}")
-        # Cap the GPU architecture to what the execution env's torch build
-        # has kernels for (e.g. 9.0 for cu124 wheels; a B200 is 10.0 and
-        # fails with "no kernel image is available"). Set per profile.
+        # Keep the GPU architecture inside what the execution env has kernels
+        # for, else "no kernel image is available": torch wheels stop at a
+        # newest arch (cu124: 9.0), and compiled extensions start at the
+        # oldest arch they were built for (the MAMMA image: 8.0). Per profile.
         max_cc = submit_cfg.get("max_cuda_capability")
         if max_cc:
             reqs.append(f"TARGET.CUDACapability <= {max_cc}")
+        min_cc = submit_cfg.get("min_cuda_capability")
+        if min_cc:
+            reqs.append(f"TARGET.CUDACapability >= {min_cc}")
     # Operational blocklist for wedged hosts: a fast-failing or hanging node
     # keeps grabbing queued cells and can exhaust a node's retries. CPU steps
     # land on the same hosts, so it applies to every step. Set in the profile

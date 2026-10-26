@@ -74,8 +74,9 @@ class ClusterProfile:
     sync_excludes: List[str] = field(default_factory=lambda: list(DEFAULT_SYNC_EXCLUDES))
     # Per-step scheduler requests overriding inference.cluster.resources
     # defaults, e.g. {"ma_masks": {"memory": 128000, "min_cuda_memory": 40000}}.
-    # Keys: cpus, memory (MB), gpus, min_cuda_memory (MB), max_cuda_capability
-    # (cap GPU arch to what the env's torch build supports), max_jobs, nvccli.
+    # Keys: cpus, memory (MB), gpus, min_cuda_memory (MB), max_cuda_capability /
+    # min_cuda_capability (keep the GPU arch inside what the env has kernels
+    # for), max_jobs, nvccli.
     # The special entry "default" applies to every step before its own entry
     # (the GUI's "Max parallel jobs" field writes default.max_jobs here).
     resources: Dict[str, dict] = field(default_factory=dict)

@@ -133,6 +133,17 @@ def test_sub_gpu_step_caps_cuda_capability():
     assert "CUDAGlobalMemoryMb" not in sub2
 
 
+def test_sub_gpu_step_floors_cuda_capability():
+    # min_cuda_capability keeps jobs off GPUs older than the compiled
+    # extensions support (the image builds them for 8.0 and newer).
+    sub = htcondor.render_sub(
+        "ma_3d", "/w/ma_3d.sh", "/w/logs/ma_3d",
+        {"gpus": 1, "max_cuda_capability": 9.0, "min_cuda_capability": 8.0},
+    )
+    assert ("requirements = (TARGET.CUDACapability <= 9.0) && "
+            "(TARGET.CUDACapability >= 8.0)") in sub
+
+
 def test_sub_gpu_step_excludes_blocklisted_machines():
     """Profile resources.default.exclude_machines keeps cells off wedged
     GPU hosts (a fast-failing node vacuums the queue)."""
