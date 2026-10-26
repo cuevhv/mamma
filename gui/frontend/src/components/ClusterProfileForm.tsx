@@ -192,6 +192,11 @@ export function ClusterProfileForm({ onSaved, onCancel, initial }: Props) {
       <div className="text-foreground-subtle text-[10px] uppercase tracking-wider font-medium">
         {editMode ? `Edit cluster: ${name}` : 'New cluster'}
       </div>
+      <p className="text-[11px] text-foreground-muted leading-snug">
+        For an HTCondor cluster you have an account on and can reach by SSH (keys, or a one-time
+        terminal login for password or 2FA). MAMMA stores no password; the profile is saved on this
+        machine only. See docs/CLUSTER.md.
+      </p>
 
       <FieldRow label="Name">
         <input className={INPUT} value={name} onChange={e => setName(e.target.value)}
@@ -368,7 +373,7 @@ export function ClusterProfileForm({ onSaved, onCancel, initial }: Props) {
                 {c.ok ? '✓' : '✕'}
               </span>
               <span className="text-foreground-muted">{c.label}</span>
-              {c.detail && <span className="text-foreground-faint truncate">— {c.detail}</span>}
+              {c.detail && <span className="text-foreground-faint truncate">: {c.detail}</span>}
             </div>
           ))}
         </div>

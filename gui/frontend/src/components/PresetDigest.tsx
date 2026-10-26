@@ -591,7 +591,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                       <option value="conda">conda</option>
                       <option value="apptainer">apptainer</option>
                       <option value="docker">docker</option>
-                      <option value="cluster">cluster (submit to a cluster)</option>
+                      <option value="cluster">cluster (HTCondor, over SSH)</option>
                     </select>
                   </div>
                   {effEngine === 'conda' && (
@@ -628,7 +628,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                         <select value={effCluster} disabled={!editable}
                           onChange={e => chooseCluster(e.target.value)} className={GINPUT}>
                           <option value="" disabled>Select a cluster…</option>
-                          {clusters.map(c => <option key={c.name} value={c.name}>{c.name} — {c.host}</option>)}
+                          {clusters.map(c => <option key={c.name} value={c.name}>{c.name} ({c.host})</option>)}
                         </select>
                       ) : (
                         <div className="px-2.5 py-1.5 text-foreground-faint text-[12px]">
@@ -640,6 +640,12 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                 </div>
                 {isCluster && (
                   <div className="mt-2 space-y-2">
+                    <p className="text-[11px] text-foreground-muted leading-snug">
+                      Submits the run as HTCondor jobs over SSH. This needs an account on a cluster
+                      that schedules with HTCondor and that you can reach by SSH, with the capture data
+                      and the MAMMA environment on its shared storage. Other schedulers, such as Slurm,
+                      are not supported. Setup guide: docs/CLUSTER.md.
+                    </p>
                     {effCluster && (
                       <div className="flex items-center gap-2 text-[12px]">
                         <span className={`inline-block w-1.5 h-1.5 rounded-full ${
@@ -695,7 +701,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                                   ? false : undefined))} />
                         <span>
                           <span className="text-foreground">Parallelize ma_masks across cameras</span>
-                          {' '}— one cluster job per camera after the init view
+                          {': '}one cluster job per camera after the init view
                           (capped by the profile's max concurrent jobs).
                           Cross-camera identity references reduce to the init
                           camera; wall time drops by roughly the concurrency factor.
@@ -715,7 +721,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
                                   ? false : undefined))} />
                         <span>
                           <span className="text-foreground">Parallelize ma_2d across cameras</span>
-                          {' '}— one cluster job per camera (capped by the
+                          {': '}one cluster job per camera (capped by the
                           profile's max concurrent jobs). Cameras are fully
                           independent in this step, so results are identical
                           to a single-job run.
