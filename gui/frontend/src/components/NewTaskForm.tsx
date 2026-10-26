@@ -881,7 +881,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
               <div className="text-[10px] uppercase tracking-wider text-foreground-subtle font-medium mb-1">Preset</div>
               <p className="text-foreground-faint text-[11px] mb-2 leading-snug">
                 A preset is a reusable pipeline configuration: the engine, per-step flags and settings a run uses.
-                Pick one to start from; expand it below to review or edit, and optionally "Save as preset…".
+                Pick one to start from, review or edit it below, and use "Save as preset…" to keep it as your own preset.
               </p>
               <PresetPicker presets={presets} value={presetName} onPick={setPresetName} />
             </div>

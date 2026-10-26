@@ -117,7 +117,7 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
   const [deleting, setDeleting] = useState(false);
   // Body (global + steps) collapses by default to keep the form short;
   // expand to inspect or edit the preset for this submission.
-  const [bodyOpen, setBodyOpen] = useState(false);
+  const [bodyOpen, setBodyOpen] = useState(true);
   // Cluster profiles for the Execution "Run on" control (fetched once).
   const [clusters, setClusters] = useState<{ name: string; host: string; sifPath?: string }[]>([]);
   const [showAddCluster, setShowAddCluster] = useState(false);
@@ -365,12 +365,12 @@ export function PresetDigestCard({ digest, overrides, onOverridesChange, onPrese
               {savingInPlace ? 'Saving…' : 'Save'}
             </button>
           )}
-          {editable && isDirty && onPresetSaved && (
+          {editable && onPresetSaved && (
             <button
               type="button"
               onClick={() => { setSaveOpen(true); setDeleteOpen(false); setSaveName(''); setSaveDisplayName(''); setSaveDescription(''); setBodyOpen(true); }}
               className="inline-flex items-center gap-1.5 text-xs text-primary hover:opacity-80 px-2 py-1 rounded-md bg-primary-muted border border-primary/30 hover:border-primary/50 transition-colors"
-              title="Save these changes as a new reusable preset"
+              title="Save this configuration, with any changes, as a new reusable preset"
             >
               <Save className="w-3 h-3" />
               Save as preset…
