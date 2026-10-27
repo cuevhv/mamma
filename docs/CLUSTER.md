@@ -44,6 +44,15 @@ python -m inference cluster test my-cluster      # checks SSH, HTCondor, workspa
 Use `--flavor standard` (plain `condor_submit_dag`) unless your site submits through
 `condor_submit_dag_bid`. A profile's `resources` map sets per-step requests: GPUs, memory,
 `max_jobs`, `min_cuda_capability` / `max_cuda_capability`, and `exclude_machines` for broken hosts.
+`min_cuda_memory` (MB; default 24000 for ma_masks and ma_3d) sets the smallest GPU a step may use.
+If ma_3d runs out of GPU memory on a large capture (many cameras, several people, long clips), raise
+it for that step, for example to `45000` to require 80 GB cards:
+
+```yaml
+resources:
+  ma_3d:
+    min_cuda_memory: 45000
+```
 
 ## Submit and follow a run
 
