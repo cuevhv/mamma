@@ -1370,6 +1370,7 @@ def capture_run_groups():
         # available — covers custom out_dirs that aren't the default tree.
         out_dir = g.get("latestOutputPath") or _audit_output_root()
         dataset_name = ""
+        cfg = None
         try:
             tjp = g.get("latestTaskJsonPath")
             if tjp and os.path.isfile(tjp):
@@ -1381,7 +1382,7 @@ def capture_run_groups():
             pass
 
         steps_done = _pipeline_sync.enumerate_done_sentinels(
-            out_dir, g["outputId"], dataset_name, sequences, all_steps,
+            out_dir, g["outputId"], dataset_name, sequences, all_steps, task_cfg=cfg,
         )
         result.append({
             "outputId": g["outputId"],
@@ -3664,6 +3665,9 @@ def get_file_content():
         with open(file_path, "r", errors="replace") as f:
             return jsonify({"content": f.read()})
     except FileNotFoundError:
+        cells = _pipeline_sync.fanout_cell_logs(file_path)
+        if cells is not None:
+            return jsonify({"content": cells, "note": "fanout-cells"})
         # Before giving up, try to explain *why* the file is missing.
         # Logs vanish in expected ways (skipped via DONE, step never ran)
         # and a synthetic-content 200 is much friendlier than a raw 404.

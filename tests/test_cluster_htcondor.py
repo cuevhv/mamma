@@ -576,3 +576,40 @@ def test_emit_dag_fanout_off_is_unchanged(tmp_path, monkeypatch):
     dag = open(htcondor.emit_dag(cfg, "o", "7", opts, str(tmp_path)).dag_path).read()
     assert "JOB ma_masks_0" in dag and "ma_masks_init_0" not in dag
     assert "PARENT ma_masks_0 CHILD ma_2d_0" in dag
+
+
+def _fan2d_cfg():
+    return {"global": {"cam_names": ["A", "B"]},
+            "ma_2d": {"fanout_cameras": True}}
+
+
+def test_fanout_complete(tmp_path):
+    done = str(tmp_path / "DONE")
+    # ma_masks: the finalize cell runs after every camera cell
+    assert not htcondor.fanout_complete(done, {}, "ma_masks")
+    (tmp_path / "DONE.init").touch()
+    assert not htcondor.fanout_complete(done, {}, "ma_masks")
+    (tmp_path / "DONE.finalize").touch()
+    assert htcondor.fanout_complete(done, {}, "ma_masks")
+    # ma_2d: every configured camera cell, and only with fan-out configured
+    (tmp_path / "DONE.A").touch()
+    assert not htcondor.fanout_complete(done, _fan2d_cfg(), "ma_2d")
+    (tmp_path / "DONE.B").touch()
+    assert htcondor.fanout_complete(done, _fan2d_cfg(), "ma_2d")
+    assert not htcondor.fanout_complete(done, {"ma_2d": {}}, "ma_2d")
+    assert not htcondor.fanout_complete(done, _fan2d_cfg(), "ma_3d")
+
+
+def test_run_cell_last_fanout_cell_marks_step_done(tmp_path, monkeypatch):
+    done = tmp_path / "DONE"
+    _patch_runcell(monkeypatch, str(done))
+    monkeypatch.setattr(runner, "load_task_config", lambda p: _fan2d_cfg())
+    monkeypatch.setattr(runner.engines, "dispatch", lambda *a, **k: 0)
+    assert runner.run_cell("t.json", "ma_2d", "seqA", sink=_RecSink(), cell_id="A") == 0
+    assert (tmp_path / "DONE.A").exists() and not done.exists()
+    assert runner.run_cell("t.json", "ma_2d", "seqA", sink=_RecSink(), cell_id="B") == 0
+    assert done.exists()
+    # redoing a cell reopens the step until that cell succeeds again
+    monkeypatch.setattr(runner.engines, "dispatch", lambda *a, **k: 1)
+    runner.run_cell("t.json", "ma_2d", "seqA", sink=_RecSink(), cell_id="B", force=True)
+    assert not done.exists()

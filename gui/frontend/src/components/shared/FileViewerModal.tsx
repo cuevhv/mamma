@@ -212,8 +212,7 @@ export function FileViewerModal({ file, onClose }: Props) {
             <div className="mb-3 flex items-start gap-2 px-3 py-2 bg-status-pending-bg border border-status-pending/35 rounded-md text-status-pending text-xs">
               <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
               <span>
-                This file isn't on disk. The runner skipped this step (DONE sentinel from a prior run),
-                so no output was written. The body below explains what happened and how to force a re-run.
+                This file isn't on disk. The text below explains why.
               </span>
             </div>
           )}

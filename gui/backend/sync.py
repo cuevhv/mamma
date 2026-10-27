@@ -14,6 +14,7 @@ exercise from a notebook.
 """
 from __future__ import annotations
 
+import glob
 import os
 from pathlib import Path
 from typing import Iterable
@@ -441,6 +442,7 @@ def enumerate_done_sentinels(
     dataset_name: str,
     sequences: Iterable[str],
     steps: Iterable[str],
+    task_cfg: dict | None = None,
 ) -> dict[str, list[str]]:
     """Return `{seq_name: [step_name, ...]}` for every (step, seq) pair
     whose DONE sentinel exists under the run group's output tree.
@@ -448,7 +450,11 @@ def enumerate_done_sentinels(
     Powers the New Task form's "what's already done?" hints. The DONE
     sentinel layout matches what the runner writes:
         <out_dir>/<step>/<output_id>/<dataset>/<seq>/DONE
+    A cluster camera fan-out leaves per-cell sentinels instead (runs that
+    finished before the runner also wrote DONE); ``task_cfg`` (the run
+    config) lists the expected cells.
     """
+    from inference.cluster.htcondor import fanout_complete
     done: dict[str, list[str]] = {}
     if not out_dir or not output_id:
         return done
@@ -460,10 +466,31 @@ def enumerate_done_sentinels(
         hits: list[str] = []
         for step in step_list:
             sentinel = os.path.join(out_dir, step, output_id, dataset_name or "", seq, "DONE")
-            if os.path.isfile(sentinel):
+            if os.path.isfile(sentinel) or fanout_complete(sentinel, task_cfg or {}, step):
                 hits.append(step)
         done[seq] = hits
     return done
+
+
+def fanout_cell_logs(file_path, tail_lines=60):
+    """A cluster camera fan-out step logs one file per job (``<seq>.<cell>.out``)
+    instead of ``<seq>.out``. Join the tail of each cell's log, init first and
+    finalize last, so the step's log still opens; full logs can be tens of MB."""
+    stem, ext = os.path.splitext(file_path)
+    cells = glob.glob(f"{glob.escape(stem)}.*{ext}")
+    if not cells:
+        return None
+    rank = {"init": 0, "finalize": 2}
+    cell_of = lambda p: p[len(stem) + 1:-len(ext)]
+    parts = [f"# This step ran as {len(cells)} cluster jobs (camera fan-out), one log each.\n"
+             f"# Last {tail_lines} lines of each; the full logs are next to this path.\n"]
+    for p in sorted(cells, key=lambda p: (rank.get(cell_of(p), 1), cell_of(p))):
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 65536))
+            lines = f.read().decode(errors="replace").splitlines()[-tail_lines:]
+        parts.append(f"\n===== {cell_of(p)}: {p} =====\n" + "\n".join(lines) + "\n")
+    return "".join(parts)
 
 
 def humanize_size(n: int) -> str:

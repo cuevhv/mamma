@@ -375,6 +375,20 @@ def _resolve_fanout(task_cfg: dict, step: str = "ma_masks"):
     return list(cams), init
 
 
+def fanout_complete(done_file: str, task_cfg: dict, step: str) -> bool:
+    """True when every camera fan-out cell of ``step`` finished for the
+    sequence whose step-level sentinel is ``done_file``. Cells leave
+    ``<done_file>.<cell_id>`` instead of ``done_file``: ma_masks is complete
+    once its finalize cell is (the DAG runs it after every camera cell),
+    ma_2d once every camera cell is."""
+    if step == "ma_masks":
+        return os.path.exists(f"{done_file}.finalize")
+    if step == "ma_2d":
+        cams, _ = _resolve_fanout(task_cfg, step)
+        return bool(cams) and all(os.path.exists(f"{done_file}.{c}") for c in cams)
+    return False
+
+
 def build_submit_cmd(dag_path: str, opts: CondorOpts) -> List[str]:
     """The condor submit argv for ``dag_path`` (split out so it is testable)."""
     if opts.flavor == "bid":

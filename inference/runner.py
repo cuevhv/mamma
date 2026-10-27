@@ -208,9 +208,8 @@ def run_cell(
     # DONE-sentinel skip (matches _run_step_inner). ``--force`` bypasses.
     # Fan-out cells namespace the sentinel: the init cell finishing must not
     # mark the whole (step, seq) done for its sibling camera cells.
-    done = builder.done_file(seq)
-    if cell_id:
-        done = f"{done}.{cell_id}"
+    step_done = builder.done_file(seq)
+    done = f"{step_done}.{cell_id}" if cell_id else step_done
     if not force and os.path.exists(done):
         log.info("%s[%s] DONE present at %s; skipping", step_name, seq, done)
         sink.update(step_name, seq, "Done")
@@ -220,6 +219,8 @@ def run_cell(
     out_path, err_path = _log_paths(global_cfg, log_tag or tag, step_name, seq,
                                     cell=cell_id)
     _clear_done(done)
+    if cell_id:
+        _clear_done(step_done)  # this cell is being redone, so the step is no longer complete
     sink.update(step_name, seq, "Running", pid=os.getpid())
     try:
         rc = engines.dispatch(builder, seq, out_path, err_path)
@@ -240,6 +241,11 @@ def run_cell(
             try:
                 Path(done).parent.mkdir(parents=True, exist_ok=True)
                 Path(done).touch()
+                # The last fan-out cell also marks the whole (step, seq) done,
+                # so readers of the step-level DONE see the step as finished.
+                from .cluster.htcondor import fanout_complete  # htcondor imports runner
+                if cell_id and fanout_complete(step_done, task_cfg, step_name):
+                    Path(step_done).touch()
             except OSError as e:
                 log.warning("%s[%s] could not write DONE sentinel at %s: %s",
                             step_name, seq, done, e)
