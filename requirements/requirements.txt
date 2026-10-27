@@ -15,6 +15,9 @@ seaborn
 # numpy<2 pin above (sam2/sam3 also need numpy<2). 0.23.1 is the last
 # release on the numpy 1.x line.
 rerun-sdk==0.23.1
+# rerun-sdk imports pyarrow, whose recent wheels need numpy>=2 at import time
+# without declaring it, so pip cannot resolve around it (26.0 fails, 24.0 works).
+pyarrow>=14.0.2,<25
 pytorch_lightning==2.0.0
 munkres
 yacs

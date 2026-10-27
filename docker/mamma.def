@@ -90,6 +90,9 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
     # Optional VPoser prior for ma_3d (small — bake it in).
     python -m pip install -r /opt/mamma/requirements/requirements-vposer.txt
 
+    # Fail the build on packages that install but cannot import.
+    python -c "import rerun, torch, torchvision, cv2, transformers, open_clip, scipy, sklearn, pandas"
+
 %files
     requirements/requirements.txt /opt/mamma/requirements/requirements.txt
     requirements/requirements_no_build_isolation.txt /opt/mamma/requirements/requirements_no_build_isolation.txt

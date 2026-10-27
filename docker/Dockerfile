@@ -96,6 +96,10 @@ RUN CUDA_HOME=/usr/local/cuda \
 COPY requirements/requirements-vposer.txt /opt/mamma/requirements/requirements-vposer.txt
 RUN python -m pip install -r /opt/mamma/requirements/requirements-vposer.txt
 
+# Fail the build on packages that install but cannot import (a wheel that
+# needs a newer numpy than the pinned one installs without complaint).
+RUN python -c "import rerun, torch, torchvision, cv2, transformers, open_clip, scipy, sklearn, pandas"
+
 # No ENTRYPOINT on purpose: the runner passes the full `python <script>
 # <args>` command itself (an ENTRYPOINT ["python"] would make it
 # `python python <script>` and break every step).
