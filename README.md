@@ -15,6 +15,7 @@ Hanz Cuevas Velasquez<sup>1\*</sup>, Anastasios Yiannakidis<sup>1\*</sup>, Soyon
 </div>
 
 ## News
+- [2026-10] v1.1.0: robustness and speed improvements, animation exports ([changelog](CHANGELOG.md))
 - [2026-06] 🎉 MAMMA being presented at CVPR 2026
 - [2026-06] Code released (inference + training)
 
@@ -91,7 +92,7 @@ Three things are needed:
 
 1. A **calibration file** ([how to make one](docs/YOUR-DATA.md#2-author-the-calibration-file))
 2. A **folder with your sequence** ([how to set it up](docs/YOUR-DATA.md#1-lay-out-your-footage))
-3. A **preset**: use a shipped one: [`quick.yaml`](configs/examples/presets/quick.yaml) (~2 s smoke test, frames 60–120) or [`full.yaml`](configs/examples/presets/full.yaml) (all frames; `ma_masks` bounds its memory automatically on long clips). Both keep visualizations on. One-off tweaks (TensorRT, extra debug output) are plain per-step flags; see [`docs/CONFIGS.md`](docs/CONFIGS.md) to modify or author your own.
+3. A **preset**: use a shipped one: [`quick.yaml`](configs/examples/presets/quick.yaml) (smoke test on a short slice, frames 60–120) or [`full.yaml`](configs/examples/presets/full.yaml) (all frames; `ma_masks` bounds its memory automatically on long clips). Both keep visualizations on. One-off tweaks (TensorRT, extra debug output) are plain per-step flags; see [`docs/CONFIGS.md`](docs/CONFIGS.md) to modify or author your own.
 
 Then:
 
@@ -181,6 +182,8 @@ Both surfaces are also driven from the GUI's *MAMMA Datasets* panel. Per-dataset
 ├── data/            body models + weights + datasets (gitignored)
 ├── output/          run outputs (gitignored)
 ├── gui/             browser UI (Flask + React)
+├── docker/          Docker/Apptainer image for all steps
+├── docs/            guides (install, data, configs, export, cluster)
 └── scripts/         smoke tests + utilities
 ```
 
@@ -209,6 +212,7 @@ MAMMA builds on a number of open-source models, datasets, and tools. We thank th
 
 - [**SAM 2**](https://github.com/facebookresearch/sam2) and [**SAM 3**](https://github.com/facebookresearch/sam3): Meta FAIR; segmentation backbones.
 - [**D-FINE**](https://github.com/Peterande/D-FINE): person detection (Apache-2.0), run through Hugging Face [transformers](https://github.com/huggingface/transformers).
+- [**OpenCLIP**](https://github.com/mlfoundations/open_clip): appearance features for cross-camera identity matching.
 - [**SMPL-X**](https://smpl-x.is.tue.mpg.de/): MPI-IS; expressive body model.
 - [**ViTPose**](https://github.com/ViTAE-Transformer/ViTPose): pretrained human-pose backbone.
 - [**HRNet**](https://github.com/HRNet): alternative pose-estimation backbone.
