@@ -948,7 +948,7 @@ export function CaptureDetail({ captureName, onBack, initial, onGoToExporter }: 
                       title="Re-run this task: redo the steps you pick into a new run. This run stays untouched."
                       className="flex-shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-primary-muted border border-primary/30 text-primary text-[11px] font-medium hover:border-primary/50 hover:bg-primary-muted-strong transition-colors"
                     >
-                      <RotateCcw className="w-3 h-3" /> Re-run…
+                      <RotateCcw className="w-3 h-3" /> Re-run as new task…
                     </button>
                   )}
                   </div>

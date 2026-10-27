@@ -127,7 +127,7 @@ function basenameOf(p: string): string {
 const CAPTURE_MODE_LS_KEY = 'mammaNewTaskCaptureMode';
 const PREFLIGHT_DEBOUNCE_MS = 400;
 
-/** Payload handed to the form when the user clicks "Re-run…" on a result.
+/** Payload handed to the form when the user clicks "Re-run as new task…" on a result.
  *  Pre-fills the form to continue that exact run (same output-id/dir/config)
  *  so the user only chooses which steps to force-re-run and edits their config. */
 export interface ReRunInit {
@@ -262,6 +262,8 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
   // fetchSequences() when a capture.json doesn't list its cameras.
   const [availableCameras, setAvailableCameras] = useState<string[]>([]);
   const [selectedCameras, setSelectedCameras] = useState<string[]>([]);
+  // Re-run: the source run's cameras, offered as the camera picker's options.
+  const [reRunCameras, setReRunCameras] = useState<string[]>([]);
   const [outputDir, setOutputDir] = useState('');
   const [outputId, setOutputId] = useState('');
   // Execution (engine + where-to-run) now lives in the preset's global block
@@ -361,8 +363,9 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
   }, [captureJsonPath]);
 
   // Re-run mode: pre-fill the form from the given run. Runs once on mount.
-  // Sequences + cameras are FIXED to what the run used (not editable) to avoid
-  // any mismatch with the reused steps. The output-id is left blank on purpose —
+  // Sequences and cameras start as all of the run's and can be narrowed to a
+  // subset (every step filters by --cam_names, so reused inputs stay valid).
+  // The output-id is left blank on purpose —
   // a re-run always writes to a fresh run id and reads the reused steps from the
   // source via paths. The config baseline is the run's frozen config.
   useEffect(() => {
@@ -371,7 +374,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
     setCaptureMode('pick');
     setCaptureJsonPath(reRunInit.captureJsonPath);
     setOutputDir(reRunInit.outputDir);
-    setSelectedSeqNames(reRunInit.seqNames);   // fixed
+    setSelectedSeqNames(reRunInit.seqNames);   // all pre-selected; user may narrow
     setCompleted1(true);
     setActiveStep(3);
     fetch(`/api/tasks/${encodeURIComponent(reRunInit.taskId)}/rerun-config`)
@@ -385,7 +388,8 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
         const init: Record<string, boolean> = {};
         for (const s of d.steps) init[s.name] = s.enabled;
         setStepEnabled(init);   // the run's pipeline; the re-run picks a subset
-        setSelectedCameras(d.global.camNames || []);   // fixed to the run's cameras
+        setReRunCameras(d.global.camNames || []);
+        setSelectedCameras(d.global.camNames || []);   // all pre-selected; user may narrow
         // Reconstruct the 'cluster' pseudo-engine. Submission resolves
         // engine 'cluster' into the profile's real engine (apptainer + sif)
         // before freezing the config, so a cluster run's config stores
@@ -641,6 +645,8 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
     if (!digest) { toast.error('Pick a preset first'); return; }
     if (!completed1) { toast.error('Pick or define a capture in Step 1 first'); return; }
     if (selectedSeqNames.length === 0) { toast.error('Select at least one sequence'); return; }
+    // Re-run: no cameras would fall back to all of the capture's, not the run's.
+    if (isReRun && reRunCameras.length > 0 && selectedCameras.length === 0) { toast.error('Select at least one camera'); return; }
     const processes = digest.steps.filter(s => stepEnabled[s.name]).map(s => s.name);
     if (processes.length === 0) { toast.error('All steps are disabled — pick at least one'); return; }
     // Re-run: at least one step must be picked to run.
@@ -749,9 +755,8 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
     || basenameOf(captureJsonPath).replace(/\.json$/i, '')
     || null;
 
-  // In Re-run mode the sequence/camera sets are fixed to what the source run
-  // used and the pickers aren't rendered, so the available* lists stay empty —
-  // summarize from the selected (fixed) sets there instead.
+  // In Re-run mode the capture isn't loaded, so the available* lists stay
+  // empty; summarize from the selected sets (a subset of the source run's).
   const summarySeqCount = isReRun ? selectedSeqNames.length : availableSeqNames.length;
   const summaryCamCount = isReRun ? selectedCameras.length : availableCameras.length;
   const step1Summary = completed1 && captureLabel
@@ -766,7 +771,7 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
   return (
     <div className="w-full max-w-5xl mx-auto px-6 py-8 space-y-4">
       <div>
-        <h2 className="text-3xl text-foreground tracking-tight font-medium mb-1">{isReRun ? 'Re-run' : 'New task'}</h2>
+        <h2 className="text-3xl text-foreground tracking-tight font-medium mb-1">{isReRun ? 'Re-run as new task' : 'New task'}</h2>
         <p className="text-foreground-muted text-sm">
           {isReRun
             ? <>Re-running from task <span className="font-mono text-foreground">{formatTaskId(reRunInit?.outputId)}</span> into a new run: pick the steps to redo and edit their config.<br />Redone steps take their inputs from that task's existing outputs; all new results are written to the new run, and the original task is never modified.</>
@@ -965,29 +970,37 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
             </div>
           )}
 
-          {isReRun ? (
-            /* Re-run: sequences + cameras are fixed to what the run used. */
+          {isReRun && reRunInit ? (
+            /* Re-run: any subset of the run's sequences and cameras. */
             <>
-              <FieldRow label="Seq Names">
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {selectedSeqNames.length
-                    ? selectedSeqNames.map(s => (
-                        <span key={s} className="inline-flex items-center bg-surface-2 border border-border text-foreground-muted px-2 py-0.5 rounded-md text-xs font-mono">{s}</span>
-                      ))
-                    : <span className="text-foreground-faint text-xs">—</span>}
-                </div>
-              </FieldRow>
-              <FieldRow label="Cameras">
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {selectedCameras.length
-                    ? selectedCameras.map(c => (
-                        <span key={c} className="inline-flex items-center bg-surface-2 border border-border text-foreground-muted px-2 py-0.5 rounded-md text-xs font-mono">{c}</span>
-                      ))
-                    : <span className="text-foreground-faint text-xs">inherited from the run</span>}
-                </div>
-              </FieldRow>
+              <MultiSelectDropdown
+                label="Seq Names"
+                options={reRunInit.seqNames}
+                selected={selectedSeqNames}
+                onToggle={(n) => setSelectedSeqNames(prev => prev.includes(n) ? prev.filter(x => x !== n) : [...prev, n])}
+                onSelectAll={() => setSelectedSeqNames(selectedSeqNames.length === reRunInit.seqNames.length ? [] : [...reRunInit.seqNames])}
+                onRemove={(n) => setSelectedSeqNames(prev => prev.filter(x => x !== n))}
+                placeholder="No sequences selected"
+                searchable
+              />
+              {reRunCameras.length > 0 ? (
+                <MultiSelectDropdown
+                  label="Cameras"
+                  options={reRunCameras}
+                  selected={selectedCameras}
+                  onToggle={(c) => setSelectedCameras(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c])}
+                  onSelectAll={() => setSelectedCameras(selectedCameras.length === reRunCameras.length ? [] : [...reRunCameras])}
+                  onRemove={(c) => setSelectedCameras(prev => prev.filter(x => x !== c))}
+                  columns={3}
+                  placeholder="No cameras selected"
+                />
+              ) : (
+                <FieldRow label="Cameras">
+                  <span className="pt-1 text-foreground-faint text-xs">inherited from the run</span>
+                </FieldRow>
+              )}
               <p className="pl-36 text-foreground-faint text-[11px] leading-snug">
-                Sequences and cameras are fixed to what task {formatTaskId(reRunInit?.outputId)} used.
+                Pick any of task {formatTaskId(reRunInit.outputId)}'s sequences and cameras.
               </p>
             </>
           ) : (
@@ -1015,29 +1028,30 @@ export function NewTaskForm({ onSubmitted, reRunInit }: Props) {
                 columns={3}
                 placeholder="No cameras selected"
               />
-              {selectedCameras.length > 0 && selectedCameras.length < 3 && (
-                <div className="flex items-start gap-4">
-                  <div className="w-32 flex-shrink-0" />
-                  <div className="flex items-start gap-1.5 text-status-failed text-xs">
-                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                    <span>
-                      Multi-view 3D reconstruction needs <strong>at least 3 cameras</strong> — with fewer views, each landmark is rarely visible in enough unoccluded cameras for stable triangulation and the <span className="font-mono">ma_3d</span> step will typically fail.
-                    </span>
-                  </div>
-                </div>
-              )}
-              {selectedCameras.length === 3 && (
-                <div className="flex items-start gap-4">
-                  <div className="w-32 flex-shrink-0" />
-                  <div className="flex items-start gap-1.5 text-yellow-400 text-xs">
-                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                    <span>
-                      3 cameras — the pipeline will run, but quality degrades quickly with self-occlusion. <strong>4 or more cameras</strong> recommended for robust 3D reconstruction.
-                    </span>
-                  </div>
-                </div>
-              )}
             </>
+          )}
+
+          {selectedCameras.length > 0 && selectedCameras.length < 3 && (
+            <div className="flex items-start gap-4">
+              <div className="w-32 flex-shrink-0" />
+              <div className="flex items-start gap-1.5 text-status-failed text-xs">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span>
+                  Multi-view 3D reconstruction needs <strong>at least 3 cameras</strong> — with fewer views, each landmark is rarely visible in enough unoccluded cameras for stable triangulation and the <span className="font-mono">ma_3d</span> step will typically fail.
+                </span>
+              </div>
+            </div>
+          )}
+          {selectedCameras.length === 3 && (
+            <div className="flex items-start gap-4">
+              <div className="w-32 flex-shrink-0" />
+              <div className="flex items-start gap-1.5 text-yellow-400 text-xs">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                <span>
+                  3 cameras — the pipeline will run, but quality degrades quickly with self-occlusion. <strong>4 or more cameras</strong> recommended for robust 3D reconstruction.
+                </span>
+              </div>
+            </div>
           )}
 
           {/* Camera-rig 3D preview — reuses the calibration preview (the

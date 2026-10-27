@@ -115,7 +115,7 @@
 - New SMPL-X Exporter tab, shared export panel, batch export.
 - Interactive in-browser 3D viewer for ma_3d results.
 - Redesigned Results page: logs, configs, outputs explorer.
-- Re-run a task from Results: pick the steps to recompute; unchanged steps reuse the source run's outputs.
+- Re-run a task from Results as a new task ("Re-run as new task…"): pick the steps, sequences and cameras to recompute; unchanged steps reuse the source run's outputs, which stay untouched.
 - Task table: per-step timings (Status/Timing toggle), frames/views columns, per-sequence delete (honored by Restart), task-level Stop/Restart on grouped rows.
 - New Task form: preset editor with common settings and command preview, frame-range editing.
 - Calibration status, camera-rig 3D preview, up-axis controls; capture forms show a reference for each supported calibration format and gain a Camera FPS field.
