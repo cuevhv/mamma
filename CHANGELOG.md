@@ -132,6 +132,7 @@
 
 - One Docker/Apptainer image for all five steps (`docker/`), used through the existing per-step `engine: docker|apptainer` keys; `engine`, `sif_path` and `docker_image` can now be set once in `global`. See `docker/README.md`.
 - Containerized steps mirror the conda layout: repo root bound at `/repo`, docker runs as your user (no root-owned outputs), apptainer uses `--nvccli` when `nvidia-container-cli` is available, and a relative `sif_path` resolves against the repo root. Standalone ma_masks image: no `python` entrypoint; runs the bind-mounted checkout.
+- `pyarrow` is capped below 25 in the requirements and images: newer versions need numpy 2 at import time, so `rerun-sdk` (ma_vis) failed to import under the `numpy<2` pin. Image builds now fail on any package that installs but cannot import.
 
 ### Datasets & assets
 
