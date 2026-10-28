@@ -4,6 +4,7 @@ import glob
 import json
 import shutil
 import subprocess
+import time
 import imageio_ffmpeg
 import numpy as np
 import torch
@@ -114,6 +115,10 @@ DEFAULT_ASSIGNMENT_CONFIG = {
         # sam3_prompt.
         "mask_continuity_gate": True,
         "recover_collapsed_tracklets": True,
+        # Re-track stretches the cleanup left maskless, from a fresh tracker
+        # start where the detector sees an uncovered person (all backends but
+        # sam3_prompt).
+        "reacquire_lost_people": True,
         # Track-then-match seed prescreen: bound the seeded tracklets to the
         # top-M candidates per init subject (epipolar+CLIP shortlist) before
         # any tracking runs. "auto" (default) = engage only when detections >
@@ -884,6 +889,21 @@ class SegmentMultipleFrames:
         if dropped:
             self._log_info(f"[{cam_name or 'SAM'}] Dropped {dropped} "
                            f"single-frame mask island(s).")
+
+        # Re-acquisition (on by default): the cleanup above deletes masks it
+        # cannot trust, and nothing in a single-seed propagation re-detects the
+        # person afterwards. Re-track those stretches with fresh tracker memory.
+        if bool(self.assignment_config.get("masks", {}).get(
+                "reacquire_lost_people", True)):
+            try:
+                video_segments = self._reacquire_lost_people(
+                    inference_state, video_segments,
+                    cam_name=cam_name or "SAM", image_size=image_size)
+            except Exception as e:  # noqa: BLE001 - re-acquisition must never kill the run
+                import traceback
+                self._log_warn(
+                    f"[{cam_name or 'SAM'}] re-acquisition skipped "
+                    f"(non-fatal): {e}\n{traceback.format_exc()}")
 
         return video_segments
 
@@ -3492,6 +3512,334 @@ class SegmentMultipleFrames:
                 f"absent rather than on the wrong person.")
         return placed
 
+    def _reacquire_lost_people(self, inference_state, video_segments,
+                               cam_name="SAM", image_size=None):
+        """Re-track people the cleanup left without a mask
+        (``masks.reacquire_lost_people``).
+
+        A tracklet that collapsed onto another person, drifted or died leaves
+        a stretch of empty frames once truncation / duplicate suppression have
+        zeroed it (sometimes both ids of a collapsed pair). Single-seed
+        propagation never re-detects, so the person stays maskless even where
+        plainly visible. For each such stretch: find a frame where the detector
+        sees a person no mask covers, restart the tracker there with clean
+        memory (every person on that frame prompted, so the joint tracker keeps
+        them apart) and re-track only the stretch. Results only fill empty
+        frames and never land on a person who already has a mask. Several
+        missing ids are assigned by their nearest known position; the
+        cross-camera remap and rig vote decide identity downstream. Backend-
+        neutral: needs reset_state, box prompts and sub-range propagation.
+        """
+        from scipy.optimize import linear_sum_assignment
+
+        mask_cfg = self.assignment_config.get("masks", {})
+        min_gap = int(mask_cfg.get("reacquire_min_gap", 15))
+        stride = max(1, int(mask_cfg.get("reacquire_detect_stride", 15)))
+        max_rounds = int(mask_cfg.get("reacquire_max_rounds", 4))
+        covered_ratio = float(mask_cfg.get("reacquire_covered_ratio", 0.3))
+        max_overlap = float(mask_cfg.get("reacquire_max_overlap", 0.3))
+        stall = int(mask_cfg.get("reacquire_stall_frames", 30))
+        min_presence = float(mask_cfg.get("reacquire_min_presence", 0.05))
+        max_track_ratio = float(mask_cfg.get("reacquire_max_track_ratio", 2.0))
+        clear_start = float(mask_cfg.get("reacquire_clear_start", 0.9))
+        det_conf = float(self._get_matching_cfg().get("yolo_person_conf", 0.5))
+        t_start = time.perf_counter()
+
+        frames = video_segments.frames()
+        n = len(frames)
+        if n < 2 * min_gap:
+            return video_segments
+        pos_of = {f: i for i, f in enumerate(frames)}
+
+        # One streaming pass: per-id box (nan when absent) and area; kept up
+        # to date in memory as frames are filled.
+        boxes, areas = {}, {}
+        for i, f in enumerate(frames):
+            for oid, m in video_segments.frame(f).items():
+                if m is None:
+                    continue
+                m2 = _mask2d(m)
+                rows, cols = np.flatnonzero(m2.any(1)), np.flatnonzero(m2.any(0))
+                if oid not in boxes:
+                    boxes[oid] = np.full((n, 4), np.nan)
+                    areas[oid] = np.zeros(n)
+                if rows.size:
+                    boxes[oid][i] = (cols[0], rows[0], cols[-1] + 1, rows[-1] + 1)
+                    areas[oid][i] = float(m2.sum())
+        ids = [o for o in boxes if np.isfinite(boxes[o][:, 0]).mean() >= min_presence]
+        if not ids:
+            return video_segments
+        med_area = {o: float(np.median(areas[o][areas[o] > 0])) for o in ids}
+        med_side = {}
+        for o in ids:
+            b = boxes[o][np.isfinite(boxes[o][:, 0])]
+            med_side[o] = float(np.median(np.sqrt((b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1]))))
+
+        def present(o, i):
+            return np.isfinite(boxes[o][i, 0])
+
+        def seam_refs(o, i):
+            """(center, frames away) of id o at its last known position before
+            i and its first after i; None for a side where it never appears."""
+            known = np.flatnonzero(np.isfinite(boxes[o][:, 0]))
+            refs = []
+            for j in (known[known < i][-1:], known[known > i][:1]):
+                if not j.size:
+                    refs.append(None)
+                    continue
+                b = boxes[o][int(j[0])]
+                refs.append((np.array([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2]), abs(int(j[0]) - i)))
+            return refs
+
+        det_cache, tried = {}, set()
+        budget = int(max_track_ratio * n)
+        tracked = filled_total = sessions = 0
+        det_s = track_s = 0.0
+
+        for _round in range(max_rounds):
+            # Windows: absence runs of any established id, merged when they
+            # overlap or nearly touch.
+            runs = []
+            for o in ids:
+                absent = np.r_[~np.isfinite(boxes[o][:, 0]), False]
+                start = None
+                for i, a in enumerate(absent):
+                    if a and start is None:
+                        start = i
+                    elif not a and start is not None:
+                        if i - start >= min_gap:
+                            runs.append([start, i - 1])
+                        start = None
+            runs.sort()
+            windows = []
+            for s, e in runs:
+                if windows and s <= windows[-1][1] + 5:
+                    windows[-1][1] = max(windows[-1][1], e)
+                else:
+                    windows.append([s, e])
+            filled_round = 0
+            for s, e in windows:
+                if tracked >= budget:
+                    break
+                best = None
+                n_det, t_det = len(det_cache), time.perf_counter()
+                # Scan from the gap start, so most re-tracking runs forward.
+                for p in sorted(set(range(s, e + 1, stride)) | {e}):
+                    if p in tried:
+                        continue
+                    missing = [o for o in ids if not present(o, p)]
+                    if not missing:
+                        continue
+                    f = frames[p]
+                    if f not in det_cache:
+                        img = self._state_frame_rgb(inference_state, f)
+                        _img, dets = self._collect_yolo_detections(
+                            Image.fromarray(img), det_conf, include_clip_features=False)
+                        det_cache[f] = [np.asarray(d[2], dtype=float) for d in dets]
+                    dets = det_cache[f]
+                    if not dets:
+                        continue
+                    masks = video_segments.frame(f)
+                    union = None
+                    for m in masks.values():
+                        if m is not None:
+                            m2 = _mask2d(m) > 0
+                            union = m2 if union is None else (union | m2)
+                    uncovered = []
+                    for d in dets:
+                        x1, y1, x2, y2 = [int(round(v)) for v in d]
+                        if union is not None:
+                            x1, y1 = max(0, x1), max(0, y1)
+                            x2, y2 = min(union.shape[1], x2), min(union.shape[0], y2)
+                            if x2 <= x1 or y2 <= y1:
+                                continue
+                            if union[y1:y2, x1:x2].mean() >= covered_ratio:
+                                continue
+                        uncovered.append(d)
+                    if not uncovered:
+                        continue
+                    # Assign uncovered detections to missing ids: plausible
+                    # size, then known position (generous gate that widens
+                    # with the time since the id was seen there).
+                    seams = {o: seam_refs(o, p) for o in missing}
+
+                    def solve(pick):
+                        cost = np.full((len(missing), len(uncovered)), 1e6)
+                        for r, o in enumerate(missing):
+                            ref = pick(seams[o])
+                            if ref is None:
+                                continue
+                            c, dt = ref
+                            for k, d in enumerate(uncovered):
+                                side = np.sqrt(max(1.0, (d[2] - d[0]) * (d[3] - d[1])))
+                                if not 0.4 <= side / max(med_side[o], 1.0) <= 2.5:
+                                    continue
+                                dist = np.hypot((d[0] + d[2]) / 2 - c[0], (d[1] + d[3]) / 2 - c[1])
+                                dist /= max(med_side[o], 1.0)
+                                if dist <= 1.5 + 0.1 * dt:
+                                    cost[r, k] = dist
+                        rr, kk = linear_sum_assignment(cost)
+                        return {missing[r]: k for r, k in zip(rr, kk) if cost[r, k] < 1e6}, cost
+
+                    match, cost = solve(lambda s: min(
+                        (x for x in s if x is not None), key=lambda x: x[1], default=None))
+                    if len(uncovered) < len(missing):
+                        # Fewer people visible than ids missing: the visible one
+                        # could be any of them, and people cross during contact.
+                        # Keep a match only if the last position before the gap
+                        # and the first after it agree on it; with one side
+                        # only, it must win clearly.
+                        sides = (solve(lambda s: s[0])[0], solve(lambda s: s[1])[0])
+                        kept = {}
+                        for o, k in match.items():
+                            votes = [sides[i].get(o) for i in (0, 1) if seams[o][i] is not None]
+                            if any(v != k for v in votes):
+                                continue
+                            rivals = [cost[r, k] for r, o2 in enumerate(missing) if o2 != o]
+                            if len(votes) == 1 and rivals and \
+                                    cost[missing.index(o), k] > 0.6 * min(rivals):
+                                continue
+                            kept[o] = k
+                        match = kept
+                    assigned = {o: uncovered[k] for o, k in match.items()}
+                    if not assigned:
+                        continue
+                    # Prefer frames where the re-acquired people stand clear
+                    # of everyone else (a clean start for the tracker).
+                    others = list(dets) + [boxes[o][p] for o in boxes if present(o, p)]
+                    clear = min(1.0 - max([self._bbox_iou_xyxy(b, x)
+                                           for x in others if x is not b] or [0.0])
+                                for b in assigned.values())
+                    key = (len(assigned), clear)
+                    if len(assigned) == len(missing) and clear >= clear_start:
+                        # Every missing person matched and standing clear: good
+                        # enough, and each further candidate costs a detector call.
+                        best = (key, p, assigned)
+                        break
+                    if best is None or key > best[0]:
+                        best = (key, p, assigned)
+                win_det_s = time.perf_counter() - t_det
+                win_calls = len(det_cache) - n_det
+                det_s += win_det_s
+                if best is None:
+                    continue
+                _key, p, assigned = best
+                tried.add(p)
+                f_p = frames[p]
+                prompts = {o: boxes[o][p] for o in boxes if present(o, p)}
+                prompts.update(assigned)
+                t_trk = time.perf_counter()
+                filled, n_tracked = self._reacquire_track(
+                    inference_state, video_segments, frames, pos_of, boxes, areas,
+                    med_area, p, s, e, prompts, list(assigned), max_overlap, stall)
+                win_track_s = time.perf_counter() - t_trk
+                track_s += win_track_s
+                sessions += 1
+                tracked += n_tracked
+                filled_round += filled
+                self._log_info(
+                    f"[{cam_name}] Re-acquisition: re-tracked id(s) "
+                    f"{sorted(assigned)} from frame {f_p} with fresh memory over "
+                    f"frames {frames[s]}-{frames[e]}; filled {filled} mask(s) "
+                    f"(detector {win_det_s:.0f} s for {win_calls} frame(s), "
+                    f"tracking {win_track_s:.0f} s for {n_tracked} frame(s)).")
+            filled_total += filled_round
+            if filled_round == 0 or tracked >= budget:
+                break
+
+        audit = ""
+        if filled_total:
+            # The same audits the original masks went through, now over the fills.
+            n_spans, zeroed, _unified = _sweep_split_body_collapses(video_segments)
+            dropped = _drop_single_frame_islands(video_segments)
+            audit = (f"; split-body sweep zeroed {zeroed} in {n_spans} span(s), "
+                     f"dropped {dropped} one-frame island(s)")
+        if det_cache or sessions:
+            self._log_info(
+                f"[{cam_name}] Re-acquisition: filled {filled_total} mask(s) in "
+                f"{sessions} session(s), {tracked} frame(s) re-tracked{audit}. "
+                f"Time {time.perf_counter() - t_start:.0f} s: detector {det_s:.0f} s "
+                f"({len(det_cache)} frame(s)), tracking {track_s:.0f} s.")
+        return video_segments
+
+    def _reacquire_track(self, inference_state, video_segments, frames, pos_of,
+                         boxes, areas, med_area, p, s, e, prompts, targets,
+                         max_overlap, stall):
+        """One fresh tracker session for _reacquire_lost_people: prompt every
+        box on frame ``frames[p]``, propagate forward to position ``e`` and
+        backward to ``s``, and write each target id's mask only where it is
+        empty, does not overlap another id's mask by more than
+        ``max_overlap`` of its area, and is person-sized. A direction stops
+        after ``stall`` consecutive frames that wanted a fill and got none
+        (the session has collapsed or lost the person). Returns
+        (masks filled, frames tracked)."""
+        f_p = frames[p]
+        self.predictor.reset_state(inference_state)
+        for oid, box in prompts.items():
+            self.predictor.add_new_points_or_box(
+                inference_state, frame_idx=f_p, obj_id=int(oid),
+                box=np.asarray(box, dtype=np.float32))
+        filled = tracked = 0
+        with torch.inference_mode():
+            for reverse, span in ((False, frames[e] - f_p), (True, f_p - frames[s])):
+                if span <= 0:
+                    continue
+                misses = 0
+                for f2, oids2, logits2 in self.predictor.propagate_in_video(
+                        inference_state, start_frame_idx=f_p,
+                        max_frame_num_to_track=span, reverse=reverse):
+                    tracked += 1
+                    q = pos_of.get(int(f2))
+                    if q is None or not s <= q <= e:
+                        continue
+                    fresh = _argmax_disjoint_masks(oids2, logits2)
+                    # Pre-argmax masks: two session ids claiming one body show
+                    # up only here (the argmax splits that body between them).
+                    raw = {int(o): _mask2d((logits2[i] > 0.0).cpu().numpy())
+                           for i, o in enumerate(oids2)}
+                    masks = video_segments.frame(f2)
+                    wanted = wrote = 0
+                    for o in targets:
+                        cur = masks.get(o)
+                        if cur is not None and cur.any():
+                            continue
+                        wanted += 1
+                        fm = fresh.get(o)
+                        if fm is None or not fm.any():
+                            continue
+                        others = None
+                        for k, v in masks.items():
+                            if k != o and v is not None:
+                                v2 = _mask2d(v) > 0
+                                others = v2 if others is None else (others | v2)
+                        claimed = others
+                        for k, v in raw.items():
+                            if k != o:
+                                claimed = v if claimed is None else (claimed | v)
+                        if claimed is not None:
+                            rm = raw.get(o, fm)
+                            if (rm & claimed).sum() > max_overlap * rm.sum():
+                                continue
+                        if others is not None:
+                            fm = fm & ~others
+                        a = float(fm.sum())
+                        if not 0.25 * med_area[o] <= a <= 4.0 * med_area[o]:
+                            continue
+                        ref = cur if cur is not None else next(
+                            (v for v in masks.values() if v is not None), None)
+                        masks[o] = fm[None] if ref is not None and ref.ndim == 3 else fm
+                        rows, cols = np.flatnonzero(fm.any(1)), np.flatnonzero(fm.any(0))
+                        boxes[o][q] = (cols[0], rows[0], cols[-1] + 1, rows[-1] + 1)
+                        areas[o][q] = a
+                        wrote += 1
+                    if wrote:
+                        video_segments.set_frame(f2, masks)
+                        filled += wrote
+                    if wanted:
+                        misses = 0 if wrote else misses + 1
+                        if misses >= stall:
+                            break
+        return filled, tracked
 
     def _scan_near_identical_runs(self, video_segments, detected_ids,
                                   iou_thresh=0.9, min_run_frames=5,

@@ -125,6 +125,11 @@ masks:
   # reset is skipped, so re-propagation is best-effort. sam3_prompt never runs
   # it. Off here.
   recover_collapsed_tracklets: false
+  # Re-acquisition: after the cleanup, re-track every stretch where a person
+  # has no mask but the detector sees someone no mask covers, from a fresh
+  # tracker start inside that stretch. Fills empty frames only, never on a
+  # person who already has a mask. Not run by sam3_prompt.
+  reacquire_lost_people: true
 
   # Step 2: Discard tracklets whose mask is too small on most frames.
   # A tracklet is discarded if its mask is below tiny_tracklet_min_area_ratio

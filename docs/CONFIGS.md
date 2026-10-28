@@ -120,6 +120,7 @@ CVPR code release:
 | **[new]** `masks.max_seed_tracklets` | `20` | Ceiling on the people seeded per non-init camera under track-then-match. |
 | **[new]** `masks.mask_continuity_gate` | `true` | Removes short teleports and duplicate mask stretches. |
 | **[new]** `masks.recover_collapsed_tracklets` | `true` in `sam2.yaml` and `sam3_default.yaml`, `false` in `sam3.yaml` | Re-detects a person lost to a tracker takeover and re-tracks that stretch. |
+| **[new]** `masks.reacquire_lost_people` | `true` | Re-tracks stretches where the cleanup left a person without a mask. Not run by `sam3_prompt`. |
 | **[new]** `masks.rig_vote`, `masks.rig_vote_min_cameras` | `auto`, `12` | See `--rig_vote`. A config without `rig_vote` uses `auto`. |
 | **[new]** `sam.lazy_frame_loading` (+ `lazy_min_frames`, `lazy_frame_window`, `lazy_video_chunk`) | `auto` from 1500 frames | Loads frames on demand to bound host RAM on long clips. |
 | **[new]** `sam.prune_memory_state`, `sam.memory_keep_window` | `false`, `32` | Opt-in pruning of SAM2 memory on very long clips. |

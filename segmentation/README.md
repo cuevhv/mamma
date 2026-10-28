@@ -98,6 +98,7 @@ make the step more robust and cover more use cases. **Default** = always on, **a
 | Collapse recovery | Re-detects a person lost to a tracker takeover and re-tracks that stretch | default in `sam2.yaml`, off in `sam3.yaml` | `masks.recover_collapsed_tracklets` |
 | Re-latch truncation | Cuts a tracklet that jumps onto another person at the takeover frame | default | `masks.truncate_relatched_tracklets` |
 | Split-body sweep, island drop | Unifies one person tracked under two ids; drops single-frame mask islands | default (not `sam3_prompt`) | none |
+| Re-acquisition | Re-tracks stretches where the cleanup left a person without a mask, from a fresh tracker start where the detector sees someone no mask covers | default (not `sam3_prompt`) | `masks.reacquire_lost_people` |
 | Rig vote | Repairs per-camera identity errors by voting across the calibrated rig | auto (12 or more calibrated cameras, 2 to 6 people) | `--rig_vote`, `masks.rig_vote`, `masks.rig_vote_min_cameras` |
 | Packed masks | One `masks.zip` per camera instead of thousands of PNG files | default | `--png` for loose PNGs |
 | Lazy frame loading | Loads frames on demand, with decode-ahead prefetch, to bound host RAM | auto (1500 frames or more) | `sam.lazy_frame_loading` |
@@ -278,6 +279,7 @@ masks:
   merge_iou_threshold: 0.95        # mask IoU threshold for merging (very conservative)
   mask_continuity_gate: true       # drop short teleport / duplicate mask stretches
   recover_collapsed_tracklets: true  # re-seed a person lost to a takeover (false in sam3.yaml)
+  reacquire_lost_people: true      # re-track people the cleanup left maskless (not sam3_prompt)
   discard_tiny_tracklets: true     # remove tracklets that are too small on most frames
   tiny_tracklet_min_area_ratio: 0.005  # min mask area as fraction of image
   tiny_tracklet_min_frame_ratio: 0.2   # discard if small on >80% of frames
