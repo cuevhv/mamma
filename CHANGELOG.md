@@ -51,6 +51,7 @@
 - Reads the packed `masks.zip` as well as loose mask PNGs.
 - Per-body debug videos get readable banner labels on every tile.
 - Inference no longer records an autograd graph for the backbone: lower GPU memory per crop, identical outputs.
+- ma_2d exits with an error when no camera input matches the input folders and `--cam_names`; before, it finished with exit code 0 and the run failed later in ma_3d.
 
 ### Optimization (ma_3d)
 

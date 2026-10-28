@@ -696,6 +696,13 @@ def _build_tensorrt_forward(model, cfg, device, fp16=True, weights_path=None):
 
 
 def main(args, out_folder, masks_folder, img_folder=None):
+    # Fail before loading any model: a run with no camera input must not exit 0
+    # (the runner would mark it done and the error would surface only in ma_3d).
+    sources = _build_cam_sources(args, img_folder=img_folder)
+    if not sources:
+        raise SystemExit("ma_2d: no camera input found (see the warning above); check "
+                         "--img_folder / --videos_dir / --images_root_dir and --cam_names.")
+
     OmegaConf.register_new_resolver("mult", lambda x,y: x*y)
     OmegaConf.register_new_resolver("if", lambda x, y, z: y if x else z)
     OmegaConf.register_new_resolver("div", lambda x, y: x // y)
@@ -758,7 +765,6 @@ def main(args, out_folder, masks_folder, img_folder=None):
 
     os.makedirs(out_folder, exist_ok=True)
 
-    sources = _build_cam_sources(args, img_folder=img_folder)
     logger.info(f"processing {len(sources)} cameras: {[s.cam_name for s in sources]}")
     # Visualizations write by default; --disable-visualizations turns them off.
     # The deprecated --save_cam_output/--no-save_cam_output still wins when passed.
