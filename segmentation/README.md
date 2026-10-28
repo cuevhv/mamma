@@ -140,6 +140,10 @@ Per-camera memory is driven mainly by sequence length. `sam2`, `sam3` and
 `offload_state_to_cpu`); `sam3_prompt` (session API) is capped by an
 internal cache prune (`sam.sam3_prune_cache_window`).
 
+On GPUs older than Ampere (compute capability below 8.0) Flash Attention is
+unavailable, so tracker memory also grows with the number of tracked people and
+crowded scenes can run out of memory.
+
 ## Installation
 
 Installation is managed by the parent `mamma_release` repo. See [`docs/INSTALL.md`](../docs/INSTALL.md) for the full env + CUDA + weights setup (including SAM 3's gated Hugging Face access and the optional Apptainer/Docker container recipes shipped in this folder); activate `mamma` before running `run_ma_masks.py`. Default weight locations (used both by the runner and by standalone invocations):
