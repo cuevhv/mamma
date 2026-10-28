@@ -99,6 +99,7 @@ make the step more robust and cover more use cases. **Default** = always on, **a
 | Re-latch truncation | Cuts a tracklet that jumps onto another person at the takeover frame | default | `masks.truncate_relatched_tracklets` |
 | Split-body sweep, island drop | Unifies one person tracked under two ids; drops single-frame mask islands | default (not `sam3_prompt`) | none |
 | Re-acquisition | Re-tracks stretches where the cleanup left a person without a mask, from a fresh tracker start where the detector sees someone no mask covers | default (not `sam3_prompt`) | `masks.reacquire_lost_people` |
+| Non-overlapping memory | The SAM3 tracker remembers each pixel for one person only, so an id cannot slide onto a partner in contact | default (`sam3`, `sam3_prompt_light`) | `sam.non_overlap_memory` |
 | Rig vote | Repairs per-camera identity errors by voting across the calibrated rig | auto (12 or more calibrated cameras, 2 to 6 people) | `--rig_vote`, `masks.rig_vote`, `masks.rig_vote_min_cameras` |
 | Packed masks | One `masks.zip` per camera instead of thousands of PNG files | default | `--png` for loose PNGs |
 | Lazy frame loading | Loads frames on demand, with decode-ahead prefetch, to bound host RAM | auto (1500 frames or more) | `sam.lazy_frame_loading` |
@@ -290,6 +291,7 @@ masks:
 
 sam:
   propagate_reverse: true        # propagate backward from init frame
+  non_overlap_memory: true       # sam3 / sam3_prompt_light: one person per pixel in tracker memory
 
 # sam3_prompt only: override SAM3 internal tracking parameters
 sam3_tracking:

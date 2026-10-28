@@ -124,6 +124,7 @@ CVPR code release:
 | **[new]** `masks.rig_vote`, `masks.rig_vote_min_cameras` | `auto`, `12` | See `--rig_vote`. A config without `rig_vote` uses `auto`. |
 | **[new]** `sam.lazy_frame_loading` (+ `lazy_min_frames`, `lazy_frame_window`, `lazy_video_chunk`) | `auto` from 1500 frames | Loads frames on demand to bound host RAM on long clips. |
 | **[new]** `sam.prune_memory_state`, `sam.memory_keep_window` | `false`, `32` | Opt-in pruning of SAM2 memory on very long clips. |
+| **[new]** `sam.non_overlap_memory` | `true` | `sam3` / `sam3_prompt_light`: each pixel is remembered for one person only, so an id cannot slide onto a partner in contact. |
 
 Code defaults that the shipped YAMLs leave out can still be set in the same section, e.g. `masks.seed_prescreen`
 (**[new]**, `auto`: on crowded calibrated views, keep the best candidates per subject before tracking) and

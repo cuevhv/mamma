@@ -36,3 +36,22 @@ class TestCoordinateConversion:
         original = box.copy()
         _to_relative_box(box, 400, 400)
         np.testing.assert_array_equal(box, original)
+
+
+class TestSam3NonOverlapMemory:
+    """sam.non_overlap_memory reaches the SAM3 tracker's memory encoder flag."""
+
+    @staticmethod
+    def _model():
+        from types import SimpleNamespace
+        return SimpleNamespace(tracker=SimpleNamespace(non_overlap_masks_for_mem_enc=False),
+                               detector=SimpleNamespace(backbone=object()))
+
+    def test_flag_is_set_on_the_tracker(self):
+        from core.predictor_factory import _Sam3VideoAdapter
+        assert _Sam3VideoAdapter(self._model(), non_overlap_memory=True)._tracker.non_overlap_masks_for_mem_enc is True
+        assert _Sam3VideoAdapter(self._model())._tracker.non_overlap_masks_for_mem_enc is False
+
+    def test_on_by_default(self):
+        from core.pipeline import DEFAULT_ASSIGNMENT_CONFIG
+        assert DEFAULT_ASSIGNMENT_CONFIG["sam"]["non_overlap_memory"] is True

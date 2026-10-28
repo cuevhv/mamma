@@ -153,6 +153,8 @@ DEFAULT_ASSIGNMENT_CONFIG = {
     },
     "sam": {
         "propagate_reverse": True,
+        # sam3 / sam3_prompt_light: non-overlapping tracker memory.
+        "non_overlap_memory": True,
     },
     "exports": {
         "export_masked_outputs_mp4": True,
@@ -706,6 +708,7 @@ class SegmentMultipleFrames:
         self.predictor: _VideoPredictor = build_video_predictor(
             sam_version, sam_model_cfg, sam_checkpoint, device=self.device,
             tracking_overrides=tracking_overrides,
+            non_overlap_memory=bool(self.assignment_config["sam"].get("non_overlap_memory", True)),
         )
 
         # sam3_prompt / sam3_prompt_light detect people with SAM3's own text

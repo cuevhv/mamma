@@ -707,11 +707,14 @@ class _Sam3VideoAdapter(_Sam3TextDetectMixin):
     - Propagate: SAM3 yields 5-tuple, SAM2 yields 3-tuple
     """
 
-    def __init__(self, sam3_model, keep_detector=False):
+    def __init__(self, sam3_model, keep_detector=False, non_overlap_memory=False):
         # Per official sam3_for_sam2_video_task_example.ipynb:
         # use the tracker directly, share backbone from detector
         self._tracker = sam3_model.tracker
         self._tracker.backbone = sam3_model.detector.backbone
+        # Memory encoding keeps each pixel for the top-scoring person only, so two
+        # ids cannot both remember the same body (one-person clips are unaffected).
+        self._tracker.non_overlap_masks_for_mem_enc = bool(non_overlap_memory)
         self._video_width = None
         self._video_height = None
         # sam3_prompt_light: keep the detector for text_detect (mixin), the lean
@@ -1094,7 +1097,8 @@ class _Sam3PromptVideoAdapter(_Sam3TextDetectMixin):
 
 
 def build_video_predictor(sam_version: str, config: str | None, checkpoint: str | None, device,
-                          tracking_overrides: dict | None = None) -> object:
+                          tracking_overrides: dict | None = None,
+                          non_overlap_memory: bool = False) -> object:
     """
     Build a SAM video predictor for the given backend version.
 
@@ -1105,6 +1109,8 @@ def build_video_predictor(sam_version: str, config: str | None, checkpoint: str 
         device: torch device
         tracking_overrides: Optional dict of SAM3 tracking config overrides
             (e.g. new_det_thresh, trk_assoc_iou_thresh). Only used for sam3_prompt.
+        non_overlap_memory: Non-overlapping memory encoding for the sam3 /
+            sam3_prompt_light tracker (sam.non_overlap_memory).
 
     Returns:
         A video predictor object with init_state / add_new_points_or_box /
@@ -1124,7 +1130,8 @@ def build_video_predictor(sam_version: str, config: str | None, checkpoint: str 
         _patch_sam3_video_lazy()
         from sam3.model_builder import build_sam3_video_model  # type: ignore
         sam3_model = build_sam3_video_model()
-        return _Sam3VideoAdapter(sam3_model, keep_detector=(sam_version == "sam3_prompt_light"))
+        return _Sam3VideoAdapter(sam3_model, keep_detector=(sam_version == "sam3_prompt_light"),
+                                 non_overlap_memory=non_overlap_memory)
 
     elif sam_version == "sam3_prompt":
         _patch_sam3_png_support()

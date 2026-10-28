@@ -180,6 +180,12 @@ sam:
   # Propagate both forward and backward from anchor frames.
   propagate_reverse: true
 
+  # Non-overlapping tracker memory (sam3 / sam3_prompt_light): where people
+  # overlap, each pixel is remembered only for the top-scoring person, so one id
+  # cannot slide onto a look-alike partner in contact. People mostly hidden
+  # behind others get slightly smaller masks. false = SAM3's own default.
+  non_overlap_memory: true
+
   # ── Memory bounding for long / many-camera clips ──────────────────────────
   # Applies to the sam3 / sam3_prompt_light tracker (via init_state) and to
   # sam3_prompt, where offload_video_to_cpu also keeps the session's tracking

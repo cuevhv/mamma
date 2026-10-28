@@ -158,6 +158,12 @@ sam:
   # Propagate both forward and backward from anchor frames.
   propagate_reverse: true
 
+  # Non-overlapping tracker memory (sam3 / sam3_prompt_light): where people
+  # overlap, each pixel is remembered only for the top-scoring person, so one id
+  # cannot slide onto a look-alike partner in contact. People mostly hidden
+  # behind others get slightly smaller masks. false = SAM3's own default.
+  non_overlap_memory: true
+
   # Memory bounding (infrastructure, not tracking behavior; kept identical
   # to sam3.yaml so this preset stays usable on modest GPUs and host RAM):
   # offload moves tensors without changing masks; lazy loading auto-enables
