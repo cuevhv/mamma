@@ -20,7 +20,10 @@ account on such a cluster; it does not create or rent compute anywhere.
   logs and outputs under it.
 - **The pipeline environment on the execute nodes.** Usually the MAMMA Apptainer image (see
   [docker/README.md](../docker/README.md)); a conda env or Docker image the nodes can use also
-  works. The image's CUDA extensions need GPUs with compute capability 8.0 or newer.
+  works. The image's CUDA extensions need GPUs with compute capability 8.0 or newer. For a conda
+  env, build it inside a GPU job ([INSTALL.md](INSTALL.md) §1c) and set the profile's `activate` to a
+  line that puts `conda` on `PATH`, e.g. `source ~/miniconda3/etc/profile.d/conda.sh`: jobs start
+  without your shell startup files.
 - **Data on the cluster.** The code sync skips `data/` and `output/`. Put the model weights and body
   models in `<workspace>/repo/data/` (same layout as in [INSTALL.md](INSTALL.md)), and point the
   capture at footage and calibration paths that exist on the cluster.

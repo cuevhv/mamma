@@ -2,6 +2,8 @@
 
 Targets **Python 3.11** and **CUDA 12.4**. Other versions may work but are untested.
 
+The pipeline steps need Linux and an NVIDIA GPU whose driver supports CUDA 12.4 or newer (`nvidia-smi` shows `CUDA Version: 12.4` or higher).
+
 After completing this guide, return to [README.md → Quick demo](../README.md#quick-demo) for a first run.
 
 ---
@@ -16,6 +18,8 @@ After completing this guide, return to [README.md → Quick demo](../README.md#q
 micromamba create -f requirements/mamma_conda.yaml -y
 micromamba activate mamma
 ```
+
+The pipeline runner calls `conda run`, so `conda` must be on `PATH` to run the pipeline, even if you created the env with `micromamba`.
 
 > **Heads-up if you used `micromamba` and also have `conda` installed.** The pipeline runner shells out via `conda run -n mamma …` (`inference/engines.py`), and conda only searches its own `envs_dirs` (typically `~/miniconda3/envs/`). Envs created by `micromamba` land under `$MAMBA_ROOT_PREFIX/envs/` and are invisible to `conda` by default, so `ma_cap` will fail with `EnvironmentLocationNotFound: Not a conda environment: …/envs/mamma`. Tell conda where to look once:
 >
@@ -59,6 +63,8 @@ pip install --no-build-isolation   -r requirements/requirements_no_build_isolati
 ```
 
 `requirements/constraints.txt` holds the exact versions of the validated image, so a new upstream release cannot change the env.
+
+Run this on the machine that will run the pipeline, with its GPU visible (on a cluster: inside a GPU job, not on the login node). The kernels compile for the GPUs visible at install time; with no GPU visible, detectron2 builds without its CUDA ops. To build without a GPU, prefix the second command with what the Dockerfile sets: `FORCE_CUDA=1 TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"`.
 
 The env also bundles `nodejs=20`, Flask, and python-dotenv, so the GUI runs in the same env, no second env to manage.
 
@@ -132,12 +138,10 @@ Upgrading from v1.0.x: YOLO is no longer installed or used by default, and
 
 ### SAM 3 (optional, Hugging Face)
 
-The shipped presets default to **SAM 2**. To switch to SAM 3 (gated, weights downloaded lazily from the HuggingFace cache):
+The shipped presets default to **SAM 2**. SAM 3 comes with the env (`requirements/requirements.txt`); its weights are gated and download into the Hugging Face cache on the first run, so log in once with an account that has approved access:
 
 ```bash
-pip install "setuptools<81"
-pip install git+https://github.com/facebookresearch/sam3.git
-hf auth login                      # account must have approved access
+hf auth login
 ```
 
 Then edit the preset to use SAM 3: change `ma_masks.flags` to `- --sam_version sam3_prompt` (or `sam3`, or `sam3_prompt_light`, which needs less VRAM on long clips). Weights download on first run; no env var is needed.

@@ -21,6 +21,9 @@ container also needs those host paths visible at the *same* locations (see
 docker build -f docker/Dockerfile -t mamma:v1.1.0 .
 ```
 
+The docker image is about 25 GB and the `.sif` about 8 GB; the conversion needs about 30 GB free in
+Apptainer's temp dir (move it with `APPTAINER_TMPDIR`).
+
 **Apptainer**, two routes:
 
 ```bash
@@ -55,7 +58,11 @@ command line resolve inside the container:
 global:
   # REQUIRED for docker: identity-mount the repo root (covers data/weights,
   # output/, configs). Footage outside the repo needs its own entry.
-  bind: ["/abs/path/to/mamma:/abs/path/to/mamma"]
+  # The second entry shares your Hugging Face cache (the container's HOME is
+  # /tmp): SAM 3 needs it for your `hf auth login` token, and it keeps the
+  # D-FINE detector download across runs.
+  bind: ["/abs/path/to/mamma:/abs/path/to/mamma",
+         "/home/<you>/.cache/huggingface:/tmp/.cache/huggingface"]
 ma_masks:            # same three lines for ma_cap, ma_2d, ma_3d, ma_vis
   engine: docker
   docker_image: mamma:v1.1.0
@@ -132,5 +139,6 @@ runs. The GUI itself (Flask backend + browser) stays on the host env.
   `requirements/requirements-tensorrt.txt` to the Dockerfile if you need it
   containerized.
 - The first ma_masks run downloads the D-FINE person detector (about 240 MB)
-  into the Hugging Face cache, like SAM 3; ma_2d may download weights into the
+  into the Hugging Face cache, like SAM 3 (with docker, only with the cache bind
+  above; otherwise on every run); ma_2d may download weights into the
   bound repo `data/` directory, same as the conda engine.

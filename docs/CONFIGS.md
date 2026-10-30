@@ -341,7 +341,7 @@ Pass `--force` to ignore DONE sentinels and re-run everything.
 |-----------|-------------|-------|
 | `conda`   | Default for local runs. | Each step's `repo_path` becomes the working directory; `python <script>` runs in `<conda_env>`. |
 | `apptainer` | Mirrors the cluster setup. | Requires `sif_path` per step (relative = resolved against the repo root). The repo root is bind-mounted at `/repo` and the step runs from `/repo/<step subdir>` (`--pwd`); add `submit_cfg: { gpus: 1 }` on GPU steps for `--nv` (`--nvccli` is added automatically when `nvidia-container-cli` exists; override with `submit_cfg.nvccli`). |
-| `docker`  | Same shape as apptainer for non-HPC machines. | Requires `docker_image` per step. Always passes `--gpus all`. Add an identity mount of the repo root to `global.bind` (e.g. `"/abs/mamma:/abs/mamma"`) so the absolute weight/output paths in the command resolve inside the container. |
+| `docker`  | Same shape as apptainer for non-HPC machines. | Requires `docker_image` per step. Always passes `--gpus all`. Add an identity mount of the repo root to `global.bind` (e.g. `"/abs/mamma:/abs/mamma"`) so the absolute weight/output paths in the command resolve inside the container; for SAM 3 also bind your Hugging Face cache at `/tmp/.cache/huggingface` ([`docker/README.md`](../docker/README.md)). |
 
 The unified image that runs **all five steps** (and how to build/configure it
 for both engines, CLI and GUI) is documented in
