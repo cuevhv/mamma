@@ -4,12 +4,12 @@
 # (guaranteed byte-identical env, no duplicate 20-minute build):
 #
 #   docker build -f docker/Dockerfile -t mamma:v1.1.0 .
-#   apptainer build mamma.sif docker-daemon://mamma:v1.1.0
+#   apptainer build mamma.sif docker/mamma_from_docker.def
 #
-# This .def is the docker-free alternative (e.g. building directly on an HPC
-# login node with --fakeroot):
+# This .def is the docker-free alternative. Build it as root; --fakeroot
+# instead of sudo needs an /etc/subuid entry for your user:
 #
-#   apptainer build --fakeroot mamma.sif docker/mamma.def
+#   sudo apptainer build mamma.sif docker/mamma.def
 #
 # Runner contract (inference/engines.py): the pipeline invokes
 #
@@ -39,13 +39,16 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
     export LANG=C.UTF-8
     export MAMBA_ROOT_PREFIX=/opt/micromamba
     export PATH=/opt/micromamba/envs/mamma/bin:/opt/micromamba/bin:$PATH
-    # pyrender/EGL offscreen rendering; headless matplotlib.
+    # pyrender/EGL offscreen rendering (graphics: --nvccli then injects libEGL_nvidia); headless matplotlib.
+    export NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
     export PYOPENGL_PLATFORM=egl
     export MPLBACKEND=Agg
 
 %post
     set -eux
     export DEBIAN_FRONTEND=noninteractive
+    # %environment only applies at run time; without this, pip's wheel cache stays in the image.
+    export PIP_NO_CACHE_DIR=1
 
     # System deps: build tools for the CUDA-kernel pip layer; ffmpeg for
     # video IO; EGL/GL runtime libs for pyrender offscreen.

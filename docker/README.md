@@ -30,8 +30,10 @@ docker build -f docker/Dockerfile -t mamma:v1.1.0 .
 #    which breaks the runner's `apptainer run <sif> <script> <args…>` contract:
 apptainer build mamma.sif docker/mamma_from_docker.def
 
-# b) Directly from the definition file (no docker needed, e.g. HPC):
-apptainer build --fakeroot mamma.sif docker/mamma.def
+# b) Directly from the definition file (no docker needed), as root:
+sudo apptainer build mamma.sif docker/mamma.def
+#    --fakeroot instead of sudo works only where fakeroot builds work (an
+#    /etc/subuid entry for your user); without one this build fails.
 ```
 
 > If the build dies in the final squashfs step (`mksquashfs command failed:
