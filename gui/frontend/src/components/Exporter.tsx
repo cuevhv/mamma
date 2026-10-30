@@ -28,7 +28,8 @@ const seqKey = (s: Seq) => `${s.tag}/${s.capture}/${s.seq}::${s.ma_3d_dir}`;
 
 export function Exporter() {
   const [ready, setReady] = useState<Readiness | null>(null);
-  const [seqs, setSeqs] = useState<Seq[]>([]);
+  /** null until the first /api/exporter/sequences answer (the scan can take seconds). */
+  const [seqs, setSeqs] = useState<Seq[] | null>(null);
   const [source, setSource] = useState<'detected' | 'custom'>('detected');
   const [sels, setSels] = useState<string[]>([]);
   /** The row currently shown in the right-hand 3D viewer (click to preview). */
@@ -60,7 +61,9 @@ export function Exporter() {
   const [setupOpen, setSetupOpen] = useState(true);
 
   const refreshReady = useCallback(async () => setReady(await jget<Readiness>('/api/exporter/readiness')), []);
-  const refreshSeqs = useCallback(async () => setSeqs((await jget<{ sequences: Seq[] }>('/api/exporter/sequences')).sequences), []);
+  const refreshSeqs = useCallback(async () => {
+    try { setSeqs((await jget<{ sequences: Seq[] }>('/api/exporter/sequences')).sequences); } catch { setSeqs([]); }
+  }, []);
   useEffect(() => { refreshReady(); refreshSeqs(); }, [refreshReady, refreshSeqs]);
 
   const toolsReady = !!ready?.blender.present && !!ready?.addon.present;
@@ -137,7 +140,7 @@ export function Exporter() {
     } catch (e) { setScan({ state: 'error', msg: String(e) }); }
   };
 
-  const list = source === 'detected' ? seqs : customSeqs;
+  const list = source === 'detected' ? (seqs ?? []) : customSeqs;
   const selKeys = source === 'detected' ? sels : customSels;
   const targets = list.filter(s => selKeys.includes(seqKey(s)));
 
@@ -244,7 +247,7 @@ export function Exporter() {
                 {scan.state === 'done' && customSeqs.length === 0 && <p className="text-foreground-muted text-xs">No <code className="font-mono">smplx_params_*.npz</code> found under that path.</p>}
               </div>
             )}
-            {source === 'detected' && seqs.length === 0 && (
+            {source === 'detected' && seqs?.length === 0 && (
               <p className="mt-2 text-foreground-muted text-sm">No completed <code className="font-mono">ma_3d</code> results found. Run the pipeline, or use <button onClick={() => setSource('custom')} className="text-primary hover:underline">Custom path</button>.</p>
             )}
           </div>
@@ -254,10 +257,10 @@ export function Exporter() {
               AND the formats card shows the missing-tools notice (both tall). */}
           <div className="flex-1 min-h-[16rem] xl:min-h-[8rem]">
             {source === 'detected' ? (
-              seqs.length > 0
+              seqs && seqs.length > 0
                 ? <SequenceSelect variant="panel" seqs={seqs} values={sels} onChange={setSels} getKey={seqKey} showCapture
                     activeKey={active ? seqKey(active) : null} onActivate={setActive} />
-                : emptyPanel('Detected ma_3d results will be listed here.')
+                : emptyPanel(seqs === null ? 'Scanning results…' : 'Detected ma_3d results will be listed here.')
             ) : (
               customSeqs.length > 0
                 ? <SequenceSelect variant="panel" seqs={customSeqs} values={customSels} onChange={setCustomSels} getKey={seqKey} showCapture
