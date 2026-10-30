@@ -4,7 +4,7 @@
 # Ctrl-C cleans up both.
 #
 # Expects the `mamma` conda env to be active (or at least on PATH) —
-# the env ships Flask, Flask-CORS, python-dotenv, pyyaml, and Node 20
+# the env ships Flask, python-dotenv, pyyaml, and Node 20
 # so both halves of the GUI run out of a single env.
 set -euo pipefail
 

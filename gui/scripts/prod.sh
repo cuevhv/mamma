@@ -14,7 +14,7 @@
 #     maps in DevTools.
 #
 # Expects the `mamma` conda env to be active (or at least on PATH) —
-# the env ships Flask, Flask-CORS, python-dotenv, pyyaml, waitress, and
+# the env ships Flask, python-dotenv, pyyaml, waitress, and
 # Node 20 so the build and the server both run from a single env.
 #
 # Flags:

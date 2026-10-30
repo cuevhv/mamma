@@ -131,10 +131,6 @@ runs. The GUI itself (Flask backend + browser) stays on the host env.
 
 ## Notes
 
-- `segmentation/Dockerfile` + `segmentation/mamma_masks.def` are an older,
-  ma_masks-only standalone image (SAM2/SAM3 with a newer Python/torch than
-  the pipeline env). They also work with the runner (code runs from `/repo`
-  when bound), but the files here are the pipeline-tested route.
 - TensorRT (`ma_2d --tensorrt`) is not installed in the image, add
   `requirements/requirements-tensorrt.txt` to the Dockerfile if you need it
   containerized.

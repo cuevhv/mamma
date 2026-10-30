@@ -32,6 +32,9 @@ conda activate mamma
 (cd gui/frontend && npm install)    # one-time
 ```
 
+GUI only, without the pipeline (for example on a laptop that submits to a cluster): a plain venv from
+[`requirements/requirements-gui.txt`](../requirements/requirements-gui.txt); its header lists what works.
+
 ## Run
 
 ```bash
@@ -286,7 +289,6 @@ gui/
 │   ├── sinks.py                # SqliteSink(task_id), StatusSink implementation
 │   ├── runner_main.py          # Spawn target: bootstraps env + calls inference.runner
 │   ├── objects/                # Dataclasses for serialization
-│   ├── requirements.txt        # flask (full deps in parent's requirements.txt)
 │   └── README.md
 ├── frontend/
 │   ├── src/

@@ -19,7 +19,7 @@
 - **ma_2d output npz** omits `contacts_gt` / `floor_contacts_gt` when no ground truth is given (check `npz.files`).
 - **ma_vis defaults.** `--fps` follows the capture's recorded frame rate (was 30), overlays render in parallel (`--overlay-num-workers` automatic, was 1), and the Rerun backdrop is an H.264 video (needs ffmpeg, else JPEG). Pass `--fps 30`, `--overlay-num-workers 1` or `--no-rerun-video` for the old behaviour.
 - **Presets.** A `--cam_names` subset in a step's `flags` now restricts that step (before, the capture's camera list overrode it). Remove stray `--cam_names` flags if all cameras are wanted.
-- **Containers.** Rebuild images from `docker/` (one image for all steps) or `segmentation/Dockerfile`: images need `transformers`, the engine contract changed (repo root bound at `/repo`, docker runs as your user, apptainer uses `--nvccli` when available), and the standalone ma_masks image no longer has a `python` entrypoint.
+- **Containers.** Rebuild images from `docker/`, one image for all steps (the ma_masks-only `segmentation/Dockerfile` and `mamma_masks.def` are removed): images need `transformers`, and the engine contract changed (repo root bound at `/repo`, docker runs as your user, apptainer uses `--nvccli` when available).
 
 ### Segmentation (ma_masks)
 
@@ -131,7 +131,7 @@
 ### Containers
 
 - One Docker/Apptainer image for all five steps (`docker/`), used through the existing per-step `engine: docker|apptainer` keys; `engine`, `sif_path` and `docker_image` can now be set once in `global`. See `docker/README.md`.
-- Containerized steps mirror the conda layout: repo root bound at `/repo`, docker runs as your user (no root-owned outputs), apptainer uses `--nvccli` when `nvidia-container-cli` is available, and a relative `sif_path` resolves against the repo root. Standalone ma_masks image: no `python` entrypoint; runs the bind-mounted checkout.
+- Containerized steps mirror the conda layout: repo root bound at `/repo`, docker runs as your user (no root-owned outputs), apptainer uses `--nvccli` when `nvidia-container-cli` is available, and a relative `sif_path` resolves against the repo root.
 - `pyarrow` is capped below 25 in the requirements and images: newer versions need numpy 2 at import time, so `rerun-sdk` (ma_vis) failed to import under the `numpy<2` pin. Image builds now fail on any package that installs but cannot import.
 - Installs pin the validated image: `requirements/constraints.txt` holds its exact package versions and is passed with `-c` to every pip layer (images and `docs/INSTALL.md`); sam2, sam3, detectron2 and pytorch_sdf are pinned by commit.
 
