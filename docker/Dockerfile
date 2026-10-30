@@ -77,8 +77,8 @@ RUN python -m pip install --upgrade pip "setuptools<81" wheel && \
         torch==2.5.1 torchvision==0.20.1 decord
 
 # Main dependency layer (docs/INSTALL.md §1c, first half).
-COPY requirements/requirements.txt /opt/mamma/requirements/requirements.txt
-RUN python -m pip install -r /opt/mamma/requirements/requirements.txt
+COPY requirements/requirements.txt requirements/constraints.txt /opt/mamma/requirements/
+RUN python -m pip install -r /opt/mamma/requirements/requirements.txt -c /opt/mamma/requirements/constraints.txt
 
 # CUDA-kernel layer (detectron2, pytorch_sdf). No GPU is visible during
 # `docker build`, so tell the extensions to compile anyway and for which
@@ -88,13 +88,13 @@ RUN CUDA_HOME=/usr/local/cuda \
     FORCE_CUDA=1 \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" \
     python -m pip install --no-build-isolation \
-        -r /opt/mamma/requirements/requirements_no_build_isolation.txt
+        -r /opt/mamma/requirements/requirements_no_build_isolation.txt -c /opt/mamma/requirements/constraints.txt
 
 # Optional VPoser prior for ma_3d (small, pure-python — bake it in so the
 # occlusion+vposer recipe works out of the box; weights still come from the
 # host's data/ bind).
 COPY requirements/requirements-vposer.txt /opt/mamma/requirements/requirements-vposer.txt
-RUN python -m pip install -r /opt/mamma/requirements/requirements-vposer.txt
+RUN python -m pip install -r /opt/mamma/requirements/requirements-vposer.txt -c /opt/mamma/requirements/constraints.txt
 
 # Fail the build on packages that install but cannot import (a wheel that
 # needs a newer numpy than the pinned one installs without complaint).

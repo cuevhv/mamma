@@ -39,8 +39,9 @@ open_clip_torch
 setuptools
 scikit-image
 imageio-ffmpeg
-git+https://github.com/facebookresearch/sam2
-git+https://github.com/facebookresearch/sam3
+# Commits of the validated image; PyPI versions are in requirements/constraints.txt.
+git+https://github.com/facebookresearch/sam2@2b90b9f5ceec907a1c18123530e92e794ad901a4
+git+https://github.com/facebookresearch/sam3@7f473cfd983d5eb43040ff608f66bff0d7bdcb53
 
 # GUI backend (gui/backend/app.py). Flask comes in transitively via other
 # ML deps today, but pin it explicitly so the GUI keeps working if a

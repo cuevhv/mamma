@@ -77,7 +77,7 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
         torch==2.5.1 torchvision==0.20.1 decord
 
     # Main dependency layer (docs/INSTALL.md §1c, first half).
-    python -m pip install -r /opt/mamma/requirements/requirements.txt
+    python -m pip install -r /opt/mamma/requirements/requirements.txt -c /opt/mamma/requirements/constraints.txt
 
     # CUDA-kernel layer (detectron2, pytorch_sdf): no GPU visible at build
     # time — force the compile and pick the target architectures.
@@ -85,16 +85,17 @@ From: nvidia/cuda:12.4.1-devel-ubuntu22.04
     FORCE_CUDA=1 \
     TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX" \
     python -m pip install --no-build-isolation \
-        -r /opt/mamma/requirements/requirements_no_build_isolation.txt
+        -r /opt/mamma/requirements/requirements_no_build_isolation.txt -c /opt/mamma/requirements/constraints.txt
 
     # Optional VPoser prior for ma_3d (small — bake it in).
-    python -m pip install -r /opt/mamma/requirements/requirements-vposer.txt
+    python -m pip install -r /opt/mamma/requirements/requirements-vposer.txt -c /opt/mamma/requirements/constraints.txt
 
     # Fail the build on packages that install but cannot import.
     python -c "import rerun, torch, torchvision, cv2, transformers, open_clip, scipy, sklearn, pandas"
 
 %files
     requirements/requirements.txt /opt/mamma/requirements/requirements.txt
+    requirements/constraints.txt /opt/mamma/requirements/constraints.txt
     requirements/requirements_no_build_isolation.txt /opt/mamma/requirements/requirements_no_build_isolation.txt
     requirements/requirements-vposer.txt /opt/mamma/requirements/requirements-vposer.txt
 

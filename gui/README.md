@@ -89,7 +89,7 @@ Goal: from a fresh checkout to
 
 - `mamma_release` cloned; you're inside it.
 - `mamma` env installed with `conda env create -f requirements/mamma_conda.yaml`
-  → `conda activate mamma` → `pip install -r requirements/requirements.txt` →
+  → `conda activate mamma` → `pip install -r requirements/requirements.txt -c requirements/constraints.txt` →
   the `--no-build-isolation` line from
   [`INSTALL.md`](../docs/INSTALL.md).
 - `gui/frontend/` `npm install`-ed once.

@@ -54,9 +54,11 @@ The labeled channel pin (`nvidia/label/cuda-12.4.1`) matters: without it, conda 
 With CUDA reachable, install the two pip layers:
 
 ```bash
-pip install -r requirements/requirements.txt
-pip install --no-build-isolation   -r requirements/requirements_no_build_isolation.txt
+pip install -r requirements/requirements.txt -c requirements/constraints.txt
+pip install --no-build-isolation   -r requirements/requirements_no_build_isolation.txt -c requirements/constraints.txt
 ```
+
+`requirements/constraints.txt` holds the exact versions of the validated image, so a new upstream release cannot change the env.
 
 The env also bundles `nodejs=20`, Flask, and python-dotenv, so the GUI runs in the same env, no second env to manage.
 
@@ -147,7 +149,7 @@ network to a TensorRT FP16 engine for a ~5× faster forward. It's optional and
 NVIDIA-only: without it the flag falls back to plain PyTorch, so configs stay portable.
 
 ```bash
-pip install -r requirements/requirements-tensorrt.txt
+pip install -r requirements/requirements-tensorrt.txt -c requirements/constraints.txt
 ```
 
 The compiled engine is cached to disk on first run (keyed by weight contents/shape/precision/GPU),
@@ -160,7 +162,7 @@ so subsequent runs load it in ~2 s. See [`docs/CONFIGS.md`](CONFIGS.md#common-pe
 package **and** the VPoser `V02_05` weights:
 
 ```bash
-pip install -r requirements/requirements-vposer.txt
+pip install -r requirements/requirements-vposer.txt -c requirements/constraints.txt
 bash data/download_vposer.sh          # or use the GUI's dataset panel
 ```
 

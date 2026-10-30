@@ -1,2 +1,3 @@
-git+https://github.com/facebookresearch/detectron2.git
-git+https://github.com/cuevhv/pytorch_sdf@torch2.5-cu124
+# Commits of the validated image (pytorch_sdf: head of its torch2.5-cu124 branch).
+git+https://github.com/facebookresearch/detectron2.git@b0fe2f0a5bb6496f65246ef35687a386a9f19202
+git+https://github.com/cuevhv/pytorch_sdf@58ff57b542a998e406327b94881bf6f7ce13a390

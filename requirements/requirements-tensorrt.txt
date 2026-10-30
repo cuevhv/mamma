@@ -2,7 +2,7 @@
 # ~5x FP16). Not required for the pipeline — the flag falls back to PyTorch when
 # this is absent, so the core install stays portable. Pulls tensorrt-cu12.
 #
-#   pip install -r requirements/requirements-tensorrt.txt
+#   pip install -r requirements/requirements-tensorrt.txt -c requirements/constraints.txt
 #
 # Version pinned to match torch 2.5.1 (requirements/requirements.txt).
 torch-tensorrt==2.5.0
