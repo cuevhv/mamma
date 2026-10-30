@@ -144,3 +144,4 @@
 ### Documentation
 
 - New guides: SMPL-X export (`docs/EXPORT.md`), containers (`docker/README.md`), calibration formats (`capture/loaders/README.md`); `docs/INSTALL.md` covers Docker/Apptainer, TensorRT and VPoser.
+- `docs/INSTALL.md`: the CUDA toolkit install pins `cuda-toolkit=12.4.1` with strict channel priority; the unpinned command now resolves to CUDA 13.x (or mixes channels) and the kernel build fails.

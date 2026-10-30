@@ -41,13 +41,13 @@ nvcc --version                         # must report release 12.4
 **Option B: install the toolkit into the env** (`mamma` already activated from §1a):
 
 ```bash
-micromamba install -n mamma -c nvidia/label/cuda-12.4.1 cuda-toolkit -y
+micromamba install -n mamma -c nvidia/label/cuda-12.4.1 --strict-channel-priority cuda-toolkit=12.4.1 -y
 export CUDA_HOME="$CONDA_PREFIX"
 export PATH="$CUDA_HOME/bin:$PATH"
 nvcc --version                         # must report release 12.4
 ```
 
-The labeled channel pin (`nvidia/label/cuda-12.4.1`) matters: without it, conda resolves to the latest 13.x package and the kernel compile fails with `CUDA version (13.x) mismatches PyTorch (12.4)`.
+The version pin and strict channel priority matter: without them the solver can take the newest toolkit (13.x) from conda-forge, and the kernel compile fails with `CUDA version (13.x) mismatches PyTorch (12.4)`, or mix packages from both channels and fail with `cuda_runtime.h: No such file or directory`. CUDA 12.4 compiles with gcc 13 or older (the conda-forge toolkit brings gcc 12).
 
 ### 1c. Install pip layers
 
