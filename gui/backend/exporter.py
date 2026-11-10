@@ -7,6 +7,7 @@ mirroring data_readiness.py). Provides:
   POST /api/exporter/download-blender   -> run data/download_blender.sh (public)
   POST /api/exporter/download-addon     -> run data/download_smplx_blender_addon.sh (SMPL-X creds)
   GET  /api/exporter/sequences          -> completed ma_3d sequences available to export
+  GET  /api/exporter/sequences/stream   -> the same scan as NDJSON, one capture folder at a time
   POST /api/exporter/export             -> run optimization/export_blender.py
   GET  /api/exporter/job/<job_id>       -> live job state (downloads + exports)
 
@@ -17,6 +18,7 @@ download script's env and never stored or echoed back.
 from __future__ import annotations
 
 import glob
+import json
 import os
 import re
 import subprocess
@@ -26,7 +28,7 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import jsonify, request, send_file
+from flask import Response, jsonify, request, send_file
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OUTPUT = _REPO_ROOT / "output"
@@ -245,34 +247,43 @@ def _output_roots() -> list[Path]:
     return [p for p in roots if p.is_dir()]
 
 
-def _exportable_sequences() -> list[dict]:
+def _iter_exportable():
     """Scan <root>/ma_3d/<tag>/<capture>/<seq>/ for smplx_params_body_id-*.npz
-    across every known output root (see :func:`_output_roots`)."""
-    seqs: list[dict] = []
-    seen_prev: set = set()      # keys found in earlier roots (earlier root wins)
+    across every known output root (see :func:`_output_roots`), one capture
+    folder at a time: yields ``{"scanning": <capture dir>}`` before reading a
+    folder and ``{"sequences": [...]}`` with what it held. Network-mounted
+    roots take tens of seconds, so callers can show results as they arrive."""
+    seen: set = set()           # keys already yielded (earlier root wins)
     for root in _output_roots():
-        here: dict[tuple, dict] = {}
-        for params in sorted(glob.glob(str(root / "ma_3d" / "*" / "*" / "*" / "smplx_params_body_id-*.npz"))):
-            seq_dir = Path(params).parent
-            seq, capture, tag = seq_dir.name, seq_dir.parent.name, seq_dir.parent.parent.name
-            key = (tag, capture, seq)
-            if key in seen_prev:
-                continue
-            if key in here:      # one npz per person: same-root repeats = people
-                here[key]["people"] += 1
-                continue
-            ma_cap = root / "ma_cap" / tag / capture
-            here[key] = {
-                "tag": tag, "capture": capture, "seq": seq, "people": 1,
-                "ma_3d_dir": str(seq_dir.parent),
-                "ma_cap_dir": str(ma_cap) if ma_cap.is_dir() else "",
-                "already_exported": (root / "export" / tag / capture / seq).is_dir()
-                                    or (_OUTPUT / "export" / tag / capture / seq).is_dir(),
-                "mtime": _safe_mtime(params),  # result write time, for a "when" hint in the UI
-            }
-        seen_prev.update(here)
-        seqs.extend(here.values())
-    return seqs
+        for cap_dir in sorted(glob.glob(os.path.join(glob.escape(str(root / "ma_3d")), "*", "*"))):
+            yield {"scanning": cap_dir}
+            here: dict[tuple, dict] = {}
+            for params in sorted(glob.glob(os.path.join(glob.escape(cap_dir), "*", "smplx_params_body_id-*.npz"))):
+                seq_dir = Path(params).parent
+                seq, capture, tag = seq_dir.name, seq_dir.parent.name, seq_dir.parent.parent.name
+                key = (tag, capture, seq)
+                if key in seen:
+                    continue
+                if key in here:      # one npz per person: same-root repeats = people
+                    here[key]["people"] += 1
+                    continue
+                ma_cap = root / "ma_cap" / tag / capture
+                here[key] = {
+                    "tag": tag, "capture": capture, "seq": seq, "people": 1,
+                    "ma_3d_dir": str(seq_dir.parent),
+                    "ma_cap_dir": str(ma_cap) if ma_cap.is_dir() else "",
+                    "already_exported": (root / "export" / tag / capture / seq).is_dir()
+                                        or (_OUTPUT / "export" / tag / capture / seq).is_dir(),
+                    "mtime": _safe_mtime(params),  # result write time, for a "when" hint in the UI
+                }
+            seen.update(here)
+            if here:
+                yield {"sequences": list(here.values())}
+
+
+def _exportable_sequences() -> list[dict]:
+    """Every exportable sequence in one list (see :func:`_iter_exportable`)."""
+    return [s for ev in _iter_exportable() for s in ev.get("sequences", ())]
 
 
 def _scan_sequences(root: str):
@@ -417,6 +428,11 @@ def register_routes(app) -> None:
     @app.get("/api/exporter/sequences")
     def _exporter_sequences():
         return jsonify({"sequences": _exportable_sequences()})
+
+    @app.get("/api/exporter/sequences/stream")
+    def _exporter_sequences_stream():
+        return Response((json.dumps(ev) + "\n" for ev in _iter_exportable()),
+                        mimetype="application/x-ndjson")
 
     @app.get("/api/exporter/scan")
     def _exporter_scan():

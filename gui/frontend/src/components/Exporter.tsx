@@ -28,8 +28,10 @@ const seqKey = (s: Seq) => `${s.tag}/${s.capture}/${s.seq}::${s.ma_3d_dir}`;
 
 export function Exporter() {
   const [ready, setReady] = useState<Readiness | null>(null);
-  /** null until the first /api/exporter/sequences answer (the scan can take seconds). */
-  const [seqs, setSeqs] = useState<Seq[] | null>(null);
+  /** Grows while the results scan streams in (cluster mounts take tens of seconds). */
+  const [seqs, setSeqs] = useState<Seq[]>([]);
+  /** Folder the scan is reading: '' before its first answer, null once it finished. */
+  const [scanAt, setScanAt] = useState<string | null>('');
   const [source, setSource] = useState<'detected' | 'custom'>('detected');
   const [sels, setSels] = useState<string[]>([]);
   /** The row currently shown in the right-hand 3D viewer (click to preview). */
@@ -61,10 +63,33 @@ export function Exporter() {
   const [setupOpen, setSetupOpen] = useState(true);
 
   const refreshReady = useCallback(async () => setReady(await jget<Readiness>('/api/exporter/readiness')), []);
-  const refreshSeqs = useCallback(async () => {
-    try { setSeqs((await jget<{ sequences: Seq[] }>('/api/exporter/sequences')).sequences); } catch { setSeqs([]); }
+  useEffect(() => { refreshReady(); }, [refreshReady]);
+
+  // Stream the results scan (NDJSON): each capture folder's sequences show as soon as it is read.
+  useEffect(() => {
+    const c = new AbortController();
+    (async () => {
+      try {
+        const r = await fetch('/api/exporter/sequences/stream', { signal: c.signal });
+        const reader = r.body!.pipeThrough(new TextDecoderStream()).getReader();
+        let buf = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          const lines = (buf + value).split('\n');
+          buf = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line) continue;
+            const ev = JSON.parse(line) as { scanning?: string; sequences?: Seq[] };
+            if (ev.scanning) setScanAt(ev.scanning);
+            if (ev.sequences) setSeqs(prev => [...prev, ...ev.sequences!]);
+          }
+        }
+      } catch { /* keep what arrived */ }
+      if (!c.signal.aborted) setScanAt(null);
+    })();
+    return () => c.abort();
   }, []);
-  useEffect(() => { refreshReady(); refreshSeqs(); }, [refreshReady, refreshSeqs]);
 
   const toolsReady = !!ready?.blender.present && !!ready?.addon.present;
   useEffect(() => { if (toolsReady) setSetupOpen(false); }, [toolsReady]);
@@ -140,7 +165,7 @@ export function Exporter() {
     } catch (e) { setScan({ state: 'error', msg: String(e) }); }
   };
 
-  const list = source === 'detected' ? (seqs ?? []) : customSeqs;
+  const list = source === 'detected' ? seqs : customSeqs;
   const selKeys = source === 'detected' ? sels : customSels;
   const targets = list.filter(s => selKeys.includes(seqKey(s)));
 
@@ -247,8 +272,16 @@ export function Exporter() {
                 {scan.state === 'done' && customSeqs.length === 0 && <p className="text-foreground-muted text-xs">No <code className="font-mono">smplx_params_*.npz</code> found under that path.</p>}
               </div>
             )}
-            {source === 'detected' && seqs?.length === 0 && (
+            {source === 'detected' && seqs.length === 0 && scanAt === null && (
               <p className="mt-2 text-foreground-muted text-sm">No completed <code className="font-mono">ma_3d</code> results found. Run the pipeline, or use <button onClick={() => setSource('custom')} className="text-primary hover:underline">Custom path</button>.</p>
+            )}
+            {source === 'detected' && scanAt !== null && (
+              <p className="mt-2 flex items-start gap-1.5 min-w-0 text-foreground-muted text-xs">
+                <Loader2 className="w-3.5 h-3.5 mt-px flex-shrink-0 animate-spin" />
+                <span className="min-w-0 break-all">
+                  Scanning <code className="font-mono">{scanAt || 'output folders'}</code>… {seqs.length} found so far
+                </span>
+              </p>
             )}
           </div>
 
@@ -257,10 +290,10 @@ export function Exporter() {
               AND the formats card shows the missing-tools notice (both tall). */}
           <div className="flex-1 min-h-[16rem] xl:min-h-[8rem]">
             {source === 'detected' ? (
-              seqs && seqs.length > 0
+              seqs.length > 0
                 ? <SequenceSelect variant="panel" seqs={seqs} values={sels} onChange={setSels} getKey={seqKey} showCapture
                     activeKey={active ? seqKey(active) : null} onActivate={setActive} />
-                : emptyPanel(seqs === null ? 'Scanning results…' : 'Detected ma_3d results will be listed here.')
+                : emptyPanel(scanAt !== null ? 'Scanning results…' : 'Detected ma_3d results will be listed here.')
             ) : (
               customSeqs.length > 0
                 ? <SequenceSelect variant="panel" seqs={customSeqs} values={customSels} onChange={setCustomSels} getKey={seqKey} showCapture
